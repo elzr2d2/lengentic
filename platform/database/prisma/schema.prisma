@@ -1,0 +1,22 @@
+// LenGentic database schema.
+//
+// Phase 1 deliberately declares no models. The telemetry domain (Run, Step) arrives in
+// Phase 2 (MVP_PLAN.md §39) and the rich entities in Phase 4. What Phase 1 proves is that
+// the migration pipeline, the client generator, and connectivity all work — adding
+// speculative tables now would violate §8 and pre-commit decisions Phase 2 should own.
+
+// Prisma 7 removed `url` from the datasource block. The connection string lives in
+// prisma.config.ts for migrations, and is passed to the client through a driver adapter
+// at runtime — see ../src/index.ts.
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+
+  // The API is a NestJS app and NestJS is CommonJS. Prisma 7 is ESM-first, so the format
+  // has to be stated rather than inherited.
+  moduleFormat = "cjs"
+}

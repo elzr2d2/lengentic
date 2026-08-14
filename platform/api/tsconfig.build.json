@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Only the build pins rootDir. tsconfig.json also covers tests and vitest.config.mts,
+    // which sit outside src/ and would otherwise fail TS6059 during typecheck.
+    "rootDir": "./src"
+  },
+  "exclude": ["node_modules", "dist", "test", "**/*.spec.ts", "vitest.config.mts"]
+}

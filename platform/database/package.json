@@ -1,0 +1,37 @@
+{
+  "name": "@lengentic/database",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Prisma schema, migrations, and client factory. Database-internal by design.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:reset": "prisma migrate reset --force",
+    "db:seed": "prisma db seed",
+    "build": "prisma generate && tsc -p tsconfig.json",
+    "typecheck": "prisma generate && tsc --noEmit -p tsconfig.json",
+    "test": "node -e \"process.stdout.write('no unit tests in @lengentic/database\\n')\""
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1"
+  },
+  "devDependencies": {
+    "dotenv": "^17.2.3",
+    "prisma": "^7.9.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}

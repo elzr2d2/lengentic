@@ -54,6 +54,27 @@ export default tseslint.config(
   },
 
   {
+    // NestJS resolves providers from `emitDecoratorMetadata`, which an `import type` on an
+    // injected class erases. The rule and the framework are in direct conflict here, and
+    // the framework wins because the failure is a runtime DI error rather than a lint one.
+    files: ['platform/api/**/*.ts'],
+    rules: { '@typescript-eslint/consistent-type-imports': 'off' },
+  },
+
+  {
+    files: ['platform/dashboard/**/*.{ts,tsx}'],
+    languageOptions: {
+      parserOptions: { ecmaFeatures: { jsx: true } },
+      globals: {
+        React: 'readonly',
+        fetch: 'readonly',
+        AbortSignal: 'readonly',
+        process: 'readonly',
+      },
+    },
+  },
+
+  {
     // Plain-JS Node scripts: hooks and config. typescript-eslint turns `no-undef` off for
     // .ts files because the compiler already does it better, but these are not compiled,
     // so the globals have to be declared.

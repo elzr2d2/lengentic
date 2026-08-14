@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "./dist",
+    "noEmit": false,
+
+    // NestJS dependency injection reads parameter types from `emitDecoratorMetadata`.
+    // This is also why `verbatimModuleSyntax` is absent from tsconfig.base.json and why
+    // `consistent-type-imports` is disabled for this package in eslint.config.js — an
+    // `import type` erases the metadata Nest needs to resolve the provider.
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+
+    // Nest assigns injected members through the constructor, which the compiler cannot
+    // see through the decorator.
+    "strictPropertyInitialization": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.mts"],
+  "exclude": ["dist", "node_modules"]
+}
