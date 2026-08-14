@@ -40,7 +40,12 @@ export function renderGroup(input: GroupReportInput, config: AnalyzerConfig): st
   lines.push(field('Distinct contexts:', String(a.distinctContextCount)));
   lines.push(field('Distribution:', renderDistribution(a)));
   lines.push(field('Attested success:', renderSuccess(a)));
-  lines.push(field('Outcome coverage:', `${percent(a.outcomeCoverage)}  (${a.attestedCount}/${a.sampleCount})`));
+  lines.push(
+    field(
+      'Outcome coverage:',
+      `${percent(a.outcomeCoverage)}  (${a.attestedCount}/${a.sampleCount})`,
+    ),
+  );
 
   lines.push('');
   lines.push('Gates:');
@@ -156,7 +161,9 @@ export function renderSummary(rows: readonly GroupReportInput[]): string {
   lines.push('SUMMARY');
   lines.push('='.repeat(WIDTH));
   lines.push('');
-  lines.push(`  ${'GROUP'.padEnd(8)}${'VERDICT'.padEnd(13)}${'GATES FAILED'.padEnd(24)}EXPECTATION`);
+  lines.push(
+    `  ${'GROUP'.padEnd(8)}${'VERDICT'.padEnd(13)}${'GATES FAILED'.padEnd(24)}EXPECTATION`,
+  );
 
   for (const row of rows) {
     const failed = row.evaluation.failedGates.map((g) => g.slice(0, 2)).join(', ') || '—';
@@ -170,7 +177,9 @@ export function renderSummary(rows: readonly GroupReportInput[]): string {
   const candidates = rows.filter((r) => r.evaluation.verdict === 'CANDIDATE').length;
 
   lines.push('');
-  lines.push(`  ${rows.length} groups   ${candidates} CANDIDATE   ${rows.length - candidates} SUPPRESSED`);
+  lines.push(
+    `  ${rows.length} groups   ${candidates} CANDIDATE   ${rows.length - candidates} SUPPRESSED`,
+  );
   lines.push(
     mismatched === 0
       ? `  ${rows.length}/${rows.length} matched their declared expectation.`

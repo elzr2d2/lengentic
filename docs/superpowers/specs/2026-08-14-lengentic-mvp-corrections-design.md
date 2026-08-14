@@ -20,15 +20,15 @@ resolved before the phase that depends on it).
 
 Two papers published within the last two months implement the core LenGentic thesis:
 
-| | Progressive Crystallization (2026-07-08) | TraceCompiler (2026-08-03) |
-|---|---|---|
-| Method | Promote agent behavior → hybrid → deterministic on evidence | Cluster noisy traces, compile to workflow graphs |
-| Promotion gate | ≥10 successful runs, ≥90% same action sequence | Argument-level provenance; edges admitted only when uniquely attributable |
-| Sample gate | Yes (10, then 50) | Implicit (cluster size) |
-| **Context-diversity gate** | **No** | **No** |
-| **Counterexample reporting** | **No** | **No** (but *refuses to compile* under-determined irreversible effects) |
-| Regression handling | Circuit-breaker demotion | Not addressed |
-| Counterfactual honesty | Not addressed | Partial (refusal, not disclosure) |
+|                              | Progressive Crystallization (2026-07-08)                    | TraceCompiler (2026-08-03)                                                |
+| ---------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Method                       | Promote agent behavior → hybrid → deterministic on evidence | Cluster noisy traces, compile to workflow graphs                          |
+| Promotion gate               | ≥10 successful runs, ≥90% same action sequence              | Argument-level provenance; edges admitted only when uniquely attributable |
+| Sample gate                  | Yes (10, then 50)                                           | Implicit (cluster size)                                                   |
+| **Context-diversity gate**   | **No**                                                      | **No**                                                                    |
+| **Counterexample reporting** | **No**                                                      | **No** (but _refuses to compile_ under-determined irreversible effects)   |
+| Regression handling          | Circuit-breaker demotion                                    | Not addressed                                                             |
+| Counterfactual honesty       | Not addressed                                               | Partial (refusal, not disclosure)                                         |
 
 Three consequences for this project:
 
@@ -36,10 +36,10 @@ Three consequences for this project:
    promotion gate — "≥90% of runs produce the same action sequence" over ten runs — is
    precisely the artifact G2 exists to suppress. Ten runs of the same situation and ten
    runs of ten different situations are indistinguishable under their gate and are
-   *opposite* findings. This should be stated plainly in the README, with the comparison.
+   _opposite_ findings. This should be stated plainly in the README, with the comparison.
 
-2. **Counterexample reporting is unclaimed.** TraceCompiler *refuses* under uncertainty;
-   LenGentic *discloses* under uncertainty. Refusal hides the judgment call from the
+2. **Counterexample reporting is unclaimed.** TraceCompiler _refuses_ under uncertainty;
+   LenGentic _discloses_ under uncertainty. Refusal hides the judgment call from the
    engineer. Disclosure hands it to them. That is a stronger position and nobody is
    occupying it.
 
@@ -68,7 +68,7 @@ always exactly `1`, and G2 (`>= 5`) can never pass. No recommendation is ever em
 The rest of the plan contradicts this and reveals the intent: §11's P1 is "50 samples,
 **12 distinct contexts**" as a single group; §79's Scenario 3 spans "≥8 distinct
 contextKeys" and expects **one** `DETERMINISTIC_CANDIDATE`; §71's rationale for G2 reasons
-explicitly about a group that *could* have contained varied contexts but did not.
+explicitly about a group that _could_ have contained varied contexts but did not.
 
 ### Correction
 
@@ -82,9 +82,9 @@ Dominance, attested success, and coverage are computed across the whole group.
 
 ### Why the coarse grouping is the right one
 
-The claim LenGentic is licensed to make is *"this option wins across varied situations."*
+The claim LenGentic is licensed to make is _"this option wins across varied situations."_
 That claim requires one group spanning many situations. Per-`contextKey` grouping supports
-a different and finer claim — *"in situation A, always YES"* — which is more actionable but
+a different and finer claim — _"in situation A, always YES"_ — which is more actionable but
 directly contradicts G2 and needs far more data per group. It is a legitimate v2 analyzer.
 It is not the MVP. Recorded in `BACKLOG.md` as **Context-conditional defaults**.
 
@@ -126,34 +126,34 @@ rendering that as `0.0%` would be a lie of exactly the kind §2 of the plan forb
 ## 3. DEFECT — fixture numbering collides across §11 and §72
 
 `N1`–`N5` in §11 and `N1`–`N8` in §72 use the same labels for different cases. §11's `N5`
-is a *positive* case (recommend, with the minority branch surfaced); §72's `N5` is the
+is a _positive_ case (recommend, with the minority branch surfaced); §72's `N5` is the
 version-boundary case. §11 tests four gates; §72 requires five. Since §13 states the
-Phase 0 functions and fixtures *graduate* into Phase 5, two divergent numbering schemes
+Phase 0 functions and fixtures _graduate_ into Phase 5, two divergent numbering schemes
 for one graduating artifact is a guaranteed source of wrong assertions.
 
 ### Correction — one namespace, split by analyzer
 
-| Prefix | Analyzer | Introduced | Count |
-|---|---|---|---|
-| `D1`–`D9` | Deterministic candidate | Phase 0 | 9 |
-| `R1`–`R3` | Retry / loop | Phase 5 | 3 |
+| Prefix    | Analyzer                | Introduced | Count |
+| --------- | ----------------------- | ---------- | ----- |
+| `D1`–`D9` | Deterministic candidate | Phase 0    | 9     |
+| `R1`–`R3` | Retry / loop            | Phase 5    | 3     |
 
 Phase 0 defines **all five gates** and carries a dedicated suppressor for each, so that no
 gate graduates into Phase 5 unexercised.
 
-| ID | Shape | Expected |
-|---|---|---|
-| `D1` | 50 samples, 12 contexts, YES 49 / NO 1, coverage 94%, success 96% | **CANDIDATE**, 1 counterexample |
-| `D2` | 40 samples, 9 contexts, SKIP 37 / RUN 3, coverage 90%, success 92% | **CANDIDATE**, 3 counterexamples |
+| ID   | Shape                                                                    | Expected                                 |
+| ---- | ------------------------------------------------------------------------ | ---------------------------------------- |
+| `D1` | 50 samples, 12 contexts, YES 49 / NO 1, coverage 94%, success 96%        | **CANDIDATE**, 1 counterexample          |
+| `D2` | 40 samples, 9 contexts, SKIP 37 / RUN 3, coverage 90%, success 92%       | **CANDIDATE**, 3 counterexamples         |
 | `D3` | 50 samples, 10 contexts, YES 47 / NO 3; all 3 NO succeeded, 4 YES failed | **CANDIDATE**, minority branch prominent |
-| `D4` | 50 samples, **2 contexts**, YES 48 / NO 2 (96%) | **SUPPRESSED — G2** |
-| `D5` | **12 samples**, 8 contexts, YES 12 / NO 0 (100%) | **SUPPRESSED — G1** |
-| `D6` | 60 samples, 15 contexts, 96.7% dominance, **success 61%** | **SUPPRESSED — G4** |
-| `D7` | 50 samples, 10 contexts, 95% dominance, **coverage 60%** | **SUPPRESSED — G5** |
-| `D8` | 50 samples spanning **two workflowVersions** (26 + 24) | **splits → both SUPPRESSED — G1** |
-| `D9` | 45 samples, 11 contexts, **YES 60% / NO 40%**, success 93% | **SUPPRESSED — G3** |
+| `D4` | 50 samples, **2 contexts**, YES 48 / NO 2 (96%)                          | **SUPPRESSED — G2**                      |
+| `D5` | **12 samples**, 8 contexts, YES 12 / NO 0 (100%)                         | **SUPPRESSED — G1**                      |
+| `D6` | 60 samples, 15 contexts, 96.7% dominance, **success 61%**                | **SUPPRESSED — G4**                      |
+| `D7` | 50 samples, 10 contexts, 95% dominance, **coverage 60%**                 | **SUPPRESSED — G5**                      |
+| `D8` | 50 samples spanning **two workflowVersions** (26 + 24)                   | **splits → both SUPPRESSED — G1**        |
+| `D9` | 45 samples, 11 contexts, **YES 60% / NO 40%**, success 93%               | **SUPPRESSED — G3**                      |
 
-`D8` is deliberately sized so the *combined* 50 would clear G1 and each split half (26, 24)
+`D8` is deliberately sized so the _combined_ 50 would clear G1 and each split half (26, 24)
 does not. That is the only construction that actually demonstrates version splitting
 changed the answer.
 
@@ -164,7 +164,7 @@ never suppresses anything in the fixture suite and graduates unproven.
 
 Splitting by `workflowVersion` is **grouping, not gating**. §13's "every suppression names
 the gate that suppressed it" has no answer for `D8` as originally specified. The corrected
-expectation is explicit: *split into two groups, each suppressed by G1.* Fixtures assert
+expectation is explicit: _split into two groups, each suppressed by G1._ Fixtures assert
 the post-split group count **and** each group's suppressing gate.
 
 ### Reporting rule
@@ -179,7 +179,7 @@ lists all of them.
 ## 4. DEFECT — the retry analyzer has no defined unit of repetition
 
 §68 specifies three conditions for classifying repetition as a retry but never defines what
-a *sequence* is, and §67's fingerprint references a `sequenceKey` defined nowhere.
+a _sequence_ is, and §67's fingerprint references a `sequenceKey` defined nowhere.
 
 ### Correction — sequence definition
 
@@ -261,7 +261,7 @@ analysis silently.
 
 §67 defines `status` (`OPEN | ACKNOWLEDGED | ACCEPTED | DISMISSED`) and `statusChangedAt`,
 and §75's DoD requires "a dismissed recommendation stays dismissed." §74's task list
-contains only *display* tasks. Nothing can change a status.
+contains only _display_ tasks. Nothing can change a status.
 
 ### Correction — add to Phase 5 scope
 
@@ -319,7 +319,7 @@ and attestations may arrive out of order like any other event pair.
 ## 8. ADDITION — `minorityContextConcentration`
 
 Once §1's correction lands, a group spans many `contextKey`s, which makes a new and cheap
-question answerable: *is the minority scattered, or concentrated?*
+question answerable: _is the minority scattered, or concentrated?_
 
 ```
 3 counterexamples, all in post_refactor_large_diff
@@ -335,8 +335,8 @@ which says the boundary is not context-shaped and the branch is doing something 
 `contextKey` does not capture — a materially different, and more cautionary, finding.
 
 Implementation is a group-by over the minority rows. It is a handful of lines and it
-converts the counterexample block from a list into a recommendation about *where the
-escape hatch goes*. Added to the aggregation output and the §73 report shape.
+converts the counterexample block from a list into a recommendation about _where the
+escape hatch goes_. Added to the aggregation output and the §73 report shape.
 
 This is the one addition in this document. It is in scope because it is a direct
 consequence of the §1 defect fix, not a new capability.
@@ -359,7 +359,7 @@ Arm 2  platform without .claude/     STATIC check                          every
 
 Arm 1 is the claim with real content and keeps its full cycle. It must strip
 playground-referencing root scripts as part of the isolation script, so the check tests
-*imports*, not *script bookkeeping*.
+_imports_, not _script bookkeeping_.
 
 Arm 2 is nearly free and already fully covered by `dependency-cruiser`: nothing in
 `platform/**` or `playground/**` may import `.claude/**`. A full rebuild to prove that adds
@@ -446,13 +446,13 @@ Recorded so these are not relitigated during implementation:
 
 ## 14. Phase deltas summary
 
-| Phase | Change |
-|---|---|
-| 0 | 9 fixtures `D1`–`D9`; all five gates defined; §1 and §2 corrections implemented here first |
-| 1 | `check:isolation` reduced to two arms (§9); §10 dependency-cruiser rule for `telemetry-sdk`; Testcontainers (§11). Engineering harness built in full per §18–35 before Phase 2 |
-| 2 | No change |
-| 3 | No change |
-| 4 | `decisionId` exposed by SDK; standalone attestation event (§7) |
-| 5 | Corrected group key (§1); corrected denominators (§2); `R1`–`R3` retry fixtures; sequence definition (§4); job table + worker (§5); status write path (§6); `minorityContextConcentration` (§8) |
-| 6 | Scenario 3 runs in one process (§12) |
-| 7 | README leads with G2 and the prior-art comparison (§0); limits section names the absent demotion mechanism |
+| Phase | Change                                                                                                                                                                                          |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0     | 9 fixtures `D1`–`D9`; all five gates defined; §1 and §2 corrections implemented here first                                                                                                      |
+| 1     | `check:isolation` reduced to two arms (§9); §10 dependency-cruiser rule for `telemetry-sdk`; Testcontainers (§11). Engineering harness built in full per §18–35 before Phase 2                  |
+| 2     | No change                                                                                                                                                                                       |
+| 3     | No change                                                                                                                                                                                       |
+| 4     | `decisionId` exposed by SDK; standalone attestation event (§7)                                                                                                                                  |
+| 5     | Corrected group key (§1); corrected denominators (§2); `R1`–`R3` retry fixtures; sequence definition (§4); job table + worker (§5); status write path (§6); `minorityContextConcentration` (§8) |
+| 6     | Scenario 3 runs in one process (§12)                                                                                                                                                            |
+| 7     | README leads with G2 and the prior-art comparison (§0); limits section names the absent demotion mechanism                                                                                      |

@@ -12,14 +12,16 @@ makes them actionable later.
 ## Discovered during Phase 0 plan review (2026-08-14)
 
 ### Context-conditional defaults
+
 **Source:** corrections doc §1.
-The corrected group key aggregates across `contextKey`, which licenses the claim *"this
-option wins across varied situations."* A per-`contextKey` analyzer would license a
-finer claim — *"in `post_refactor_large_diff`, always NO"* — which is more actionable but
+The corrected group key aggregates across `contextKey`, which licenses the claim _"this
+option wins across varied situations."_ A per-`contextKey` analyzer would license a
+finer claim — _"in `post_refactor_large_diff`, always NO"_ — which is more actionable but
 needs far more data per group and directly contradicts G2's purpose. A real v2 analyzer,
 not an MVP variant of the existing one.
 
 ### Recommendation demotion on regression
+
 **Source:** [Progressive Crystallization](https://arxiv.org/abs/2607.07052), §0 of the
 corrections doc.
 That system pairs promotion with a circuit-breaker that demotes a deterministic playbook
@@ -29,6 +31,7 @@ stopped holding. Related to, and probably subsumed by, §94's **shadow mode**, w
 honest version — it produces the counterfactual instead of inferring it.
 
 ### Weight counterexamples by attestation
+
 **Source:** observed in fixture `D2`.
 `D2` reports three counterexamples: one attested `SUCCESS` and two `UNKNOWN`. A dissent
 whose outcome was never attested is weaker evidence than one known to have succeeded, and
@@ -38,6 +41,7 @@ calculation. Deliberately **not** decided in Phase 0 — it changes what the rep
 and the fixtures should drive that decision rather than an aesthetic preference.
 
 ### Concentration output is noisy for wide minorities
+
 **Source:** observed in fixture `D9`.
 A 60/40 split across 11 contexts prints an 11-row concentration table for a group that
 produced no recommendation. The rows are correct but carry no signal — a scattered

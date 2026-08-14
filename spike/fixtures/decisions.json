@@ -40,7 +40,12 @@
         { "selected": "YES", "outcome": "SUCCESS", "count": 44 },
         { "selected": "YES", "outcome": "FAILURE", "count": 2 },
         { "selected": "YES", "outcome": "UNKNOWN", "count": 3 },
-        { "selected": "NO", "outcome": "SUCCESS", "count": 1, "contextKey": "post_refactor_large_diff" }
+        {
+          "selected": "NO",
+          "outcome": "SUCCESS",
+          "count": 1,
+          "contextKey": "post_refactor_large_diff"
+        }
       ],
       "expect": [
         {
@@ -78,8 +83,18 @@
         { "selected": "SKIP", "outcome": "SUCCESS", "count": 32 },
         { "selected": "SKIP", "outcome": "FAILURE", "count": 3 },
         { "selected": "SKIP", "outcome": "UNKNOWN", "count": 2 },
-        { "selected": "RUN", "outcome": "SUCCESS", "count": 1, "contextKey": "post_dependency_bump" },
-        { "selected": "RUN", "outcome": "UNKNOWN", "count": 1, "contextKey": "post_dependency_bump" },
+        {
+          "selected": "RUN",
+          "outcome": "SUCCESS",
+          "count": 1,
+          "contextKey": "post_dependency_bump"
+        },
+        {
+          "selected": "RUN",
+          "outcome": "UNKNOWN",
+          "count": 1,
+          "contextKey": "post_dependency_bump"
+        },
         { "selected": "RUN", "outcome": "UNKNOWN", "count": 1, "contextKey": "post_config_change" }
       ],
       "expect": [
@@ -118,7 +133,12 @@
       "decisions": [
         { "selected": "YES", "outcome": "SUCCESS", "count": 43 },
         { "selected": "YES", "outcome": "FAILURE", "count": 4 },
-        { "selected": "NO", "outcome": "SUCCESS", "count": 3, "contextKey": "post_refactor_large_diff" }
+        {
+          "selected": "NO",
+          "outcome": "SUCCESS",
+          "count": 3,
+          "contextKey": "post_refactor_large_diff"
+        }
       ],
       "expect": [
         {

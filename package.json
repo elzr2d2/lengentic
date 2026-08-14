@@ -4,16 +4,35 @@
   "private": true,
   "type": "module",
   "description": "Agent Observability & Decision Intelligence Platform",
+  "packageManager": "pnpm@11.21.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13",
+    "pnpm": ">=10"
   },
   "scripts": {
-    "spike": "tsx spike/main.ts",
-    "typecheck": "tsc --noEmit"
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit && pnpm -r typecheck",
+    "check:boundaries": "depcruise platform playground --config .dependency-cruiser.cjs",
+    "check:isolation": "tsx scripts/check-isolation.ts",
+    "gates": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm check:boundaries",
+    "gates:full": "pnpm gates && pnpm check:isolation",
+    "spike": "tsx spike/main.ts"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.1",
     "@types/node": "^26.2.0",
+    "dependency-cruiser": "^17.1.0",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.6.2",
     "tsx": "^4.20.3",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.46.4"
   }
 }

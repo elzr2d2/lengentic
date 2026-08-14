@@ -22,15 +22,15 @@ Exit code is `0` when every fixture matches its declared expectation, `1` otherw
 
 ## Layout
 
-| File | Role |
-|---|---|
+| File                      | Role                                                                   |
+| ------------------------- | ---------------------------------------------------------------------- |
 | `fixtures/decisions.json` | Nine hand-written decision groups, each declaring its expected verdict |
-| `expand.ts` | Turns a declared group into decision records. No counting, no gates |
-| `aggregate.ts` | Grouping, exclusions, and metrics. Pure |
-| `gates.ts` | G1–G5, each an independent function of `(aggregate, config)`. Pure |
-| `config.ts` | Thresholds. Every one configurable |
-| `report.ts` | Text rendering. Pure |
-| `main.ts` | The only impure file: read fixtures, print, set exit code |
+| `expand.ts`               | Turns a declared group into decision records. No counting, no gates    |
+| `aggregate.ts`            | Grouping, exclusions, and metrics. Pure                                |
+| `gates.ts`                | G1–G5, each an independent function of `(aggregate, config)`. Pure     |
+| `config.ts`               | Thresholds. Every one configurable                                     |
+| `report.ts`               | Text rendering. Pure                                                   |
+| `main.ts`                 | The only impure file: read fixtures, print, set exit code              |
 
 ## The real gate
 

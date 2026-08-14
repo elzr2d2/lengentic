@@ -1,0 +1,11 @@
+packages:
+  - 'platform/*'
+  - 'playground'
+allowBuilds:
+  # tsx -> esbuild. Its postinstall resolves the platform-specific binary; without it
+  # `pnpm spike` and every tsx-based script fail to start.
+  esbuild: true
+
+# `spike/` is deliberately NOT a workspace package. It is disposable Phase 0 scaffolding
+# (MVP_PLAN.md §13) and is deleted at the end of Phase 5. Keeping it out of the workspace
+# means removing it is `rm -rf spike/` and nothing else.

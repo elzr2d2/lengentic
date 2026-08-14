@@ -85,7 +85,8 @@ function compare(
 
   const mismatches: string[] = [];
   const check = (name: string, actual: unknown, expected: unknown): void => {
-    if (actual !== expected) mismatches.push(`${name}: expected ${String(expected)}, got ${String(actual)}`);
+    if (actual !== expected)
+      mismatches.push(`${name}: expected ${String(expected)}, got ${String(actual)}`);
   };
 
   check('verdict', evaluation.verdict, expectation.verdict);
