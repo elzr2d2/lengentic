@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Integration tests point Testcontainers at their own database; this value only has to
+  # satisfy env validation at module load.
+  DATABASE_URL: postgresql://lengentic:lengentic@localhost:5432/lengentic?schema=public
+
+jobs:
+  gates:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Run every gate even when an earlier one fails. A run that stops at lint tells you
+      # nothing about whether the tests pass, which turns one fix into two round trips.
+      - run: pnpm lint
+      - if: '!cancelled()'
+        run: pnpm format:check
+      - if: '!cancelled()'
+        run: pnpm typecheck
+      - if: '!cancelled()'
+        run: pnpm test
+      - if: '!cancelled()'
+        run: pnpm build
+
+      - name: Architectural boundaries
+        if: '!cancelled()'
+        run: pnpm check:boundaries
+
+      # MVP_PLAN.md §17. Slow — a full install/build/test in a temp checkout with
+      # playground/ removed — which is why it lives here and in `pnpm gates:full` rather
+      # than in `pnpm gates` (corrections doc §9).
+      - name: Isolation
+        if: '!cancelled()'
+        run: pnpm check:isolation
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @lengentic/database build
+
+      # Testcontainers starts its own PostgreSQL. GitHub runners ship a Docker daemon, so
+      # this is the job that actually exercises the database path.
+      - run: pnpm test:integration
+
+  docker:
+    name: Docker images
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/api.Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/dashboard.Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Proves the whole stack starts, not just that the images build. The API's
+      # healthcheck is gated on a reachable database, so a healthy API here means
+      # API-to-PostgreSQL connectivity actually works.
+      - name: Start the stack and wait for health
+        run: |
+          cp .env.example .env
+          docker compose up -d --wait --wait-timeout 180
+          docker compose ps
+          curl -fsS http://localhost:3001/health
+          curl -fsS -o /dev/null http://localhost:3000/
+
+      - name: Compose logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
