@@ -125,17 +125,27 @@ function stripPlaygroundScripts(checkout: string): void {
 }
 
 function run(command: string, args: readonly string[], cwd: string) {
-  // pnpm is a .cmd shim on Windows. Resolving the shim by name beats `shell: true`, which
-  // concatenates arguments instead of escaping them (Node DEP0190) — and this script
-  // passes paths that can contain spaces.
-  const executable = process.platform === 'win32' && command === 'pnpm' ? 'pnpm.cmd' : command;
+  const timeout = 15 * 60 * 1000;
 
-  const result = spawnSync(executable, [...args], {
-    cwd,
-    encoding: 'utf8',
-    timeout: 15 * 60 * 1000,
-  });
-  return { status: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
+  // On Windows pnpm is a .cmd shim, and since the Node 18.20 spawn hardening a .cmd
+  // cannot be launched without a shell at all. Passing the whole line as one string with
+  // no args array keeps the shell and avoids DEP0190, which fires only on the
+  // shell + args combination. Safe here because every argument is a literal subcommand
+  // or flag — no interpolated paths.
+  const result =
+    process.platform === 'win32'
+      ? spawnSync([command, ...args].join(' '), { cwd, encoding: 'utf8', shell: true, timeout })
+      : spawnSync(command, [...args], { cwd, encoding: 'utf8', timeout });
+
+  // `error` is set when the spawn itself failed, and `status` is null in that case.
+  // Reporting only stdout/stderr there prints an empty failure, which is how this
+  // function hid an ENOENT until check:isolation caught it.
+  const spawnFailure = result.error ? `spawn failed: ${result.error.message}\n` : '';
+
+  return {
+    status: result.status,
+    output: `${spawnFailure}${result.stdout ?? ''}${result.stderr ?? ''}`,
+  };
 }
 
 function git(args: readonly string[]): string {
