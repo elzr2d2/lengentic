@@ -53,5 +53,22 @@ export default tseslint.config(
     rules: { 'no-console': 'off' },
   },
 
+  {
+    // Plain-JS Node scripts: hooks and config. typescript-eslint turns `no-undef` off for
+    // .ts files because the compiler already does it better, but these are not compiled,
+    // so the globals have to be declared.
+    files: ['.claude/hooks/**/*.mjs', '*.config.js', '*.cjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        URL: 'readonly',
+        module: 'writable',
+        require: 'readonly',
+        __dirname: 'readonly',
+      },
+    },
+  },
+
   prettier,
 );

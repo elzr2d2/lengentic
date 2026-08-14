@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lengentic.local/schemas/handoff.schema.json",
+  "title": "Agent Handoff Report",
+  "description": "MVP_PLAN.md §25. Validation agents return findings as JSON so a hook can check the shape mechanically instead of a human reading prose and hoping.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "owner",
+    "failure",
+    "evidence",
+    "affectedArea",
+    "recommendedNextAction",
+    "confidence"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["PASSED", "FAILED", "BLOCKED"]
+    },
+    "owner": {
+      "description": "Who acts next. Never the reporting agent itself — see §27: a Reviewer that silently fixes its own finding has destroyed the separation the role exists for.",
+      "type": "string",
+      "enum": ["architect", "builder", "validator", "reviewer"]
+    },
+    "failure": {
+      "description": "One sentence stating the defect. Empty string when status is PASSED.",
+      "type": "string"
+    },
+    "evidence": {
+      "description": "Reproduction evidence. Must be non-empty for FAILED — an unevidenced failure is an opinion, and §21 requires Validator to report evidence.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "location", "expected", "actual"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "location": { "type": "string", "minLength": 1 },
+          "expected": { "type": "string" },
+          "actual": { "type": "string" }
+        }
+      }
+    },
+    "affectedArea": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recommendedNextAction": {
+      "type": "string",
+      "minLength": 1
+    },
+    "confidence": {
+      "description": "LOW combined with FAILED is the documented trigger to consider creating the Diagnostician (§25). It is a signal, not a disclaimer.",
+      "type": "string",
+      "enum": ["HIGH", "MEDIUM", "LOW"]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "FAILED" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "evidence": { "minItems": 1 },
+          "failure": { "minLength": 1 }
+        }
+      }
+    }
+  ]
+}
