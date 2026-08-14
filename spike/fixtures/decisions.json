@@ -1,0 +1,372 @@
+{
+  "$schema": "./decisions.fixture-format.md",
+  "$comment": [
+    "Nine hand-written decision groups (corrections doc §3). Declarative by design: the",
+    "unit MVP_PLAN §11 asks you to hand-write is the *group*, not 400 individual records.",
+    "A group states its shape and its expected verdict; `expand.ts` turns it into records",
+    "by pure round-robin with no aggregation logic of its own, so the fixtures cannot",
+    "quietly agree with the code under test.",
+    "",
+    "Each of G1..G5 has exactly one dedicated suppressor, so no gate graduates into",
+    "Phase 5 unexercised:",
+    "  D1 D2 D3  CANDIDATE",
+    "  D4 -> G2   D5 -> G1   D6 -> G4   D7 -> G5   D8 -> split then G1   D9 -> G3"
+  ],
+  "groups": [
+    {
+      "id": "D1",
+      "label": "Canonical deterministic candidate",
+      "rationale": "The shape the product exists to find: dominant across many varied situations, attested successful, with the single dissent surfaced rather than averaged away.",
+      "workflowName": "demo-workflow",
+      "workflowVersion": "a1b2c3d",
+      "decisionType": "run_tests_after_code_change",
+      "contextKeyVersion": "v1",
+      "availableOptions": ["YES", "NO"],
+      "contexts": [
+        "post_edit_small_diff",
+        "post_edit_large_diff",
+        "post_refactor",
+        "post_refactor_large_diff",
+        "post_dependency_bump",
+        "post_config_change",
+        "post_test_only_change",
+        "post_docs_change",
+        "post_revert",
+        "post_merge",
+        "post_generated_code",
+        "post_lockfile_change"
+      ],
+      "decisions": [
+        { "selected": "YES", "outcome": "SUCCESS", "count": 44 },
+        { "selected": "YES", "outcome": "FAILURE", "count": 2 },
+        { "selected": "YES", "outcome": "UNKNOWN", "count": 3 },
+        { "selected": "NO", "outcome": "SUCCESS", "count": 1, "contextKey": "post_refactor_large_diff" }
+      ],
+      "expect": [
+        {
+          "workflowVersion": "a1b2c3d",
+          "verdict": "CANDIDATE",
+          "sampleCount": 50,
+          "distinctContextCount": 12,
+          "failedGates": [],
+          "counterexamples": 1
+        }
+      ]
+    },
+
+    {
+      "id": "D2",
+      "label": "Candidate with a spread minority",
+      "rationale": "Passes every gate with less margin than D1, and its three counterexamples sit in two different contexts — the escape hatch is wider than one situation.",
+      "workflowName": "demo-workflow",
+      "workflowVersion": "a1b2c3d",
+      "decisionType": "skip_redundant_lint_run",
+      "contextKeyVersion": "v1",
+      "availableOptions": ["SKIP", "RUN"],
+      "contexts": [
+        "post_edit_small_diff",
+        "post_edit_large_diff",
+        "post_refactor",
+        "post_dependency_bump",
+        "post_config_change",
+        "post_test_only_change",
+        "post_docs_change",
+        "post_revert",
+        "post_merge"
+      ],
+      "decisions": [
+        { "selected": "SKIP", "outcome": "SUCCESS", "count": 32 },
+        { "selected": "SKIP", "outcome": "FAILURE", "count": 3 },
+        { "selected": "SKIP", "outcome": "UNKNOWN", "count": 2 },
+        { "selected": "RUN", "outcome": "SUCCESS", "count": 1, "contextKey": "post_dependency_bump" },
+        { "selected": "RUN", "outcome": "UNKNOWN", "count": 1, "contextKey": "post_dependency_bump" },
+        { "selected": "RUN", "outcome": "UNKNOWN", "count": 1, "contextKey": "post_config_change" }
+      ],
+      "expect": [
+        {
+          "workflowVersion": "a1b2c3d",
+          "verdict": "CANDIDATE",
+          "sampleCount": 40,
+          "distinctContextCount": 9,
+          "failedGates": [],
+          "counterexamples": 3
+        }
+      ]
+    },
+
+    {
+      "id": "D3",
+      "label": "Candidate whose minority was always right",
+      "rationale": "Every dissent succeeded and four dominant selections failed. The gates pass and the recommendation stands — but this is the case where reading only the headline number and deleting the branch would be a mistake. The counterexample block is the whole point.",
+      "workflowName": "demo-workflow",
+      "workflowVersion": "a1b2c3d",
+      "decisionType": "auto_apply_formatter",
+      "contextKeyVersion": "v1",
+      "availableOptions": ["YES", "NO"],
+      "contexts": [
+        "post_edit_small_diff",
+        "post_edit_large_diff",
+        "post_refactor",
+        "post_refactor_large_diff",
+        "post_dependency_bump",
+        "post_config_change",
+        "post_test_only_change",
+        "post_docs_change",
+        "post_revert",
+        "post_merge"
+      ],
+      "decisions": [
+        { "selected": "YES", "outcome": "SUCCESS", "count": 43 },
+        { "selected": "YES", "outcome": "FAILURE", "count": 4 },
+        { "selected": "NO", "outcome": "SUCCESS", "count": 3, "contextKey": "post_refactor_large_diff" }
+      ],
+      "expect": [
+        {
+          "workflowVersion": "a1b2c3d",
+          "verdict": "CANDIDATE",
+          "sampleCount": 50,
+          "distinctContextCount": 10,
+          "failedGates": [],
+          "counterexamples": 3
+        }
+      ]
+    },
+
+    {
+      "id": "D4",
+      "label": "Low context diversity",
+      "rationale": "96% dominance over 50 samples that only ever saw two situations. This is the fixture the whole G2 argument rests on, and the one the published prior art would promote.",
+      "workflowName": "demo-workflow",
+      "workflowVersion": "a1b2c3d",
+      "decisionType": "retry_flaky_network_call",
+      "contextKeyVersion": "v1",
+      "availableOptions": ["YES", "NO"],
+      "contexts": ["post_edit_small_diff", "post_edit_large_diff"],
+      "decisions": [
+        { "selected": "YES", "outcome": "SUCCESS", "count": 44 },
+        { "selected": "YES", "outcome": "FAILURE", "count": 2 },
+        { "selected": "YES", "outcome": "UNKNOWN", "count": 2 },
+        { "selected": "NO", "outcome": "SUCCESS", "count": 2 }
+      ],
+      "expect": [
+        {
+          "workflowVersion": "a1b2c3d",
+          "verdict": "SUPPRESSED",
+          "sampleCount": 50,
+          "distinctContextCount": 2,
+          "failedGates": ["G2_context_diversity"],
+          "counterexamples": 2
+        }
+      ]
+    },
+
+    {
+      "id": "D5",
+      "label": "Insufficient sample, hidden behind excluded noise",
+      "rationale": "Twelve eligible decisions, unanimous, well spread. Also 20 decisions from STALE runs and 5 with no contextKey. Raw count is 37, which would clear G1 — so this fixture fails if and only if the exclusion rules actually fire. Exclusion is load-bearing here, not decoration.",
+      "workflowName": "demo-workflow",
+      "workflowVersion": "a1b2c3d",
+      "decisionType": "escalate_to_human",
+      "contextKeyVersion": "v1",
+      "availableOptions": ["YES", "NO"],
+      "contexts": [
+        "post_edit_small_diff",
+        "post_edit_large_diff",
+        "post_refactor",
+        "post_dependency_bump",
+        "post_config_change",
+        "post_test_only_change",
+        "post_docs_change",
+        "post_revert"
+      ],
+      "decisions": [
+        { "selected": "YES", "outcome": "SUCCESS", "count": 12 },
+        { "selected": "YES", "outcome": "SUCCESS", "count": 20, "runIsStale": true },
+        { "selected": "YES", "outcome": "SUCCESS", "count": 5, "contextKey": null }
+      ],
+      "expect": [
+        {
+          "workflowVersion": "a1b2c3d",
+          "verdict": "SUPPRESSED",
+          "sampleCount": 12,
+          "distinctContextCount": 8,
+          "failedGates": ["G1_sample_count"],
+          "counterexamples": 0,
+          "excluded": { "staleRun": 20, "missingContextKey": 5 }
+        }
+      ]
+    },
+
+    {
+      "id": "D6",
+      "label": "Dominant and frequently wrong",
+      "rationale": "The agent almost always picks YES and it works out only 61% of the time. High dominance here is evidence of a bad habit, not a safe default.",
+      "workflowName": "demo-workflow",
+      "workflowVersion": "a1b2c3d",
+      "decisionType": "trust_cached_dependency_graph",
+      "contextKeyVersion": "v1",
+      "availableOptions": ["YES", "NO"],
+      "contexts": [
+        "post_edit_small_diff",
+        "post_edit_large_diff",
+        "post_refactor",
+        "post_refactor_large_diff",
+        "post_dependency_bump",
+        "post_config_change",
+        "post_test_only_change",
+        "post_docs_change",
+        "post_revert",
+        "post_merge",
+        "post_generated_code",
+        "post_lockfile_change",
+        "post_ci_config_change",
+        "post_schema_change",
+        "post_rename"
+      ],
+      "decisions": [
+        { "selected": "YES", "outcome": "SUCCESS", "count": 33 },
+        { "selected": "YES", "outcome": "FAILURE", "count": 21 },
+        { "selected": "YES", "outcome": "UNKNOWN", "count": 4 },
+        { "selected": "NO", "outcome": "SUCCESS", "count": 1 },
+        { "selected": "NO", "outcome": "FAILURE", "count": 1 }
+      ],
+      "expect": [
+        {
+          "workflowVersion": "a1b2c3d",
+          "verdict": "SUPPRESSED",
+          "sampleCount": 60,
+          "distinctContextCount": 15,
+          "failedGates": ["G4_outcome_success"],
+          "counterexamples": 2
+        }
+      ]
+    },
+
+    {
+      "id": "D7",
+      "label": "Poor outcome coverage",
+      "rationale": "96% dominance and a 96.7% success rate — computed over 30 of 50 decisions. The success figure looks excellent because it is measured on a minority of the evidence.",
+      "workflowName": "demo-workflow",
+      "workflowVersion": "a1b2c3d",
+      "decisionType": "parallelize_independent_tasks",
+      "contextKeyVersion": "v1",
+      "availableOptions": ["YES", "NO"],
+      "contexts": [
+        "post_edit_small_diff",
+        "post_edit_large_diff",
+        "post_refactor",
+        "post_refactor_large_diff",
+        "post_dependency_bump",
+        "post_config_change",
+        "post_test_only_change",
+        "post_docs_change",
+        "post_revert",
+        "post_merge"
+      ],
+      "decisions": [
+        { "selected": "YES", "outcome": "SUCCESS", "count": 28 },
+        { "selected": "YES", "outcome": "FAILURE", "count": 1 },
+        { "selected": "YES", "outcome": "UNKNOWN", "count": 19 },
+        { "selected": "NO", "outcome": "SUCCESS", "count": 1 },
+        { "selected": "NO", "outcome": "UNKNOWN", "count": 1 }
+      ],
+      "expect": [
+        {
+          "workflowVersion": "a1b2c3d",
+          "verdict": "SUPPRESSED",
+          "sampleCount": 50,
+          "distinctContextCount": 10,
+          "failedGates": ["G5_outcome_coverage"],
+          "counterexamples": 2
+        }
+      ]
+    },
+
+    {
+      "id": "D8",
+      "label": "Version boundary",
+      "rationale": "Fifty samples that would clear G1 comfortably if pooled — 26 under one workflowVersion and 24 under the next. Sized deliberately so that splitting is what changes the answer. Pooled, this reports a confident number computed across two different systems.",
+      "workflowName": "demo-workflow",
+      "workflowVersion": "a1b2c3d",
+      "decisionType": "reuse_previous_plan",
+      "contextKeyVersion": "v1",
+      "availableOptions": ["YES", "NO"],
+      "contexts": [
+        "post_edit_small_diff",
+        "post_edit_large_diff",
+        "post_refactor",
+        "post_dependency_bump",
+        "post_config_change",
+        "post_test_only_change",
+        "post_docs_change",
+        "post_revert"
+      ],
+      "decisions": [
+        { "selected": "YES", "outcome": "SUCCESS", "count": 25, "workflowVersion": "a1b2c3d" },
+        { "selected": "NO", "outcome": "SUCCESS", "count": 1, "workflowVersion": "a1b2c3d" },
+        { "selected": "YES", "outcome": "SUCCESS", "count": 23, "workflowVersion": "e4f5a6b" },
+        { "selected": "NO", "outcome": "SUCCESS", "count": 1, "workflowVersion": "e4f5a6b" }
+      ],
+      "expect": [
+        {
+          "workflowVersion": "a1b2c3d",
+          "verdict": "SUPPRESSED",
+          "sampleCount": 26,
+          "distinctContextCount": 8,
+          "failedGates": ["G1_sample_count"],
+          "counterexamples": 1
+        },
+        {
+          "workflowVersion": "e4f5a6b",
+          "verdict": "SUPPRESSED",
+          "sampleCount": 24,
+          "distinctContextCount": 8,
+          "failedGates": ["G1_sample_count"],
+          "counterexamples": 1
+        }
+      ]
+    },
+
+    {
+      "id": "D9",
+      "label": "Genuinely contested decision",
+      "rationale": "60/40 across 45 well-spread samples with a 93% success rate. Both branches work. This is a decision that actually requires judgment, and the honest output is silence.",
+      "workflowName": "demo-workflow",
+      "workflowVersion": "a1b2c3d",
+      "decisionType": "request_additional_context",
+      "contextKeyVersion": "v1",
+      "availableOptions": ["YES", "NO"],
+      "contexts": [
+        "post_edit_small_diff",
+        "post_edit_large_diff",
+        "post_refactor",
+        "post_refactor_large_diff",
+        "post_dependency_bump",
+        "post_config_change",
+        "post_test_only_change",
+        "post_docs_change",
+        "post_revert",
+        "post_merge",
+        "post_generated_code"
+      ],
+      "decisions": [
+        { "selected": "YES", "outcome": "SUCCESS", "count": 25 },
+        { "selected": "YES", "outcome": "FAILURE", "count": 1 },
+        { "selected": "YES", "outcome": "UNKNOWN", "count": 1 },
+        { "selected": "NO", "outcome": "SUCCESS", "count": 15 },
+        { "selected": "NO", "outcome": "FAILURE", "count": 2 },
+        { "selected": "NO", "outcome": "UNKNOWN", "count": 1 }
+      ],
+      "expect": [
+        {
+          "workflowVersion": "a1b2c3d",
+          "verdict": "SUPPRESSED",
+          "sampleCount": 45,
+          "distinctContextCount": 11,
+          "failedGates": ["G3_dominance"],
+          "counterexamples": 18
+        }
+      ]
+    }
+  ]
+}
