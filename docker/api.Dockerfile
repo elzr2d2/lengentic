@@ -1,0 +1,52 @@
+# syntax=docker/dockerfile:1.7
+#
+# Build context is the repository root, not this directory — a pnpm workspace build needs
+# the root lockfile and workspace manifest.
+#
+#   docker build -f docker/api.Dockerfile .
+
+FROM node:24-alpine AS base
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN corepack enable
+WORKDIR /app
+
+
+FROM base AS build
+
+# Manifests first, source second. Source changes are frequent and dependency changes are
+# not, so this ordering keeps the install layer cached across ordinary edits.
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
+COPY platform/api/package.json ./platform/api/
+COPY platform/database/package.json ./platform/database/
+
+# `@lengentic/api...` resolves the package plus its workspace dependencies, so the
+# dashboard's Next and React never enter this image.
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile --filter "@lengentic/api..."
+
+COPY platform/database ./platform/database
+COPY platform/api ./platform/api
+
+# The database package must build first — it generates the Prisma client the API imports.
+RUN pnpm --filter @lengentic/database build \
+ && pnpm --filter @lengentic/api build
+
+
+FROM base AS runtime
+ENV NODE_ENV=production
+
+# Node images ship a `node` user. Running as root inside a container that accepts other
+# systems' telemetry payloads is an unnecessary blast radius.
+COPY --from=build --chown=node:node /app /app
+USER node
+
+WORKDIR /app/platform/api
+EXPOSE 3001
+
+# `docker compose` polls /health, which returns 503 when the database is unreachable, so
+# an API that starts before Postgres is ready reports unhealthy rather than healthy-but-broken.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=5 \
+  CMD node -e "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "dist/main.js"]

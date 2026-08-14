@@ -48,14 +48,44 @@ produced no recommendation. The rows are correct but carry no signal — a scatt
 minority is a single finding ("the boundary is not context-shaped"), not eleven. Consider
 collapsing to a scatter/concentration summary when no single context exceeds some share.
 
+## Discovered during Phase 1 (2026-08-14)
+
+### Slim the API runtime image
+
+**Source:** `docker/api.Dockerfile`.
+The runtime stage copies the whole built workspace, dev dependencies included, because
+`pnpm deploy` needs `inject-workspace-packages=true` and that setting replaces local
+symlinks with copies, which degrades the day-to-day dev loop. The dashboard image is
+already lean via Next's `output: 'standalone'`. Revisit if image size becomes a real
+constraint; it is not one for a local-only MVP.
+
+### Upgrade to the next tooling majors
+
+**Source:** pnpm reported newer majors during install.
+ESLint 10, TypeScript 7, and dependency-cruiser 18 are all available. TypeScript 7 is the
+Go port, and NestJS, Prisma, and typescript-eslint have not all landed support. Deferred
+deliberately: a portfolio project that cannot build is worse than one on a
+six-month-old compiler. Revisit once `typescript-eslint` ships a TS 7 parser.
+
 ---
 
-## Environment prerequisites (not backlog — blocking for Phase 1)
+## Environment prerequisites (not backlog — blocking)
 
-- **Node.js is v21.0.0 on this machine.** It is end-of-life and not LTS. `MVP_PLAN.md` §6
-  locks "Node.js LTS", and pnpm refuses to run below v22.13. Phase 1 cannot start until
-  Node 22 LTS or 24 LTS is installed. The Phase 0 spike runs on v21 via `npm run spike`
-  and is unaffected.
-- **pnpm is installed but unusable** until the Node upgrade lands. `corepack enable pnpm`
-  additionally requires an elevated shell on this machine (`C:\Program Files\nodejs` is not
-  user-writable).
+- ~~**Node.js v21.0.0**~~ — resolved 2026-08-14. Node 24.19.0 LTS and pnpm 11.21.0 are
+  installed and the whole toolchain runs on them.
+
+- **Docker is not installed, and neither is WSL2.** This blocks four `MVP_PLAN.md` §36
+  checkboxes — "PostgreSQL starts", "API reaches PostgreSQL", "`docker compose up`
+  succeeds" — plus `pnpm test:integration`, since Testcontainers needs a daemon.
+
+  Docker Desktop on Windows requires WSL2 or Hyper-V, so this is an elevated install plus
+  a reboot, not a package fetch:
+
+  ```
+  wsl --install
+  winget install Docker.DockerDesktop
+  ```
+
+  Everything else in Phase 1 is verified. `docker-compose.yml` and both Dockerfiles are
+  written but **have never been executed** — treat them as unreviewed until
+  `docker compose up` runs once.

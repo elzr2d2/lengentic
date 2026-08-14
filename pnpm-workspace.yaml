@@ -11,6 +11,12 @@ allowBuilds:
   # Prisma CLI and query engine.
   prisma: true
   '@prisma/engines': true
+  # Testcontainers transitives. All three postinstalls are optional native accelerations
+  # for the Docker-over-SSH transport, which we do not use — the local daemon socket needs
+  # none of them. Declined rather than left unanswered so `pnpm install` stays quiet.
+  cpu-features: false
+  protobufjs: false
+  ssh2: false
 minimumReleaseAgeExclude:
   - '@nestjs/common@11.2.1'
   - '@nestjs/core@11.2.1'

@@ -1,0 +1,72 @@
+name: lengentic
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lengentic}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lengentic}
+      POSTGRES_DB: ${POSTGRES_DB:-lengentic}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - lengentic
+    healthcheck:
+      # `pg_isready` alone reports true while the init scripts are still running, so the
+      # database name is checked explicitly.
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-lengentic} -d ${POSTGRES_DB:-lengentic}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_PORT: 3001
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      STALE_RUN_THRESHOLD_MS: ${STALE_RUN_THRESHOLD_MS:-900000}
+      # Host is the service name inside the compose network, not localhost.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lengentic}:${POSTGRES_PASSWORD:-lengentic}@postgres:5432/${POSTGRES_DB:-lengentic}?schema=public
+    ports:
+      - '3001:3001'
+    networks:
+      - lengentic
+    depends_on:
+      postgres:
+        # Not `service_started`. The API validates its environment and connects at boot, so
+        # starting it against a Postgres that is merely running produces a restart loop.
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/dashboard.Dockerfile
+      args:
+        # Browser-resolved, so it must be the host address even though the API is a
+        # sibling container.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3001}
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    networks:
+      - lengentic
+    depends_on:
+      api:
+        # The status page renders "API unreachable" rather than failing, so this is a
+        # convenience for the first page load, not a correctness requirement.
+        condition: service_started
+
+networks:
+  lengentic:
+    driver: bridge
+
+volumes:
+  postgres-data:

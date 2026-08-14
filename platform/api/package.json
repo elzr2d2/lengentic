@@ -9,7 +9,8 @@
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.mts"
   },
   "dependencies": {
     "@lengentic/database": "workspace:*",
@@ -33,6 +34,8 @@
     "supertest": "^7.2.2",
     "typescript": "^5.9.2",
     "unplugin-swc": "^1.5.7",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "@testcontainers/postgresql": "^12.1.0",
+    "testcontainers": "^12.1.0"
   }
 }

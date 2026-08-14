@@ -5,5 +5,12 @@
     // which sit outside src/ and would otherwise fail TS6059 during typecheck.
     "rootDir": "./src"
   },
-  "exclude": ["node_modules", "dist", "test", "**/*.spec.ts", "vitest.config.mts"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test",
+    "**/*.spec.ts",
+    "vitest.config.mts",
+    "vitest.integration.config.mts"
+  ]
 }

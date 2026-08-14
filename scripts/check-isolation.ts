@@ -125,10 +125,14 @@ function stripPlaygroundScripts(checkout: string): void {
 }
 
 function run(command: string, args: readonly string[], cwd: string) {
-  const result = spawnSync(command, [...args], {
+  // pnpm is a .cmd shim on Windows. Resolving the shim by name beats `shell: true`, which
+  // concatenates arguments instead of escaping them (Node DEP0190) — and this script
+  // passes paths that can contain spaces.
+  const executable = process.platform === 'win32' && command === 'pnpm' ? 'pnpm.cmd' : command;
+
+  const result = spawnSync(executable, [...args], {
     cwd,
     encoding: 'utf8',
-    shell: process.platform === 'win32',
     timeout: 15 * 60 * 1000,
   });
   return { status: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };

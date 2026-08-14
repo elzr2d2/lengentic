@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+**/build
+**/.next
+**/coverage
+**/src/generated
+.git
+.github
+.claude
+spike
+docs
+playground
+*.md
+.env
+.env.*
+!.env.example

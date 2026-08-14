@@ -22,7 +22,11 @@
     "check:isolation": "tsx scripts/check-isolation.ts",
     "gates": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm check:boundaries",
     "gates:full": "pnpm gates && pnpm check:isolation",
-    "spike": "tsx spike/main.ts"
+    "spike": "tsx spike/main.ts",
+    "test:integration": "pnpm -r test:integration",
+    "db:migrate": "pnpm --filter @lengentic/database db:migrate",
+    "db:reset": "pnpm --filter @lengentic/database db:reset",
+    "db:seed": "pnpm --filter @lengentic/database db:seed"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
