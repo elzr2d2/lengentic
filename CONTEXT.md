@@ -142,6 +142,14 @@ checked by a hook. `owner` is who acts **next**, never the reporting agent.
 **Backlog** — `BACKLOG.md`. Where anything valuable and unnecessary for the current DoD
 goes, the moment it appears. With its `Source`, or it is unactionable later.
 
+**ADR** — `docs/decisions/`. A decision that is settled, costly to reverse, and **blocks
+nothing** — the one case the plan, the `OD-*` nodes and this file all leave uncovered. Every
+record names what would show it was wrong. Never edited; superseded.
+
+**Research note** — `docs/research/`. External facts with a `source`, a `researched` date
+and a **`review-by`** date. Past `review-by` a note is stale: revalidate, archive, or delete.
+A note enters a session only because something pointed at it.
+
 ---
 
 ## How the code is shaped

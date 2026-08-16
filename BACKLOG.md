@@ -948,6 +948,45 @@ moving a rule behind a pointer trades context load for the risk that it stops be
 context the whole time — that is evidence of dilution, and dilution is the argument for
 cutting. Or `p7.readme`, where the file gets a stranger-facing pass anyway.
 
+### `agent-activation.json` says "Disjoint by construction" and two pairs are not
+
+**Source:** role-existence audit of the nine agents, 2026-08-16.
+
+`$responsibilitiesComment` opens with "Disjoint by construction." Two pairs are not:
+
+```text
+runner    [command-execution, raw-evidence, exit-codes]
+validator [command-execution, raw-evidence, exit-codes, adversarial-cases,
+           false-green-detection]          -> runner is a strict SUBSET of validator
+
+tester    [adversarial-cases, false-green-detection, negative-coverage]
+validator                                  -> two of tester's three are validator's too
+```
+
+`scripts/lanes/selftest.ts:383` scenario 11 is the only disjointness assertion, and it
+compares **reviewer against watchdog only**. Nothing checks the other thirty-four pairs, so
+the sentence claims a property the harness does not test.
+
+**The overlap is correct and must stay.** Three lines above, `$capabilitiesComment` explains
+why: capabilities resolve to "the FIRST agent file that exists", so
+`execute: [runner, validator]` and `adversarial-test: [tester, validator]` make `validator`
+the deliberate fallback for both. Deleting `runner.md` and `tester.md` collapses the roster
+to §21's four-agent shape with no other edit — which is exactly the reversibility
+`docs/decisions/0001-nine-agent-roster.md` relies on for its detection condition.
+
+So the defect is the sentence, not the data. "Disjoint by construction" should read as what
+is actually true: reviewer and watchdog are asserted disjoint; validator deliberately
+supersets runner and tester so the roster can collapse without a rewrite. As written, a
+future reader who takes the comment at face value could "fix" the overlap and silently
+remove the fallback.
+
+Documentation only — no behaviour changes either way. Deferred because it is outside the
+review that found it, not because it is uncertain.
+
+**Trigger:** the next edit to `.claude/rules/agent-activation.json` for any reason, or the
+`reflector` pass that evaluates whether the nine-agent roster earned its keep — that pass
+reads this exact block.
+
 ---
 
 ## Environment prerequisites (not backlog — blocking)
