@@ -67,6 +67,42 @@ Go port, and NestJS, Prisma, and typescript-eslint have not all landed support. 
 deliberately: a portfolio project that cannot build is worse than one on a
 six-month-old compiler. Revisit once `typescript-eslint` ships a TS 7 parser.
 
+### Teach Validator the mutation check
+
+**Source:** §35 harness validation run with live agent dispatch (2026-08-15).
+
+Validator correctly identified a false-positive test — `harness.controller.spec.ts` had
+re-declared its own copy of the schema under test, so it stayed green while the endpoint
+was broken. Validator then authored a replacement contract test that had **the same defect
+in a different shape**: it drove `?a=1e308`, which the parameter regex rejects before the
+code under test is reached, and its oracle was `if (status === 200) expect a number; else
+expect 400` — an assertion satisfied by both branches of the behavior it was testing.
+Deleting the guard it claimed to cover left all 19 tests green. Verified mechanically.
+
+`.claude/agents/validator.md` already says "detect false-positive tests." That is the
+_goal_, not a _method_, and the goal alone did not prevent Validator from writing one.
+The concrete technique is a mutation check: **would this test still pass if the code under
+test were deleted?** Also worth stating that an oracle accepting two different outcomes is
+not pinning a contract.
+
+Deferred because §36 asks that agent responsibilities be _defined_, and they are. This
+sharpens how well one of them is discharged, which is a real improvement and not a
+Definition-of-Done item. Do not fix by adding a rule to every agent file — it belongs to
+the role that writes tests.
+
+### Rename `zodBody` — it is used at `@Query` sites too
+
+**Source:** Reviewer finding, §35 harness validation run (2026-08-15).
+
+`platform/api/src/common/zod-validation.pipe.ts:36` exports `zodBody`, and its docstring
+says controllers should read as `@Body(zodBody(EventBatchSchema))`. The disposable §35
+endpoint used it at a `@Query` site, where it works correctly but the name is a lie.
+
+This is permanent Phase 1 code and Phase 2's ingestion controllers will copy whatever
+precedent it sets. Options: rename to `zodPipe`, or keep `zodBody` and add a `zodQuery`
+alias so the call site reads honestly. Not urgent — nothing is wrong at runtime — but it
+gets more expensive to change once §41's ingestion endpoints exist.
+
 ---
 
 ## Environment prerequisites (not backlog — blocking)
