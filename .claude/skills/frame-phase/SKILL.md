@@ -53,6 +53,11 @@ question still open belongs to a **later** round, not this one.
 A running sub-agent exploration is an unsettled prerequisite — only the questions downstream
 of it wait. Ask the rest of the frontier now.
 
+When a round does **not** converge and the decision is **one-way** — the wire contract under
+`platform/shared/schema/**`, the platform↔playground boundary, or a product claim — name it
+and offer the council. Never convene it yourself. Architect is the cheaper rung and runs
+first; the council is eleven dispatches, and the user decides whether to spend them.
+
 ## 4. Land the answers where they will be read
 
 An answer that lives only in this conversation is an answer nobody has next session.
