@@ -29,7 +29,14 @@ COPY platform/database ./platform/database
 COPY platform/api ./platform/api
 
 # The database package must build first — it generates the Prisma client the API imports.
-RUN pnpm --filter @lengentic/database build \
+#
+# `prisma.config.ts` resolves DATABASE_URL when the config loads, and `.dockerignore` keeps
+# .env out of the build context on purpose. `prisma generate` reads the schema and never
+# opens a connection, so a syntactically valid placeholder is enough. It is set on the RUN
+# rather than as ENV so it stays out of the image metadata and cannot be mistaken at runtime
+# for a real target — compose supplies the real URL to the runtime stage.
+RUN DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder?schema=public" \
+    pnpm --filter @lengentic/database build \
  && pnpm --filter @lengentic/api build
 
 

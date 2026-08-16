@@ -16,6 +16,23 @@ FROM base AS build
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
 COPY platform/dashboard/package.json ./platform/dashboard/
 
+# Hoisted, and configured rather than passed as a flag.
+#
+# pnpm's default isolated layout puts every package behind a symlink in node_modules/.pnpm.
+# Next's standalone tracer records those symlinked paths without copying everything they
+# point at — `@swc/helpers`, which next/dist/server/require-hook.js resolves at runtime
+# rather than statically, is dropped, and the container restart-loops on MODULE_NOT_FOUND.
+# A flat node_modules removes the indirection the tracer mishandles.
+#
+# It has to be config, not `pnpm install --node-linker=hoisted`. pnpm 11 verifies dependency
+# state before running any script, and a flag leaves that verification still expecting the
+# isolated layout: it reported the hoisted tree as "installed by a different package manager"
+# and silently re-installed the whole workspace (`+179 -593`) before `next build` started,
+# restoring the symlink farm and reintroducing the crash. The verification is also what
+# dragged root devDependencies into this stage, defeating the filtered install above.
+ENV NPM_CONFIG_NODE_LINKER=hoisted
+ENV NPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
+
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile --filter "@lengentic/dashboard..."
 
