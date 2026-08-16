@@ -1336,7 +1336,7 @@ prohibits database, HTTP, NestJS, UI, and agents — not a package manifest. `ts
 | ----------- | ----------------------- | ---------- | ----- |
 | `D1`–`D9`   | Deterministic candidate | Phase 0    | 9     |
 | `D10`–`D11` | Deterministic candidate | Phase 5a   | 2     |
-| `R1`–`R4`   | Repeated failed action  | Phase 5a   | 4     |
+| `R1`–`R5`   | Repeated failed action  | Phase 5a   | 5     |
 
 Phase 0 defines **all five gates** and carries a dedicated suppressor for each, so no gate
 graduates into Phase 5 unexercised.
@@ -1768,7 +1768,7 @@ mode that kills a recommendations product.
 | 1   | Package + types only       | Builder | `platform/analysis-engine` exists; `spike/types.ts` graduates. **No logic.** |
 | 2   | Negative fixture suite     | Builder | Gate expectation grid transcribed as data; `D10` fails two gates at once     |
 | 3   | Deterministic candidate    | Builder | §18 aggregation, §19 gates, §21 output shape                                 |
-| 4   | Repeated failed action     | Builder | §20.2 conditions only; `R1`–`R4` fixtures pass, and `R4` emits               |
+| 4   | Repeated failed action     | Builder | §20.2 conditions only; `R1`–`R5` pass, and `R4` and `R5` both emit           |
 | 5   | Persistence + trigger + UI | Builder | Fingerprint dedupe, `POST /v1/analysis/run`, Dashboard rendering             |
 
 Packages 1–4 are **5a** and run before Phase 2. Package 5 is **5b** and stays after Phase 4.
@@ -1863,17 +1863,30 @@ invents a finding out of missing data; reporting it as a pass is the lie §2 for
 it emits when all five of its own conditions hold and is otherwise silent. There is no gate
 grid for `R1`–`R4`, and writing one would imply a suppression mechanism that does not exist.
 
-| Fixture | Shape                                                          | Expected                      |
-| ------- | -------------------------------------------------------------- | ----------------------------- |
-| `R1`    | 10 identical actions, all SUCCESS                              | silent — no failure at all    |
-| `R2`    | 2 consecutive failures, same target, threshold 3               | silent — below threshold      |
-| `R3`    | 4 failures, a different `inputFingerprint` each time           | silent — progress, not a loop |
-| `R4`    | 3 consecutive failures, same `toolName` and `inputFingerprint` | **EMIT** — one recommendation |
+| Fixture | Shape                                                          | Expected                            |
+| ------- | -------------------------------------------------------------- | ----------------------------------- |
+| `R1`    | 10 identical actions, all SUCCESS                              | silent — no failure at all          |
+| `R2`    | 2 consecutive failures, same target, threshold 3               | silent — below threshold            |
+| `R3`    | 4 failures, a different `inputFingerprint` each time           | silent — progress, not a loop       |
+| `R4`    | 3 consecutive failures, same `toolName` and `inputFingerprint` | **EMIT** — one recommendation       |
+| `R5`    | as `R4`, with an unrelated tool's SUCCESS interleaved          | **EMIT** — the streak is per-target |
 
 **`R4` is required, not optional.** `R1`, `R2` and `R3` all expect silence, so an
 implementation of §20.2 that is literally `return []` passes all three and the analyzer
 graduates into 5b unexercised. `D1`–`D3` already carry the positive path for the
 deterministic analyzer; `R` had no equivalent until `R4`.
+
+**`R5` fixes the scope of "consecutive".** §20.2 says _"at least three CONSECUTIVE attempts,
+no successful attempt between them"_ and never says consecutive **in what**. Two readings:
+consecutive within the subsequence sharing `(runId, toolName, inputFingerprint)`, or
+consecutive in the run's whole timeline. `R1`–`R4` return the same answer under both, so the
+choice is invisible and a wave-3 Builder would settle it silently.
+
+The subsequence reading is correct and `R5` binds it: under the timeline reading, an
+unrelated concurrent tool succeeding between two attempts suppresses a genuine repeated
+failure, which makes the finding depend on interleaving — on scheduling noise rather than on
+agent behaviour. A product that goes quiet because something else happened to succeed nearby
+is worse than one that stays quiet on principle.
 
 ## The fixture wave lands green, and still lands before the positive path
 
@@ -1947,14 +1960,16 @@ no `pnpm test:integration` — nothing in 5a touches a database.
 - [ ] Phase 0's pure functions and fixtures live in `platform/analysis-engine`.
 - [ ] `platform/analysis-engine` imports nothing from `platform/api`, `platform/database`,
       `platform/dashboard` or `playground`, and `pnpm check:boundaries` proves it.
-- [ ] All eleven `D` fixtures and four `R` fixtures pass.
+- [ ] All eleven `D` fixtures and five `R` fixtures pass.
 - [ ] Every suppression names **every** failing gate, not the first one to fire — `D10`
       fails two gates and both are named.
-- [ ] `R4` emits. An implementation of §20.2 that returns nothing fails the suite.
+- [ ] `R4` and `R5` both emit. An implementation of §20.2 that returns nothing fails
+      the suite, and one that scopes the streak to the whole timeline fails `R5`.
 - [ ] `counterexamples` is present on every deterministic recommendation, empty or not.
 - [ ] Counterexamples include dominant-option failures **and** minority-option successes.
 - [ ] `minorityContextConcentration` is computed.
-- [ ] `attestedSuccessRate` is `null`, never `0`, when no outcomes are attested.
+- [ ] `dominantOptionAttestedSuccessRate` is `null`, never `0`, when the dominant
+      option has no attested outcomes — `D11` is the fixture that takes that path.
 - [ ] Each expected value traces to a table in this document, not to `pnpm spike` output.
 
 **Human approval gate. Phase 2 begins only after it.**

@@ -97,6 +97,26 @@ module.exports = {
       to: { path: '^(platform/(api|database|dashboard)|playground)/' },
     },
     {
+      name: 'engine-src-not-to-test-material',
+      severity: 'error',
+      comment:
+        'Production code that imports its own fixtures or tests ships test data and makes ' +
+        'the suite unable to fail independently of it.',
+      from: { path: '^platform/analysis-engine/src/' },
+      to: { path: '^platform/analysis-engine/(fixtures|test)/' },
+    },
+    {
+      name: 'engine-fixtures-not-to-analyzers',
+      severity: 'error',
+      comment:
+        'The fixture wave imports the engine TYPES and never its BEHAVIOUR. An expectation ' +
+        'that can reach the analyzer can be sourced from it, which is the exact provenance ' +
+        'failure MVP_PLAN_V3 Phase 5 exists to prevent. Today this holds only because the ' +
+        'analyzer modules do not exist yet; from wave 3 it needs a rule.',
+      from: { path: '^platform/analysis-engine/fixtures/' },
+      to: { path: '^platform/analysis-engine/src/(aggregate|gates|candidate|repeated-failed)' },
+    },
+    {
       name: 'nothing-to-spike',
       severity: 'error',
       comment:
