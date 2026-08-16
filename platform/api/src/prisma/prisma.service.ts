@@ -21,8 +21,23 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * Verifies the connection, rather than reporting one it never made.
+   *
+   * `$connect()` resolves even when the target database is unreachable — under Prisma 7.9.1
+   * with `@prisma/adapter-pg` it opens the client without proving anything answers, and does
+   * not reject for an unreachable host, a non-existent domain, a malformed URL or wrong
+   * credentials. Only a round-trip query establishes reachability.
+   *
+   * The failure is allowed to propagate. `docker-compose.yml:44-46` documents the API as
+   * validating its environment and connecting at boot, so that starting it against a
+   * Postgres that is merely running produces a restart loop. That contract requires a loud
+   * failure here. `isReachable()` below is the opposite case on purpose: steady-state health
+   * reports the state instead of failing on it.
+   */
   async onModuleInit(): Promise<void> {
     await this.client.$connect();
+    await this.client.$queryRaw`SELECT 1`;
     this.logger.log('Database connection established');
   }
 
