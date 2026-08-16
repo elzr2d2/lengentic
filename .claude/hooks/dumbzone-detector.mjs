@@ -9,15 +9,26 @@
  *
  * Wired to UserPromptSubmit. It measures the *actual* prompt size from the transcript's most
  * recent assistant turn (input + cache tokens) rather than guessing from characters, and it
- * only warns — it never blocks a prompt. Thresholds are env-overridable so behaviour can be
- * tuned without editing code:
- *   DUMBZONE_WARN_AT   (default 100000)  approaching the dumb zone
- *   DUMBZONE_LIMIT_AT  (default 150000)  deep in the dumb zone
+ * only warns — it never blocks a prompt. A hook that can fail a task is a hook that gets
+ * disabled, and the Coordinator legitimately runs long integrations.
+ *
+ * The three thresholds are Pocock's published numbers, not invented ones: the smart zone is
+ * the first ~100K tokens "no matter how large the window claims to be"; he starts handing off
+ * at ~120K; the dumb zone "commonly begins around 125K-150K tokens - though this is debated".
+ * A 1M window does not move them — it ships more dumb zone. Env-overridable so behaviour can
+ * be tuned without editing code:
+ *   DUMBZONE_WARN_AT     (default 100000)  leaving the smart zone
+ *   DUMBZONE_HANDOFF_AT  (default 120000)  write the handoff now
+ *   DUMBZONE_LIMIT_AT    (default 150000)  deep in the dumb zone
+ *
+ * The 120K tier names `/session-handoff` because a nudge that names its command gets used.
+ * That skill name and this string are one contract — change one, change the other.
  */
 
 import { readFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 
 const WARN_AT = Number(process.env.DUMBZONE_WARN_AT ?? 100_000);
+const HANDOFF_AT = Number(process.env.DUMBZONE_HANDOFF_AT ?? 120_000);
 const LIMIT_AT = Number(process.env.DUMBZONE_LIMIT_AT ?? 150_000);
 
 /** Only the tail of the transcript is read: the answer is always in the last few records. */
@@ -106,24 +117,37 @@ try {
     const limitK = Math.floor(LIMIT_AT / 1000);
     const chart = gauge(tokens);
 
-    const [systemMessage, additionalContext] =
-      tokens >= LIMIT_AT
-        ? [
-            `🔴 Dumb zone: ~${k}K tokens of context. Reasoning quality degrades sharply past ` +
-              `~${limitK}K (Matt Pocock's 'dumb zone'). Strongly consider /clear or a fresh ` +
-              `session before continuing.\n${chart}`,
-            `CONTEXT WARNING: this session is deep in the 'dumb zone' (~${k}K tokens). ` +
-              `Instruction-following and code quality degrade here. Prefer finishing or handing ` +
-              `off the current task and suggest the human /clear or start a fresh session rather ` +
-              `than beginning new work in this window.`,
-          ]
-        : [
-            `🟡 Approaching the dumb zone: ~${k}K tokens of context (degradation typically ` +
-              `begins ~${limitK}K). Good moment to wrap up this task or /clear before the next ` +
-              `one.\n${chart}`,
-            `CONTEXT NOTE: session context is ~${k}K tokens, nearing the dumb-zone threshold. ` +
-              `Keep scope tight; a /clear between tasks will keep responses sharp.`,
-          ];
+    let systemMessage;
+    let additionalContext;
+
+    if (tokens >= LIMIT_AT) {
+      systemMessage =
+        `🔴 Dumb zone: ~${k}K tokens of context. Reasoning quality degrades sharply past ` +
+        `~${limitK}K (Matt Pocock's 'dumb zone'). Run /session-handoff, then /clear.\n${chart}`;
+      additionalContext =
+        `CONTEXT WARNING: this session is deep in the 'dumb zone' (~${k}K tokens). ` +
+        `Instruction-following and code quality degrade here. Do not begin new work in this ` +
+        `window. Finish or hand off what is in flight: invoke the \`session-handoff\` skill to ` +
+        `write the continuation brief, then tell the human to /clear.`;
+    } else if (tokens >= HANDOFF_AT) {
+      systemMessage =
+        `🟠 Hand off now: ~${k}K tokens of context. This is where Pocock stops trusting the ` +
+        `window (dumb zone ~${limitK}K). Run /session-handoff, then /clear.\n${chart}`;
+      additionalContext =
+        `CONTEXT NOTE: session context is ~${k}K tokens — the point where a handoff is cheaper ` +
+        `than pushing on. If the current task is not one step from done, invoke the ` +
+        `\`session-handoff\` skill now and tell the human to /clear; the next session picks it ` +
+        `up automatically from .artifacts/handoffs/session/.`;
+    } else {
+      systemMessage =
+        `🟡 Leaving the smart zone: ~${k}K tokens of context (hand off ~${Math.floor(
+          HANDOFF_AT / 1000,
+        )}K, dumb zone ~${limitK}K). Good moment to wrap up this task or /clear before the ` +
+        `next one.\n${chart}`;
+      additionalContext =
+        `CONTEXT NOTE: session context is ~${k}K tokens, past the smart zone. Keep scope tight; ` +
+        `a /clear between tasks will keep responses sharp.`;
+    }
 
     process.stdout.write(
       JSON.stringify({
