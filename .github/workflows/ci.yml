@@ -47,6 +47,14 @@ jobs:
         if: '!cancelled()'
         run: pnpm check:boundaries
 
+      # The dispatch rules' own scenarios — eligibility gate, path ownership, handoff
+      # validation, integration order, and the PreToolUse hook run as a real process.
+      # Deliberately outside `pnpm gates`: it reads `.claude/`, and the product gate has to
+      # keep working with the engineering harness deleted (MVP_PLAN_V3.md §9).
+      - name: Lane workflow scenarios
+        if: '!cancelled()'
+        run: pnpm check:lanes
+
       # MVP_PLAN.md §17. Slow — a full install/build/test in a temp checkout with
       # playground/ removed — which is why it lives here and in `pnpm gates:full` rather
       # than in `pnpm gates` (corrections doc §9).

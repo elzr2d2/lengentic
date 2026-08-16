@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "The single source of truth for WHICH agents run and WHY. MVP_PLAN_V3.md §9 forbids running Architect, Validator and Reviewer after every minor edit; this file is that rule made mechanical. `pnpm oracle packet` and `pnpm lanes decide` both read it, so the routing policy has one definition instead of one per prompt.",
+
+  "$capabilitiesComment": "Capabilities, not agent names. Each list is preference-ordered and resolved to the FIRST agent file that exists under .claude/agents/. That is how this repository tolerates two legitimate role shapes at once: MVP_PLAN_V3.md §21 merges running and adversarial testing into `validator`, while `runner.md` and `tester.md` split them. Resolving by capability means neither shape creates a second owner for the same responsibility.",
+  "capabilities": {
+    "architecture": ["architect"],
+    "implement": ["builder"],
+    "execute": ["runner", "validator"],
+    "adversarial-test": ["tester", "validator"],
+    "review": ["reviewer"],
+    "integrity-scan": ["watchdog"],
+    "diagnose": ["diagnostician"],
+    "retrospective": ["reflector"]
+  },
+
+  "$classesComment": "Change class decides the agent chain. Agents are conditional tools, not a mandatory pipeline — a deterministic rename that runs the full chain pays four dispatches to learn what `pnpm gates` already knew.",
+  "classes": {
+    "mechanical": {
+      "required": ["implement", "execute"],
+      "optional": ["review"],
+      "rationale": "Deterministic and non-behavioral — a rename, a config move, a doc correction. The gates decide it. Nothing here has an oracle to falsify."
+    },
+    "feature": {
+      "required": ["implement", "execute", "review"],
+      "optional": ["integrity-scan"],
+      "rationale": "Normal implementation against a settled contract. Review catches the coupling that tooling cannot express."
+    },
+    "behavior": {
+      "required": ["implement", "execute", "adversarial-test", "review"],
+      "optional": ["integrity-scan"],
+      "rationale": "Externally visible behavior, assertions, fixtures or the test oracle changed. Adversarial validation is required precisely here — this is where a green that lies gets written."
+    },
+    "contract": {
+      "required": ["architecture", "implement", "execute", "review", "integrity-scan"],
+      "optional": ["adversarial-test"],
+      "rationale": "Wire schema, shared interface, migration, or another shared write surface. Everything downstream inherits the mistake, so this is the one class that is worth the full chain."
+    },
+    "diagnosis": {
+      "required": ["diagnose", "implement", "execute"],
+      "optional": ["review"],
+      "rationale": "A reproduced failure whose cause is not obvious. Diagnostician evidences the cause and Builder applies the bounded fix — a fix applied before the cause is understood is a guess, and a guess that turns green is the worst outcome available."
+    }
+  },
+
+  "$activationComment": "When an OPTIONAL capability actually fires. An optional agent that runs unconditionally is a required agent with worse documentation.",
+  "activationConditions": {
+    "adversarial-test": [
+      "expected behavior, assertions, fixtures or a test oracle changed",
+      "a new externally visible behavior was added",
+      "failure classification changed"
+    ],
+    "integrity-scan": [
+      "the diff touches test files and product files together",
+      "a lane is being integrated (global integration gate)",
+      "risk is high, or the change touches a shared write surface"
+    ],
+    "diagnose": [
+      "a handoff came back BLOCKED with the cause unclear",
+      "a reproduced failure survived one bounded repair attempt"
+    ],
+    "architecture": [
+      "two readings of the plan lead to materially different work",
+      "the change defines an interface other code will be built against"
+    ],
+    "retrospective": [
+      "the same mistake pattern has recurred at least twice",
+      "a batch of lanes has completed and its telemetry is on disk"
+    ]
+  },
+
+  "$responsibilitiesComment": "Disjoint by construction. Watchdog and Reviewer are the pair most often collapsed into one call, and collapsing them is how boundary violations get argued about as style. Watchdog answers 'is this allowed'; Reviewer answers 'is this good'. Neither answer substitutes for the other, and `pnpm lanes selftest` asserts the two sets stay disjoint.",
+  "responsibilities": {
+    "architect": ["architecture", "interface-design", "plan-ambiguity", "architecture-risk"],
+    "builder": ["implementation", "refactoring", "evidenced-repair", "migrations"],
+    "runner": ["command-execution", "raw-evidence", "exit-codes"],
+    "validator": [
+      "command-execution",
+      "raw-evidence",
+      "exit-codes",
+      "adversarial-cases",
+      "false-green-detection"
+    ],
+    "tester": ["adversarial-cases", "false-green-detection", "negative-coverage"],
+    "reviewer": ["correctness", "maintainability", "architecture-fit", "scope-vs-dod"],
+    "watchdog": [
+      "path-ownership",
+      "shared-state",
+      "irreversible-operations",
+      "parallelism-safety",
+      "qa-integrity"
+    ],
+    "diagnostician": ["root-cause", "failure-classification", "repair-recommendation"],
+    "reflector": ["token-usage", "coordination-overhead", "rework", "process-change"]
+  },
+
+  "$controlPlaneComment": "MVP_PLAN_V3.md §9: 'The main Claude Code session is the Coordinator. Do not create a coordinator agent.' Conductor and Integrator are therefore roles the main session holds, not agent files. Creating either as an agent would put a subagent in charge of dispatching subagents, and the session that owns the human approval gate would no longer be the session that sees the work.",
+  "controlPlane": {
+    "conductor": "main-session",
+    "integrator": "main-session",
+    "globalWatchdog": "watchdog",
+    "reflector": "reflector"
+  }
+}

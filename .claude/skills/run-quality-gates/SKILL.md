@@ -16,7 +16,13 @@ an agent to verify what a script can verify.
 | Before claiming a task complete | `pnpm gates`                  |
 | Before a commit, or in CI       | `pnpm gates:full`             |
 
-`pnpm gates` runs lint, format:check, typecheck, test, build, and check:boundaries.
+`pnpm gates` runs lint, format:check, typecheck, test, build, check:boundaries, and
+check:integrity.
+
+`pnpm check:integrity` is the QA-integrity scan — focused tests, hidden skips, arbitrary
+sleeps, swallowed exceptions, assertions that cannot fail, mocked collaborators in
+integration tests. Its `BLOCK` hits fail the gate; its `WARN` hits are prompts to look, and
+`watchdog` is the role that looks.
 
 `pnpm gates:full` adds `check:isolation`, which rebuilds the platform in a temp checkout
 with `playground/` removed. It is slow by design and is scoped to the commit-ready tier

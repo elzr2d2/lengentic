@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lengentic.local/schemas/lane-handoff.schema.json",
+  "title": "Development Lane Handoff",
+  "description": "What a lane returns to the Integrator. Distinct from handoff.schema.json, which is a validation agent's FINDING about someone else's work; this is a lane's report on its own. A lane that cannot fill this in has not finished, whatever its prose says. `evidence`, `tests` and `artifacts` are optional on BLOCKED and FAILED — a lane that could not run is not asked to invent proof — and `evidence` is required for DONE. Validated by `pnpm lanes handoff <file>`, which adds what a schema cannot see: the commit exists, changed files stayed inside allowed_paths, every verified criterion has PASS evidence, results align with the commands that produced them, failing results are classified, reruns that disagree do not become DONE, and test counts add up.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "status",
+    "commit",
+    "changed_files",
+    "validation",
+    "acceptance_criteria",
+    "assumptions",
+    "risks",
+    "failures",
+    "follow_up_required",
+    "token_or_usage_summary"
+  ],
+  "properties": {
+    "task_id": {
+      "description": "The graph node id this lane was dispatched against.",
+      "type": "string",
+      "minLength": 1
+    },
+    "batch_id": {
+      "description": "Groups lanes dispatched together, so Reflector can separate fixed workflow overhead from follow-up analysis.",
+      "type": "string"
+    },
+    "status": {
+      "description": "DONE requires every acceptance criterion verified and a real commit. BLOCKED is the honest answer when the cause is unclear — reporting it as FAILED sends Builder hunting a defect that may not exist.",
+      "type": "string",
+      "enum": ["DONE", "BLOCKED", "FAILED"]
+    },
+    "commit": {
+      "description": "Full or abbreviated SHA of the lane's commit. Empty string when the lane produced no commit.",
+      "type": "string"
+    },
+    "changed_files": {
+      "description": "Repository-relative paths, verbatim from `git diff --name-only`. Not a summary — the integrator re-checks these against allowed_paths.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commands", "results"],
+      "properties": {
+        "commands": {
+          "description": "Exactly as invoked. A command that was not run does not belong here.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "results": {
+          "description": "One entry per command, same order. `passed` is the observed exit code being zero, never an expectation.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command", "exitCode", "passed"],
+            "properties": {
+              "command": { "type": "string", "minLength": 1 },
+              "exitCode": { "type": "number" },
+              "passed": { "type": "boolean" },
+              "output": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "acceptance_criteria": {
+      "description": "Every criterion from the work packet lands in exactly one bucket. There is no third bucket: deferred, skipped and unknown are all `unverified`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verified", "unverified"],
+      "properties": {
+        "verified": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "unverified": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "assumptions": {
+      "description": "Anything the lane decided that the packet did not settle. An empty array is a claim that nothing was assumed.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "failures": {
+      "description": "Reproductions, not suspicions. Non-empty is required when status is FAILED.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "expected", "actual"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "location": { "type": "string" },
+          "expected": { "type": "string" },
+          "actual": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "follow_up_required": {
+      "description": "Work this lane deliberately did not do. Belongs in BACKLOG.md as well; this field is what makes it visible at the integration gate.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "token_or_usage_summary": {
+      "description": "Free-form, bounded. Feeds Reflector's coordination-overhead measurement without making it read a transcript.",
+      "type": "string"
+    },
+    "evidence": {
+      "description": "One entry per acceptance criterion the lane claims. A green command is not evidence for a criterion it never exercised, so each entry names what was checked and how. Every criterion in `acceptance_criteria.verified` must appear here with result PASS.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["requirement", "expected", "actual", "verification", "result"],
+        "properties": {
+          "requirement": {
+            "description": "The acceptance criterion, verbatim from the work packet.",
+            "type": "string",
+            "minLength": 1
+          },
+          "expected": { "type": "string", "minLength": 1 },
+          "actual": {
+            "description": "What was observed. The decisive line, not the run — the run goes in `artifact`.",
+            "type": "string",
+            "minLength": 1
+          },
+          "verification": {
+            "description": "How it was observed: the command, the request, the file and line, the second interface it was read back through.",
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "description": "UNKNOWN is the honest answer when the check did not settle the criterion. It is not a pass, and it keeps the lane out of DONE.",
+            "type": "string",
+            "enum": ["PASS", "FAIL", "UNKNOWN"]
+          },
+          "artifact": { "type": "string" }
+        }
+      }
+    },
+    "tests": {
+      "description": "Required for DONE when any validation command ran tests. `discovered` is the count the runner reported collecting — a suite that discovered nothing passes perfectly and proves nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["discovered", "passed", "failed", "skipped"],
+      "properties": {
+        "discovered": { "type": "number" },
+        "passed": { "type": "number" },
+        "failed": { "type": "number" },
+        "skipped": {
+          "description": "Skipped stays a number in the report. A skip filtered out of the summary is the cheapest way to turn a gap into a green.",
+          "type": "number"
+        }
+      }
+    },
+    "artifacts": {
+      "description": "Repository-relative paths under `.artifacts/` holding full output. Required when `failures` is non-empty: a failure whose evidence is nowhere is a claim.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "DONE" } }, "required": ["status"] },
+      "then": {
+        "required": ["evidence"],
+        "properties": {
+          "commit": { "minLength": 7 },
+          "changed_files": { "minItems": 1 },
+          "acceptance_criteria": {
+            "properties": { "unverified": { "maxItems": 0 } }
+          },
+          "evidence": { "minItems": 1 },
+          "validation": {
+            "properties": { "commands": { "minItems": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "FAILED" } }, "required": ["status"] },
+      "then": {
+        "properties": { "failures": { "minItems": 1 } }
+      }
+    }
+  ]
+}

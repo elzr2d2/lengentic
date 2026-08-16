@@ -1,0 +1,6 @@
+{
+  "$comment": "Read-only fixture for `pnpm check:lanes`. Exercises .claude/hooks/check-lane-ownership.mjs as a real process, with real exit codes, instead of asserting against a copy of its logic. Not a live lane file — a live one lives at .artifacts/lanes/current.json inside a lane worktree.",
+  "task_id": "fixture.lane",
+  "allowed_paths": ["platform/api/src/**"],
+  "forbidden_paths": [".claude/**", "MVP_PLAN_V3.md"]
+}

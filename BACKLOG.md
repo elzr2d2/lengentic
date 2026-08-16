@@ -90,6 +90,13 @@ sharpens how well one of them is discharged, which is a real improvement and not
 Definition-of-Done item. Do not fix by adding a rule to every agent file — it belongs to
 the role that writes tests.
 
+**Addressed 2026-08-16** by `.claude/skills/test-at-seams/SKILL.md`, which owns the method:
+agree the seam before writing, source the expected value independently, then perform the
+mutation check by actually deleting the guard and watching the test. `validator.md` and
+`builder.md` point at it; no rule was copied into either. The lexical shapes are also caught
+by `pnpm check:integrity`, but a tautological oracle is not lexical, which is why the
+mutation check stays a hand action.
+
 ### Rename `zodBody` — it is used at `@Query` sites too
 
 **Source:** Reviewer finding, §35 harness validation run (2026-08-15).
@@ -102,6 +109,105 @@ This is permanent Phase 1 code and Phase 2's ingestion controllers will copy wha
 precedent it sets. Options: rename to `zodPipe`, or keep `zodBody` and add a `zodQuery`
 alias so the call site reads honestly. Not urgent — nothing is wrong at runtime — but it
 gets more expensive to change once §41's ingestion endpoints exist.
+
+## Discovered during agent-harness refinement (2026-08-16)
+
+### Nine-agent roster — deliberate deviation from §18 / v3 §9
+
+**Source:** human decision, 2026-08-16.
+
+`MVP_PLAN.md` §18 and `MVP_PLAN_V3.md` §9 specify a roster of four (Architect, Builder,
+Validator, Reviewer), with Diagnostician and Reflector created **only when a real failure
+demands them**, and §21 merges v1's Runner and Tester into Validator because the handoff cost
+exceeded the separation benefit.
+
+Five further agents — `runner`, `tester`, `watchdog`, `diagnostician`, `reflector` — were
+present in `.claude/agents/` as imports from another project, and the decision was taken to
+keep all nine rather than delete the unsanctioned five. They were rewritten to this
+repository with non-overlapping scopes:
+
+```text
+runner        execute, report raw evidence, interpret nothing
+validator     per-packet / per-wave behavioural validation   (the hot path)
+tester        per-phase adversarial falsification, fresh session
+watchdog      judgement layer over `pnpm check:integrity` + diff scope
+diagnostician escalation from a BLOCKED handoff with unclear cause
+reflector     cross-milestone process and cost retrospective
+```
+
+The cost this carries is standing context load and a real risk that two roles get invoked
+"to be safe". `reflector` owns detecting that: if a milestone shows `runner`, `tester`, or
+`watchdog` invocations whose output never changed a decision, the §21 merge was right and
+they should collapse back into `validator`.
+
+`handoff.schema.json`'s `owner` enum gained `diagnostician` and `human`. The reporting-only
+roles are never an owner, so the enum did not grow to nine.
+
+### Watchdog's lexical scan became a script
+
+**Source:** `CLAUDE.md` — never ask an agent to verify what a script can verify.
+
+`scripts/check-integrity.ts` and `pnpm check:integrity` now own every lexical QA-integrity
+pattern, wired into `pnpm gates`. It found one live `WARN` on first run:
+`platform/api/src/health/health.service.spec.ts:32` asserts `.toBeDefined()` where the
+health check's business outcome is a status value. Not fixed here — it is Phase 1 test code
+and belongs to whoever next touches that suite.
+
+Two categories from the original agent could not be made deterministic and were dropped
+rather than faked: "newly introduced skip" needs a diff baseline the script does not have,
+and "scope creep" needs the work packet. Both moved into `watchdog`'s judgement half.
+
+### PR Brief convention retired before it was ever written
+
+**Source:** `reflector.md`, superseded by `docs/PARALLEL_EXECUTION.md` §3.
+
+`reflector` carried a 40-line convention for a committed per-PR brief that would let a fresh
+agent start from minimal context. `pnpm oracle packet <id>` already does exactly that, from
+the plan, without a second document to keep in sync. The convention was deleted rather than
+reconciled. If packets ever stop carrying enough context, revive the idea — but as a change
+to the oracle, not as a parallel artifact.
+
+## Discovered while building the lane workflow (2026-08-16)
+
+### Only Phase 2 has path ownership
+
+**Source:** `scripts/oracle/graph.json`, `lanePolicy`.
+Ten Phase 2 nodes carry `own.allowed`, `validate`, `risk` and `changeClass`. The other
+thirty-five do not, so every one of them fails R3/R7/R10 in `pnpm lanes decide` and runs
+sequentially. That is the correct default and not a bug — but it means Phases 3–7 cannot
+fan out until someone annotates them, and annotating a phase is a decision about who owns
+which directory, not a formality. Do it at the start of each phase, not in a batch now:
+paths for code that does not exist yet are guesses, and a guessed boundary is worse than an
+absent one because the gate then reports green.
+
+### `diagnostician.md` names commands this repository does not have
+
+**Source:** `.claude/agents/diagnostician.md:28`.
+It instructs the agent to reproduce against `npm run dev` with web on `:4173` and API on
+`:8787`. Neither port appears anywhere else in the repository, the package manager is pnpm,
+and `docker-compose.yml` exposes 3000/3001. The file is untracked and was imported from
+another project. Left alone deliberately — it is uncommitted work in progress — but a
+Diagnostician dispatched today would report an environment failure against a URL that never
+existed. Fix it before the first non-obvious failure, or the first thing Diagnostician
+diagnoses will be itself.
+
+### The lane matcher exists twice
+
+**Source:** `.claude/hooks/lib/match-path.mjs` and `scripts/lanes.ts`.
+The PreToolUse hook cannot import from `scripts/` — it has to work before `pnpm install`,
+same constraint that made `validate-schema.mjs` reimplement a JSON Schema subset. So the
+glob matcher is written twice, and `pnpm check:lanes` scenario 20 asserts the two agree on a
+table of cases. Acceptable, and cheaper than the alternatives, but the parity table is the
+only thing holding them together — extend it whenever either side learns a new pattern form.
+
+### `pnpm lanes decide` has no cost model
+
+**Source:** requirement R12.
+"Estimated benefit exceeds overhead" is currently a count heuristic: at least `minUnits`
+units, each self-contained. Real overhead is dispatch tokens plus review plus integration
+plus the probability of a conflicted merge, and none of that is measured. The telemetry in
+`.artifacts/telemetry/lanes.jsonl` is where the data to replace the heuristic will come
+from — after enough batches for Reflector to have something to fit.
 
 ---
 

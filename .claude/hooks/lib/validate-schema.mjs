@@ -8,7 +8,7 @@
  *
  * Supports the keywords `handoff.schema.json` actually uses:
  *   type, enum, required, additionalProperties, properties, items,
- *   minLength, minItems, const, allOf, if/then
+ *   minLength, minItems, maxItems, const, allOf, if/then
  *
  * Any other keyword is reported as an error against the schema itself, not skipped. A
  * subset validator that silently ignores what it does not understand is worse than no
@@ -25,6 +25,7 @@ const SUPPORTED = new Set([
   'items',
   'minLength',
   'minItems',
+  'maxItems',
   'allOf',
   'if',
   'then',
@@ -73,6 +74,14 @@ export function validate(value, schema, path = '') {
     if (schema.minItems !== undefined && value.length < schema.minItems) {
       errors.push(
         `${here(path)}: expected at least ${schema.minItems} item(s), got ${value.length}`,
+      );
+    }
+    // `maxItems: 0` is how lane-handoff.schema.json says "DONE requires an empty
+    // `unverified` bucket". Phrasing it as a count keeps the rule in the schema instead of
+    // in an agent's judgement about whether a leftover criterion mattered.
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+      errors.push(
+        `${here(path)}: expected at most ${schema.maxItems} item(s), got ${value.length}`,
       );
     }
     if (schema.items !== undefined) {

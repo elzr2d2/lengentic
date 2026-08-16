@@ -33,7 +33,24 @@ type ProbeSpec =
   | { kind: 'cmd'; run: string }
   | { kind: 'manual'; evidence: string };
 
-interface Node {
+export type Risk = 'low' | 'medium' | 'high';
+export type ChangeClass = 'mechanical' | 'feature' | 'behavior' | 'contract' | 'diagnosis';
+
+export interface Ownership {
+  allowed: string[];
+  forbidden?: string[];
+}
+
+export interface LanePolicy {
+  maxConcurrency: number;
+  minUnits: number;
+  sharedWriteSurfaces: string[];
+  serialiseIfTouches: string[];
+  alwaysForbidden: string[];
+  lanes: Record<string, Ownership>;
+}
+
+export interface Node {
   id: string;
   phase: number;
   lane: string;
@@ -43,9 +60,15 @@ interface Node {
   probes: ProbeSpec[];
   note?: string;
   optional?: boolean;
+  /** Declared write surface. Its ABSENCE is what makes a node ineligible for parallel dispatch. */
+  own?: Ownership;
+  /** Verified commands that decide this deliverable. Absent means "unknown", not "pnpm gates". */
+  validate?: string[];
+  risk?: Risk;
+  changeClass?: ChangeClass;
 }
 
-interface Decision {
+export interface Decision {
   id: string;
   question: string;
   answered: boolean;
@@ -53,17 +76,18 @@ interface Decision {
   neededBy: string;
 }
 
-interface Graph {
+export interface Graph {
   planRef: string;
+  lanePolicy: LanePolicy;
   decisions: Decision[];
   sections: Record<string, string[]>;
   nodes: Node[];
 }
 
-type State = 'DONE' | 'PARTIAL' | 'TODO';
-type Readiness = 'READY' | 'BLOCKED' | 'DONE' | 'IN-PROGRESS';
+export type State = 'DONE' | 'PARTIAL' | 'TODO';
+export type Readiness = 'READY' | 'BLOCKED' | 'DONE' | 'IN-PROGRESS';
 
-interface Resolved extends Node {
+export interface Resolved extends Node {
   state: State;
   hits: number;
   blockedBy: string[];
@@ -72,7 +96,9 @@ interface Resolved extends Node {
   wave: number;
 }
 
-const graph: Graph = JSON.parse(readFileSync(join(ROOT, 'scripts/oracle/graph.json'), 'utf8'));
+export const graph: Graph = JSON.parse(
+  readFileSync(join(ROOT, 'scripts/oracle/graph.json'), 'utf8'),
+);
 
 // ── probes ────────────────────────────────────────────────────────────────────────────
 
@@ -135,7 +161,7 @@ function runProbe(p: ProbeSpec): boolean {
 
 // ── resolution ────────────────────────────────────────────────────────────────────────
 
-function resolveGraph(): Map<string, Resolved> {
+export function resolveGraph(): Map<string, Resolved> {
   const byId = new Map<string, Resolved>();
   const unansweredBlocks = new Map<string, string[]>();
 
@@ -338,6 +364,147 @@ function sliceSection(plan: string, id: string): string | null {
   return lines.slice(start, end).join('\n').trimEnd();
 }
 
+/**
+ * The ownership half of a work packet. A packet that names a deliverable but not a write
+ * surface is how two lanes end up editing the same file: neither agent was ever told where
+ * its edge was, so neither could have stopped.
+ *
+ * Absence is reported as absence. An unannotated node prints "NOT DECLARED" and says the
+ * node is sequential-only — it does not silently inherit the lane default, because a lane
+ * default is a category and a Builder needs a boundary.
+ */
+function ownershipBlock(n: Resolved): string[] {
+  const policy = graph.lanePolicy;
+  const declared = n.own?.allowed ?? [];
+  const forbidden = [...(n.own?.forbidden ?? []), ...policy.alwaysForbidden];
+
+  const out = ['## Path ownership', ''];
+
+  if (declared.length === 0) {
+    out.push(
+      '`allowed_paths`: **NOT DECLARED** — this node carries no `own.allowed` in',
+      '`scripts/oracle/graph.json`. It is sequential-only: `pnpm lanes decide` refuses to',
+      'dispatch it beside another lane. Write inside the lane default below and nowhere else,',
+      `and expect a human to widen the declaration before this node is parallelised.`,
+      '',
+      `Lane default for \`${n.lane}\`: ${fmtPaths(policy.lanes[n.lane]?.allowed ?? [])}`,
+    );
+  } else {
+    out.push(`**allowed_paths** — write here and nowhere else:`, '', ...bullets(declared));
+  }
+
+  out.push(
+    '',
+    '**forbidden_paths** — an edit here fails the lane gate, whatever the task seems to need:',
+    '',
+    ...bullets(forbidden),
+    '',
+    'Verify before you commit:',
+    '',
+    '```bash',
+    `pnpm lanes check ${n.id}`,
+    '```',
+    '',
+  );
+  return out;
+}
+
+/** Validation, acceptance and the agents this change class actually needs. */
+function verificationBlock(n: Resolved): string[] {
+  const commands = n.validate ?? [];
+  const activation = loadActivation();
+  const cls = n.changeClass;
+  const rule = cls ? activation.classes[cls] : undefined;
+
+  const out = ['## Validation', ''];
+  if (commands.length === 0) {
+    out.push(
+      '`validation.commands`: **UNKNOWN** — no `validate` array on this node. Run `pnpm gates`',
+      'and say in your handoff that the node declared no specific commands. Do not invent one',
+      'and do not report an unrun command as passed.',
+      '',
+    );
+  } else {
+    out.push('```bash', ...commands, '```', '');
+  }
+
+  out.push(
+    '## Acceptance criteria',
+    '',
+    'Each line is verified or it goes in `acceptance_criteria.unverified`. There is no third',
+    'bucket — deferred, skipped and unknown all read as unverified.',
+    '',
+    ...n.probes.map((p) => `- ${describeProbe(p)}`),
+    ...(n.note ? [`- ${n.note}`] : []),
+    '',
+    `Probe presence is not correctness. ${commands.length > 0 ? 'The commands above are' : '`pnpm gates` is'} the real gate.`,
+    '',
+  );
+
+  if (rule) {
+    out.push(
+      '## Agents',
+      '',
+      `Change class **${cls}** (risk ${n.risk ?? 'unstated'}): ${rule.rationale}`,
+      '',
+      `- required: ${resolveRoles(rule.required, activation).join(' → ') || 'none'}`,
+      `- optional: ${resolveRoles(rule.optional, activation).join(', ') || 'none'}`,
+      '',
+      'Optional agents run when their activation condition fires, not by default. Dispatching',
+      'an agent that had nothing to look at costs the same as one that did.',
+      '',
+    );
+  }
+  return out;
+}
+
+function bullets(items: string[]): string[] {
+  return items.length === 0 ? ['- (none)'] : items.map((i) => `- \`${i}\``);
+}
+
+function fmtPaths(paths: string[]): string {
+  return paths.length === 0 ? '(none)' : paths.map((p) => `\`${p}\``).join(', ');
+}
+
+export interface Activation {
+  capabilities: Record<string, string[]>;
+  classes: Record<string, { required: string[]; optional: string[]; rationale: string }>;
+  activationConditions?: Record<string, string[]>;
+  responsibilities?: Record<string, string[]>;
+  controlPlane?: Record<string, string>;
+}
+
+let activationCache: Activation | null = null;
+
+/**
+ * Agent activation is a rules file, not a prompt. Capabilities are resolved to whichever
+ * agent file actually exists, so the harness works whether execution is owned by a merged
+ * `validator` or by a separate `runner`/`tester` pair — without two definitions of who owns
+ * running the tests.
+ */
+export function loadActivation(): Activation {
+  if (activationCache) return activationCache;
+  activationCache = JSON.parse(
+    readFileSync(join(ROOT, '.claude/rules/agent-activation.json'), 'utf8'),
+  ) as Activation;
+  return activationCache;
+}
+
+export function resolveRoles(capabilities: string[], activation: Activation): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const cap of capabilities) {
+    const candidates = activation.capabilities[cap] ?? [cap];
+    const agent = candidates.find((a) => existsSync(join(ROOT, `.claude/agents/${a}.md`)));
+    const name = agent ?? `${cap} (NO AGENT FILE)`;
+    if (!seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
 /** A ready-to-dispatch work packet: role, scope, the exact contract, and the exit test. */
 function packet(byId: Map<string, Resolved>, id: string): string {
   const n = byId.get(id);
@@ -360,8 +527,13 @@ function packet(byId: Map<string, Resolved>, id: string): string {
     'Implement exactly this deliverable. Anything else valuable goes to `BACKLOG.md` — do not',
     'expand the phase, do not start adjacent deliverables, do not redesign the plan.',
     '',
-    n.note ? `**Note on this deliverable:** ${n.note}\n` : '',
-    n.needs.length > 0 ? `**Depends on (already delivered):** ${n.needs.join(', ')}\n` : '',
+    n.note ? `**Note on this deliverable:** ${n.note}\n` : null,
+    // Naming the state matters. A packet that says "already delivered" about something that
+    // is not on disk sends a Builder importing a module that does not exist.
+    n.needs.length > 0
+      ? `**Depends on:** ${n.needs.map((d) => `${d} (${byId.get(d)?.state ?? 'UNKNOWN'})`).join(', ')}\n`
+      : null,
+    '',
   ];
 
   if (openDecisions.length > 0) {
@@ -395,26 +567,36 @@ function packet(byId: Map<string, Resolved>, id: string): string {
     '- Boundaries are enforced by `pnpm check:boundaries`, not by you. Do not hand-audit imports.',
     '- Recommendations are hypotheses with counterevidence. Say "attested success rate".',
     '',
-    '## Exit test',
+    ...ownershipBlock(n),
+    ...verificationBlock(n),
+    '## Stop conditions',
     '',
-    '```bash',
-    'pnpm gates',
-    '```',
-    '',
-    `The oracle probe for this node passes when: ${n.probes.map(describeProbe).join('; ')}.`,
-    'A passing probe is presence, not correctness — `pnpm gates` is the real gate.',
+    '- Work outside `allowed_paths` turns out to be required → stop, report `BLOCKED`, name',
+    '  the path. Do not widen your own boundary.',
+    '- An unanswered decision gates the work → stop, report `BLOCKED`, name the decision.',
+    '- Two repair attempts have failed → stop, report `BLOCKED` with both attempts. A third',
+    '  guess costs more than a handoff.',
+    '- The contract above turns out to be wrong → stop. Redesigning the approved plan while',
+    '  implementing it is out of scope for every lane.',
     '',
     '## Handoff',
     '',
     'Write `.artifacts/handoffs/' + n.phase + '-' + n.id + '-' + n.owner + '.json` matching',
-    '`.claude/rules/handoff.schema.json`. `FAILED` requires a reproduction; unclear cause is',
-    '`BLOCKED`, not `FAILED`.',
+    '`.claude/rules/lane-handoff.schema.json`, then verify it:',
+    '',
+    '```bash',
+    `pnpm lanes handoff .artifacts/handoffs/${n.phase}-${n.id}-${n.owner}.json`,
+    '```',
+    '',
+    '`DONE` requires a commit SHA, changed files inside `allowed_paths`, and every acceptance',
+    'criterion in `verified`. Unclear cause is `BLOCKED`, not `FAILED`; an unevidenced failure',
+    'is an opinion.',
   );
 
-  return out.filter((l) => l !== '').join('\n');
+  return out.filter((l) => l !== null).join('\n');
 }
 
-function describeProbe(p: ProbeSpec): string {
+export function describeProbe(p: ProbeSpec): string {
   switch (p.kind) {
     case 'path':
       return `\`${p.path}\` exists`;
@@ -586,71 +768,89 @@ function markdown(byId: Map<string, Resolved>): string {
 
 // ── cli ───────────────────────────────────────────────────────────────────────────────
 
-const byId = resolveGraph();
-const [cmd = 'status', arg] = process.argv.slice(2);
+/**
+ * `scripts/lanes.ts` imports `resolveGraph` so the dispatch gate and the status oracle read
+ * one graph rather than two copies that drift. Guarding the CLI keeps that import free of
+ * side effects — without it, importing the oracle would run `status` and exit.
+ *
+ * Case-insensitive because Windows hands back `C:\CODE\...` here and `c:\code\...` there for
+ * the same file, and a case-sensitive compare silently disables the CLI.
+ */
+function isDirectRun(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  return resolve(invoked).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
+}
 
-switch (cmd) {
-  case 'status':
-    console.log('\nLenGentic delivery oracle — probed, not asserted\n');
-    console.log(summary(byId));
-    console.log('\nOpen decisions:\n');
-    console.log(decisions());
-    console.log('\nUnblocked now:\n');
-    console.log(ready(byId));
-    console.log('');
-    break;
+if (isDirectRun()) main();
 
-  case 'matrix':
-    console.log(matrix(byId));
-    console.log('');
-    break;
+function main(): void {
+  const byId = resolveGraph();
+  const [cmd = 'status', arg] = process.argv.slice(2);
 
-  case 'ready':
-    console.log(ready(byId));
-    break;
+  switch (cmd) {
+    case 'status':
+      console.log('\nLenGentic delivery oracle — probed, not asserted\n');
+      console.log(summary(byId));
+      console.log('\nOpen decisions:\n');
+      console.log(decisions());
+      console.log('\nUnblocked now:\n');
+      console.log(ready(byId));
+      console.log('');
+      break;
 
-  case 'waves': {
-    const target = arg ? Number(arg) : undefined;
-    for (const p of phases(byId)) {
-      if (target !== undefined && p !== target) continue;
-      const w = waves(byId, p);
-      if (w.includes('no outstanding work') && target === undefined) continue;
-      console.log(`\nPHASE ${p}${w}`);
+    case 'matrix':
+      console.log(matrix(byId));
+      console.log('');
+      break;
+
+    case 'ready':
+      console.log(ready(byId));
+      break;
+
+    case 'waves': {
+      const target = arg ? Number(arg) : undefined;
+      for (const p of phases(byId)) {
+        if (target !== undefined && p !== target) continue;
+        const w = waves(byId, p);
+        if (w.includes('no outstanding work') && target === undefined) continue;
+        console.log(`\nPHASE ${p}${w}`);
+      }
+      console.log('');
+      break;
     }
-    console.log('');
-    break;
-  }
 
-  case 'unblock':
-    console.log('');
-    console.log(unblock(byId));
-    break;
+    case 'unblock':
+      console.log('');
+      console.log(unblock(byId));
+      break;
 
-  case 'packet': {
-    if (!arg) {
-      console.error('usage: pnpm oracle packet <node-id>');
+    case 'packet': {
+      if (!arg) {
+        console.error('usage: pnpm oracle packet <node-id>');
+        process.exit(1);
+      }
+      console.log(packet(byId, arg));
+      break;
+    }
+
+    case 'json':
+      console.log(JSON.stringify([...byId.values()], null, 2));
+      break;
+
+    case 'md': {
+      const dest = join(ROOT, 'docs/PROJECT_STATUS.md');
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, markdown(byId) + '\n', 'utf8');
+      console.log(`wrote ${dest}`);
+      break;
+    }
+
+    default:
+      console.error(
+        `unknown command: ${cmd}\n` +
+          'usage: pnpm oracle [status|matrix|ready|unblock|waves [n]|packet <id>|json|md]',
+      );
       process.exit(1);
-    }
-    console.log(packet(byId, arg));
-    break;
   }
-
-  case 'json':
-    console.log(JSON.stringify([...byId.values()], null, 2));
-    break;
-
-  case 'md': {
-    const dest = join(ROOT, 'docs/PROJECT_STATUS.md');
-    mkdirSync(dirname(dest), { recursive: true });
-    writeFileSync(dest, markdown(byId) + '\n', 'utf8');
-    console.log(`wrote ${dest}`);
-    break;
-  }
-
-  default:
-    console.error(
-      `unknown command: ${cmd}\n` +
-        'usage: pnpm oracle [status|matrix|ready|unblock|waves [n]|packet <id>|json|md]',
-    );
-    process.exit(1);
 }

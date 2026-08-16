@@ -2,6 +2,16 @@
 
 Project rules for LenGentic. These bind every agent and every session.
 
+## Language
+
+`CONTEXT.md` is the project's shared language — `attested`, `counterexample`, `contextKey`,
+group key, seam, work packet, wave, green that lies. A term used loosely here becomes a
+wrong column later.
+
+Read it when you will **name** something (code, test, finding, ticket) or **judge** whether
+something is correct. Skip it when you are only executing a command and reporting what
+came back; the vocabulary changes nothing there.
+
 ## Plan discipline
 
 Follow `MVP_PLAN.md`.
@@ -62,6 +72,28 @@ Validation agents report evidence instead of silently repairing implementation.
 
 Validation agents return findings as JSON matching `.claude/rules/handoff.schema.json`.
 
+A development lane reports its own work with `.claude/rules/lane-handoff.schema.json`, which
+is a different contract: a finding is about someone else's work, a lane handoff is about the
+lane's own. `DONE` requires a commit, changed files inside the lane's declared paths, and no
+unverified acceptance criteria. Deferred, skipped and unknown are all unverified.
+
+## Dispatch
+
+Sequential execution is the default. Parallel is an exception a batch earns against the
+fifteen requirements in `pnpm lanes decide`, and unknown counts as false.
+
+Never dispatch by judgement. Run `pnpm lanes wave <phase>` and follow the
+`execution_decision`. The `dispatch-lanes` skill is the procedure.
+
+A lane writes only inside its `allowed_paths`. Widening its own boundary is never the answer;
+`BLOCKED` naming the path is.
+
+Integration is sequential, in dependency order, whatever the dispatch mode was. Worktrees and
+branches are never deleted automatically.
+
+Who runs, and when, is `.claude/rules/agent-activation.json`. Agents are conditional tools,
+not a mandatory pipeline. Do not run Architect, Validator and Reviewer after every minor edit.
+
 ## Product claims
 
 Recommendations are hypotheses with counterevidence, never assertions.
@@ -86,7 +118,38 @@ pnpm gates:full         # gates + check:isolation (slow; CI and pre-commit only)
 pnpm check:boundaries   # dependency-cruiser
 pnpm check:isolation    # builds the platform with playground/ deleted
 pnpm spike              # Phase 0 thesis spike (disposable, deleted end of Phase 5)
+pnpm check:integrity    # QA-integrity scan: false green, focused tests, hidden skips
+pnpm oracle waves       # dependency fan-out; which packets can run in parallel now
+pnpm oracle packet <id> # the sliced brief for one work packet
+pnpm lanes wave <n>     # sequential-vs-parallel decision for the next wave of a phase
+pnpm lanes check <id>   # pre-commit lane gate: did the lane stay inside its paths
+pnpm lanes integrate    # pre-integration gate + ordered integration plan
+pnpm check:lanes        # the dispatch rules' own scenarios (CI; not in `pnpm gates`)
 ```
+
+`check:lanes` is out of `pnpm gates` on purpose: it reads `.claude/`, and `pnpm gates` must
+keep working with the engineering harness deleted.
+
+## Agents
+
+The main session is the **Coordinator**. There is no coordinator agent.
+
+Roles live in `.claude/agents/`; each file states its own posture and boundary. The
+delivery loop and escalation triggers are `MVP_PLAN.md` §26 and `docs/PARALLEL_EXECUTION.md`.
+
+No subagent is told "read the plan." It gets a work packet — `pnpm oracle packet <id>`.
+
+Run the deterministic gates before dispatching any validation agent. They cost nothing and
+catch a large share of what an agent would otherwise spend tokens discovering.
+
+## Communication
+
+Be concise. Bullets and fragments over prose, compact technical language, no restatement of
+the question.
+
+Concision applies to what you add, never to what you observed. Captured output — commands,
+exit codes, stack traces, payloads, assertion diffs, failing test names — is quoted
+verbatim. Trim only for length, and say where you cut.
 
 ## Current state
 

@@ -6,7 +6,7 @@ Every status below is probed from the repository. Do not hand-edit this file.
 ## Phase progress
 
 ```text
-  Phase 1  [#############.......]  9/14  ready:1  maxParallel:3
+  Phase 1  [#############.......]  9/14  ready:3  maxParallel:3
   Phase 2  [....................]  0/10  ready:1  maxParallel:3
   Phase 3  [....................]  0/5   ready:0  maxParallel:2
   Phase 4  [....................]  0/6   ready:0  maxParallel:3
@@ -18,63 +18,32 @@ Every status below is probed from the repository. Do not hand-edit this file.
 ## Open decisions
 
 ```text
-  OD-1  (needed by Phase 2)  STALE_RUN_THRESHOLD value (proposed 30 min)
-        blocks: p2.prisma-run-step, p2.runs-api
-  OD-2  (needed by Phase 2)  Ingestion limits (500 events / 5MB body / 64KB event)
-        blocks: p2.ingest-endpoint, p2.sdk-core
-  OD-3  (needed by Phase 2)  Conflicting terminal states: FAILED-wins vs last-write-wins
-        blocks: p2.merge-rules
-  OD-4  (needed by Phase 5)  Repeated-failed-action 'target/operation' — drop it, rely on inputFingerprint
-        blocks: p5.repeated-failed
-  OD-5  (needed by Phase 2)  File-based handoff retrofit lands at start of Phase 2
-        blocks: p1.debt.handoff-files
-  OD-6  (needed by Phase 2)  Pre-commit hook + secret detection land in the Phase 1 debt batch
-        blocks: p1.debt.precommit, p1.debt.secrets
+  all open decisions answered
 ```
 
 ## Root causes, ranked by leverage
 
 ```text
-  40 deliverables are blocked. They trace to 9 root causes.
+  38 deliverables are blocked. They trace to 4 root causes.
 
   DISPATCH  p2.shared-schema         unblocks 32
     platform/shared/schema — Zod wire contract (§12)
     note: CRITICAL PATH ROOT. The SDK and the API both import it. Nothing in Phase 2 parallelises until this exists.
     gates: p2.dashboard-runs, p2.idempotency, p2.ingest-endpoint, p2.integration-tests, p2.merge-rules, p2.prisma-run-step, p2.runs-api, p2.sdk-core, p2.sdk-injection, p3.cli, p3.mock-agent, p3.mock-provider, p3.scaffold, p3.seeded-clock, p4.attestation, p4.entities, p4.payload-safety, p4.run-explorer, p4.run-summary, p4.sdk-decisions, p5.analysis-endpoint, p5.rec-persistence, p5.recs-ui, p6.real-provider, p6.scenario1, p6.scenario2, p6.scenario3, p6.seed-repro, p7.ci-full, p7.docker-smoke, p7.e2e, p7.regression
 
-  DECIDE    OD-2                     unblocks 22
-    Ingestion limits (500 events / 5MB body / 64KB event)
-    gates: p2.idempotency, p2.ingest-endpoint, p2.integration-tests, p2.sdk-core, p2.sdk-injection, p3.cli, p3.mock-agent, p3.mock-provider, p3.scaffold, p3.seeded-clock, p4.attestation, p4.payload-safety, p4.sdk-decisions, p6.real-provider, p6.scenario1, p6.scenario2, p6.scenario3, p6.seed-repro, p7.ci-full, p7.docker-smoke, p7.e2e, p7.regression
-
-  DECIDE    OD-1                     unblocks 19
-    STALE_RUN_THRESHOLD value (proposed 30 min)
-    gates: p2.dashboard-runs, p2.idempotency, p2.ingest-endpoint, p2.integration-tests, p2.prisma-run-step, p2.runs-api, p4.attestation, p4.entities, p4.run-explorer, p4.run-summary, p5.analysis-endpoint, p5.rec-persistence, p5.recs-ui, p6.scenario1, p6.scenario3, p6.seed-repro, p7.ci-full, p7.docker-smoke, p7.e2e
-
   DISPATCH  p5.engine-pkg            unblocks 15
     platform/analysis-engine package; Phase 0 pure functions graduate
     note: Depends on NOTHING in phases 2-4. The spike already proved it. Can be built in parallel with Phase 2 the moment the workspace exists.
     gates: p5.analysis-endpoint, p5.det-candidate, p5.negative-fixtures, p5.rec-persistence, p5.recs-ui, p5.repeated-failed, p5.spike-deleted, p6.scenario1, p6.scenario2, p6.scenario3, p6.seed-repro, p7.ci-full, p7.docker-smoke, p7.e2e, p7.regression
-
-  DECIDE    OD-4                     unblocks  9
-    Repeated-failed-action 'target/operation' — drop it, rely on inputFingerprint
-    gates: p5.analysis-endpoint, p5.recs-ui, p5.repeated-failed, p6.scenario1, p6.scenario2, p7.ci-full, p7.docker-smoke, p7.e2e, p7.regression
 
   ENV       env.docker               unblocks  5
     Docker daemon available
     note: BACKLOG.md records Docker + WSL2 as not installed. Blocks every runtime probe below.
     gates: p1.docker-runtime, p2.integration-tests, p7.ci-full, p7.docker-smoke, p7.e2e
 
-  DECIDE    OD-3                     unblocks  5
-    Conflicting terminal states: FAILED-wins vs last-write-wins
-    gates: p2.idempotency, p2.ingest-endpoint, p2.integration-tests, p2.merge-rules, p7.regression
-
-  DECIDE    OD-6                     unblocks  2
-    Pre-commit hook + secret detection land in the Phase 1 debt batch
-    gates: p1.debt.precommit, p1.debt.secrets
-
-  DECIDE    OD-5                     unblocks  1
-    File-based handoff retrofit lands at start of Phase 2
-    gates: p1.debt.handoff-files
+  DISPATCH  p1.debt.precommit        unblocks  1
+    Carried debt — pre-commit hook running gates:full
+    gates: p1.debt.secrets
 
 ```
 
@@ -92,16 +61,16 @@ Every status below is probed from the repository. Do not hand-edit this file.
 | 1 | — | DONE | infra | `p1.isolation` — check:isolation (2 arms) | builder | — |
 | 1 | — | DONE | infra | `p1.workspace` — pnpm workspace + root gate scripts | builder | — |
 | 1 | 1 | READY | env | `env.docker` — Docker daemon available | human | — |
-| 1 | 1 | BLOCKED | harness | `p1.debt.handoff-files` — Carried debt — file-based handoffs (§10) | builder | OD-5 |
-| 1 | 1 | BLOCKED | infra | `p1.debt.precommit` — Carried debt — pre-commit hook running gates:full | builder | OD-6 |
-| 1 | 2 | BLOCKED | infra | `p1.debt.secrets` — Carried debt — secret detection before commit | builder | p1.debt.precommit, OD-6 |
+| 1 | 1 | READY | harness | `p1.debt.handoff-files` — Carried debt — file-based handoffs (§10) | builder | — |
+| 1 | 1 | READY | infra | `p1.debt.precommit` — Carried debt — pre-commit hook running gates:full | builder | — |
+| 1 | 2 | BLOCKED | infra | `p1.debt.secrets` — Carried debt — secret detection before commit | builder | p1.debt.precommit |
 | 1 | 2 | BLOCKED | infra | `p1.docker-runtime` — docker compose up healthy; API reaches PostgreSQL | validator | env.docker |
 | 2 | 1 | READY | contract | `p2.shared-schema` — platform/shared/schema — Zod wire contract (§12) | builder | — |
-| 2 | 2 | BLOCKED | pure | `p2.merge-rules` — Merge rules — out-of-order, precedence, terminal conflict (§12) | builder | p2.shared-schema, OD-3 |
-| 2 | 2 | BLOCKED | persistence | `p2.prisma-run-step` — Run + Step Prisma models and migration | builder | p2.shared-schema, OD-1 |
-| 2 | 2 | BLOCKED | sdk | `p2.sdk-core` — Telemetry SDK v1 — async, batched, bounded, silent, flushable, retrying (§16) | builder | p2.shared-schema, OD-2 |
-| 2 | 3 | BLOCKED | api | `p2.ingest-endpoint` — POST /v1/telemetry/events — limits, per-event results (§12) | builder | p2.shared-schema, p2.prisma-run-step, p2.merge-rules, OD-2 |
-| 2 | 3 | BLOCKED | api | `p2.runs-api` — GET /v1/runs + run detail, STALE derivation | builder | p2.prisma-run-step, OD-1 |
+| 2 | 2 | BLOCKED | pure | `p2.merge-rules` — Merge rules — out-of-order, precedence, terminal conflict (§12) | builder | p2.shared-schema |
+| 2 | 2 | BLOCKED | persistence | `p2.prisma-run-step` — Run + Step Prisma models and migration | builder | p2.shared-schema |
+| 2 | 2 | BLOCKED | sdk | `p2.sdk-core` — Telemetry SDK v1 — async, batched, bounded, silent, flushable, retrying (§16) | builder | p2.shared-schema |
+| 2 | 3 | BLOCKED | api | `p2.ingest-endpoint` — POST /v1/telemetry/events — limits, per-event results (§12) | builder | p2.shared-schema, p2.prisma-run-step, p2.merge-rules |
+| 2 | 3 | BLOCKED | api | `p2.runs-api` — GET /v1/runs + run detail, STALE derivation | builder | p2.prisma-run-step |
 | 2 | 3 | BLOCKED | sdk | `p2.sdk-injection` — Clock + IdGenerator injection points in the SDK (§17) | builder | p2.sdk-core |
 | 2 | 4 | BLOCKED | ui | `p2.dashboard-runs` — Dashboard: runs list + run detail with nested/orphaned steps | builder | p2.runs-api |
 | 2 | 4 | BLOCKED | persistence | `p2.idempotency` — Idempotent upsert on eventId; DUPLICATE is a success | builder | p2.ingest-endpoint |
@@ -120,7 +89,7 @@ Every status below is probed from the repository. Do not hand-edit this file.
 | 5 | 1 | READY | engine | `p5.engine-pkg` — platform/analysis-engine package; Phase 0 pure functions graduate | builder | — |
 | 5 | 2 | BLOCKED | engine | `p5.negative-fixtures` — Negative fixture suite D4-D9 + R1-R3, each naming its gate | builder | p5.engine-pkg |
 | 5 | 3 | BLOCKED | engine | `p5.det-candidate` — Deterministic candidate analyzer — §18 aggregation, §19 gates, §21 output | builder | p5.negative-fixtures |
-| 5 | 3 | BLOCKED | engine | `p5.repeated-failed` — Repeated failed action analyzer — §20.2 conditions only | builder | p5.negative-fixtures, OD-4 |
+| 5 | 3 | BLOCKED | engine | `p5.repeated-failed` — Repeated failed action analyzer — §20.2 conditions only | builder | p5.negative-fixtures |
 | 5 | 4 | BLOCKED | persistence | `p5.rec-persistence` — Recommendation entity, fingerprint dedupe, OPEN/DISMISSED lifecycle (§21) | builder | p5.det-candidate, p4.entities |
 | 5 | 4 | BLOCKED | engine | `p5.spike-deleted` — spike/ deleted | builder | p5.det-candidate |
 | 5 | 5 | BLOCKED | api | `p5.analysis-endpoint` — POST /v1/analysis/run — on demand, never inline with ingestion (§22) | builder | p5.rec-persistence, p5.repeated-failed |

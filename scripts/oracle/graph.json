@@ -1,6 +1,55 @@
 {
   "$comment": "Ground truth for LenGentic MVP delivery. Nodes are deliverables, not tasks. Status is PROBED from the repository, never hand-maintained — a checkbox lies, a probe does not. Edit this file when the plan changes; never edit it to make status look better.",
   "planRef": "MVP_PLAN_V3.md",
+  "$lanePolicyComment": "Path ownership for parallel dispatch. `pnpm lanes decide` reads this. Annotation is the OPT-IN to parallelism: a node without `own.allowed` and `validate` fails the eligibility gate and falls back to sequential. That is deliberate — an unannotated node has no verified write surface, and dispatching one into a worktree beside another is exactly the collision the gate exists to prevent.",
+  "lanePolicy": {
+    "maxConcurrency": 2,
+    "minUnits": 2,
+    "$sharedComment": "Files any two lanes would both have to write. A batch touching one of these is serialised regardless of how disjoint the rest of its paths are — a lockfile or a Prisma schema written by two worktrees does not merge, it corrupts.",
+    "sharedWriteSurfaces": [
+      "package.json",
+      "pnpm-lock.yaml",
+      "pnpm-workspace.yaml",
+      "tsconfig.json",
+      "tsconfig.base.json",
+      "eslint.config.js",
+      ".dependency-cruiser.cjs",
+      ".prettierrc.json",
+      "docker-compose.yml",
+      ".github/workflows/**",
+      "platform/database/prisma/schema.prisma",
+      "platform/database/prisma/migrations/**"
+    ],
+    "$serialiseComment": "CLAUDE.md: platform/shared/schema is the ONLY wire contract, and the SDK and the API both derive from it. A batch that edits the contract cannot also build against it in parallel — the contract is not frozen while it is being written.",
+    "serialiseIfTouches": ["platform/shared/schema/**"],
+    "$forbiddenComment": "Never writable from inside a development lane, whatever its allowed_paths say. `.claude/` is engineering infrastructure and a product lane has no business editing the harness that judges it; the plan documents are the contract the lane was dispatched against.",
+    "alwaysForbidden": [
+      ".claude/**",
+      "MVP_PLAN.md",
+      "MVP_PLAN_V3.md",
+      "CLAUDE.md",
+      "scripts/oracle/graph.json",
+      "docs/superpowers/**",
+      ".git/**"
+    ],
+    "$lanesComment": "Default write surface per lane, from MVP_PLAN_V3.md §5. These feed collision WARNINGS only. The eligibility gate requires per-node `own.allowed`, because a lane label is a category and a work packet needs a boundary.",
+    "lanes": {
+      "api": { "allowed": ["platform/api/**"] },
+      "contract": { "allowed": ["platform/shared/**"] },
+      "doc": { "allowed": ["docs/**", "README.md"] },
+      "engine": { "allowed": ["platform/analysis-engine/**"] },
+      "env": { "allowed": [] },
+      "harness": { "allowed": [".artifacts/**"] },
+      "infra": { "allowed": ["scripts/**", "docker/**"] },
+      "persistence": { "allowed": ["platform/database/**"] },
+      "platform": { "allowed": ["platform/**"] },
+      "playground": { "allowed": ["playground/**"] },
+      "pure": { "allowed": ["platform/api/src/**"] },
+      "sdk": { "allowed": ["platform/telemetry-sdk/**"] },
+      "test": { "allowed": ["platform/api/test/**"] },
+      "ui": { "allowed": ["platform/dashboard/**"] }
+    }
+  },
   "$sectionsComment": "Which plan sections each deliverable actually needs. `pnpm oracle packet <id>` slices exactly these out of the plan and nothing else. MVP_PLAN_V3.md is ~25k tokens; a subagent that reads the whole thing spends 25k to learn 2k. Multiply by every agent in every wave and by every retry, and the plan itself becomes the largest single line in the bill.",
   "sections": {
     "p1.debt.handoff-files": ["10", "9"],
@@ -23,6 +72,8 @@
     "p3.mock-provider": ["PHASE 3"],
     "p3.seeded-clock": ["17", "PHASE 3"],
     "p3.mock-agent": ["PHASE 3"],
+    "p3.strategy-evaluator": ["29", "PHASE 3"],
+    "p3.strategy-telemetry": ["13", "14", "29"],
     "p3.cli": ["PHASE 3"],
 
     "p4.entities": ["13", "14"],
@@ -269,6 +320,10 @@
 
     {
       "id": "p2.shared-schema",
+      "risk": "high",
+      "changeClass": "contract",
+      "validate": ["pnpm typecheck", "pnpm check:boundaries", "pnpm gates"],
+      "own": { "allowed": ["platform/shared/**"] },
       "phase": 2,
       "lane": "contract",
       "title": "platform/shared/schema — Zod wire contract (§12)",
@@ -282,6 +337,10 @@
     },
     {
       "id": "p2.prisma-run-step",
+      "risk": "high",
+      "changeClass": "contract",
+      "validate": ["pnpm typecheck", "pnpm gates"],
+      "own": { "allowed": ["platform/database/prisma/**", "platform/database/src/**"] },
       "phase": 2,
       "lane": "persistence",
       "title": "Run + Step Prisma models and migration",
@@ -294,6 +353,10 @@
     },
     {
       "id": "p2.merge-rules",
+      "risk": "medium",
+      "changeClass": "behavior",
+      "validate": ["pnpm test", "pnpm gates"],
+      "own": { "allowed": ["platform/api/src/**"] },
       "phase": 2,
       "lane": "pure",
       "title": "Merge rules — out-of-order, precedence, terminal conflict (§12)",
@@ -310,6 +373,10 @@
     },
     {
       "id": "p2.ingest-endpoint",
+      "risk": "medium",
+      "changeClass": "behavior",
+      "validate": ["pnpm test", "pnpm gates"],
+      "own": { "allowed": ["platform/api/src/**"] },
       "phase": 2,
       "lane": "api",
       "title": "POST /v1/telemetry/events — limits, per-event results (§12)",
@@ -319,6 +386,10 @@
     },
     {
       "id": "p2.idempotency",
+      "risk": "medium",
+      "changeClass": "behavior",
+      "validate": ["pnpm test", "pnpm gates"],
+      "own": { "allowed": ["platform/api/src/**"] },
       "phase": 2,
       "lane": "persistence",
       "title": "Idempotent upsert on eventId; DUPLICATE is a success",
@@ -328,6 +399,10 @@
     },
     {
       "id": "p2.sdk-core",
+      "risk": "medium",
+      "changeClass": "behavior",
+      "validate": ["pnpm test", "pnpm check:boundaries", "pnpm gates"],
+      "own": { "allowed": ["platform/telemetry-sdk/**"] },
       "phase": 2,
       "lane": "sdk",
       "title": "Telemetry SDK v1 — async, batched, bounded, silent, flushable, retrying (§16)",
@@ -341,6 +416,10 @@
     },
     {
       "id": "p2.sdk-injection",
+      "risk": "low",
+      "changeClass": "feature",
+      "validate": ["pnpm test", "pnpm gates"],
+      "own": { "allowed": ["platform/telemetry-sdk/**"] },
       "phase": 2,
       "lane": "sdk",
       "title": "Clock + IdGenerator injection points in the SDK (§17)",
@@ -351,6 +430,10 @@
     },
     {
       "id": "p2.runs-api",
+      "risk": "medium",
+      "changeClass": "behavior",
+      "validate": ["pnpm test", "pnpm gates"],
+      "own": { "allowed": ["platform/api/src/**"] },
       "phase": 2,
       "lane": "api",
       "title": "GET /v1/runs + run detail, STALE derivation",
@@ -360,6 +443,10 @@
     },
     {
       "id": "p2.dashboard-runs",
+      "risk": "low",
+      "changeClass": "feature",
+      "validate": ["pnpm build", "pnpm gates"],
+      "own": { "allowed": ["platform/dashboard/src/**"] },
       "phase": 2,
       "lane": "ui",
       "title": "Dashboard: runs list + run detail with nested/orphaned steps",
@@ -369,6 +456,10 @@
     },
     {
       "id": "p2.integration-tests",
+      "risk": "medium",
+      "changeClass": "behavior",
+      "validate": ["pnpm test:integration"],
+      "own": { "allowed": ["platform/api/test/**"] },
       "phase": 2,
       "lane": "test",
       "title": "Ingestion / idempotency / ordering / stale integration tests",
@@ -417,6 +508,26 @@
       "owner": "builder",
       "needs": ["p3.mock-provider"],
       "probes": [{ "kind": "grep", "dir": "playground", "pattern": "MockAgent" }]
+    },
+    {
+      "id": "p3.strategy-evaluator",
+      "phase": 3,
+      "lane": "playground",
+      "title": "Deterministic sequential-vs-parallel evaluator (§29); unknown forces sequential",
+      "owner": "builder",
+      "needs": ["p3.scaffold"],
+      "note": "Pure function, no LLM, no SDK dependency. The verdict must be testable without telemetry, which is why this does not need p3.mock-agent.",
+      "probes": [{ "kind": "grep", "dir": "playground", "pattern": "evaluatorVersion" }]
+    },
+    {
+      "id": "p3.strategy-telemetry",
+      "phase": 3,
+      "lane": "playground",
+      "title": "Emit the verdict as an execution_strategy Decision with bounded awarenessContext",
+      "owner": "builder",
+      "needs": ["p3.strategy-evaluator", "p3.mock-agent"],
+      "note": "Needs p4.sdk-decisions to persist end-to-end. Emitting through the SDK is Phase 3; the Decision entity lands in Phase 4.",
+      "probes": [{ "kind": "grep", "dir": "playground", "pattern": "execution_strategy" }]
     },
     {
       "id": "p3.cli",

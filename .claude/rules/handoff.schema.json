@@ -20,9 +20,9 @@
       "enum": ["PASSED", "FAILED", "BLOCKED"]
     },
     "owner": {
-      "description": "Who acts next. Never the reporting agent itself — see §27: a Reviewer that silently fixes its own finding has destroyed the separation the role exists for.",
+      "description": "Who acts next. Never the reporting agent itself — see §27: a Reviewer that silently fixes its own finding has destroyed the separation the role exists for. Reporting-only roles (runner, tester, watchdog, reflector) are never an owner; they hand to one of these.",
       "type": "string",
-      "enum": ["architect", "builder", "validator", "reviewer"]
+      "enum": ["architect", "builder", "validator", "reviewer", "diagnostician", "human"]
     },
     "failure": {
       "description": "One sentence stating the defect. Empty string when status is PASSED.",
@@ -55,6 +55,16 @@
       "description": "LOW combined with FAILED is the documented trigger to consider creating the Diagnostician (§25). It is a signal, not a disclaimer.",
       "type": "string",
       "enum": ["HIGH", "MEDIUM", "LOW"]
+    },
+    "unknowns": {
+      "description": "What you could not determine, stated rather than guessed. An unknown is not a pass — a reader who cannot see it will read silence as coverage.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "artifacts": {
+      "description": "Repository-relative paths under `.artifacts/` holding the full output — logs, payloads, traces. `evidence[].actual` carries the decisive line; the artifact carries the rest. Pasting a whole run into the report spends the receiver's context on what a path would have given them.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
     }
   },
   "allOf": [

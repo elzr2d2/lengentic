@@ -638,6 +638,27 @@ createdAt
 
 Do not store hidden model chain-of-thought.
 
+### Execution strategy is an ordinary Decision
+
+The Playground's sequential-vs-parallel choice (§29) uses this entity unchanged. There is no
+awareness-specific table, no second decision pipeline, and no new event type.
+
+```text
+decisionType        execution_strategy
+availableOptions    [sequential, parallel]
+selectedOption      sequential | parallel
+rawContext          the awarenessContext object — §29, capped and redacted per §15
+contextKey          coarse, caller-computed — §14
+```
+
+The outcome of the strategy is the existing `outcome` / `outcomeAttestedBy` /
+`outcomeObservedAt` columns, written by the same idempotent attestation event keyed on
+`decisionId`. Correlation is already `Run → Step → Decision` by client-generated id; nothing
+new is required to answer _"which strategy did this run pick, and how did it end."_
+
+Token usage stays on `ModelCall`. Do not copy it onto the Decision — a second denominator
+for the same tokens is how a run's cost gets double-counted.
+
 ## ModelCall
 
 ```text
@@ -695,6 +716,32 @@ contextKeyVersion stored
 
 If a caller supplies no `contextKey`, the decision is stored but **excluded from
 aggregation**. Silent inclusion under a default key is how fake dominance gets manufactured.
+
+## Cardinality is the caller's obligation
+
+A `contextKey` derived from anything unbounded defeats G2 in the opposite direction: every
+decision lands in its own bucket, `sampleCount` per situation never reaches G1, and the group
+produces nothing forever. The Platform cannot detect this for the caller — a high-cardinality
+key looks exactly like a legitimately diverse one until the data runs out.
+
+```text
+Forbidden as key dimensions   run ids, task ids, span ids, file paths,
+                              timestamps, durations, free text, hashes
+Sound key dimensions          coarse enumerated buckets, few values each
+```
+
+For `execution_strategy` (§29) the recommended derivation is five coarse dimensions:
+
+```text
+risk bucket                low | medium | high | unknown
+task-count bucket          1 | 2-3 | 4-8 | 9+
+dependency bucket          none | resolved | unresolved
+resource conflict          present | absent
+validation readiness       ready | not-ready
+```
+
+`workflowName`, `workflowVersion` and `contextKeyVersion` are already the group key (§18) and
+must not be repeated inside the `contextKey`.
 
 ## On `outcome` and `outcomeAttestedBy`
 
@@ -863,6 +910,12 @@ per group, and directly contradicts G2. It is a legitimate v2 analyzer, recorded
 
 Groups whose `workflowVersion` or `contextKeyVersion` changed mid-history are **split**, not
 merged.
+
+`decisionType = execution_strategy` (§29) is an ordinary group. It gets no exemption, no
+private threshold, and no separate verdict token. Until G1–G5 all pass it is `SUPPRESSED`,
+which is this plan's "insufficient evidence" — LenGentic has observed which strategy the
+orchestrator chose, and that is not yet a reason to choose it again. `evaluatorVersion`
+belongs in `contextKeyVersion`'s company: bumping it must split groups, never blend them.
 
 ## Computed values
 
@@ -1489,15 +1542,82 @@ Start → Plan → Execute → Validate → Complete
 
 No Planner/Researcher/Coder/Reviewer split yet.
 
+## Execution-strategy evaluator
+
+The orchestrator decides sequential vs parallel **deterministically, in the Playground**, and
+emits the decision as ordinary telemetry (§13, §29). The Platform never makes this call and
+never overrides it.
+
+```text
+Pure function          same inputs → same output, always
+No LLM                 the verdict is a boolean expression, not a judgement
+Sequential default     parallel is an exception that must be earned
+Unknown is false       a condition nobody checked did not pass
+Stable codes           every reason and blocker has a fixed code + readable text
+Versioned              evaluatorVersion travels with the decision
+```
+
+Input — `awarenessContext`, schemaVersion 1:
+
+```text
+topology     taskCount  runnableTaskCount  dependencyCount  unresolvedDependencyCount
+resources    claimedResourceCount  conflictingResourceCount  sharedMutableState
+readiness    requirementsComplete  contractsStable  validationAvailable
+             independentlyValidatable  independentlyReversible
+limits       requestedConcurrency  availableConcurrency  effectiveConcurrency
+risk         level  reasons[]
+evaluation   eligible  reasons[]  blockers[]  evaluatorVersion
+```
+
+Every `readiness` field and `sharedMutableState` is `true | false | unknown`.
+`resourceClaims` are **opaque strings**. Files, branches, worktrees, tables, queues and
+accounts are all just claims; §4 keeps those concepts out of the Platform, and the evaluator
+compares claims for equality without interpreting them.
+
+Parallel is eligible only when **every** condition is explicitly true:
+
+```text
+ 1  at least two meaningful runnable tasks
+ 2  task dependencies are known
+ 3  no unresolved dependency between tasks intended to run together
+ 4  resource claims do not conflict
+ 5  no unsafe shared mutable state
+ 6  requirements are sufficiently defined
+ 7  relevant contracts are stable
+ 8  required validation is available
+ 9  tasks can be validated independently
+10  tasks can be reverted or failed independently
+11  available concurrency is at least two
+12  no risk policy requires serialisation
+```
+
+Output:
+
+```text
+mode                   sequential | parallel
+eligible               true | false
+reasons[]  blockers[]  stable code + readable description
+requestedConcurrency   effectiveConcurrency
+evaluatorVersion
+```
+
+Maximum concurrency is small and configurable. It is **never** derived from how many agents
+happen to be available — capacity is not permission.
+
+The harness solves the same problem for its own dispatch in `scripts/lanes.ts`, and that
+implementation is a useful reference for the rule shapes. It is **not** a dependency: `.claude/`
+and `scripts/` are engineering infrastructure, and §4 forbids the Playground importing either.
+
 ## Work packages
 
-| #   | Package               | Owner   | Acceptance                                          |
-| --- | --------------------- | ------- | --------------------------------------------------- |
-| 1   | Playground scaffold   | Builder | Consumes the public SDK entry only                  |
-| 2   | MockProvider          | Builder | Seeded, offline, configurable delay/failure/context |
-| 3   | MockAgent + orchestr. | Builder | Five-step workflow emitting nested Steps            |
-| 4   | Seeded Clock/IdGen    | Builder | Same seed → byte-identical telemetry                |
-| 5   | CLI command           | Builder | `pnpm playground:happy-path`                        |
+| #   | Package               | Owner   | Acceptance                                            |
+| --- | --------------------- | ------- | ----------------------------------------------------- |
+| 1   | Playground scaffold   | Builder | Consumes the public SDK entry only                    |
+| 2   | MockProvider          | Builder | Seeded, offline, configurable delay/failure/context   |
+| 3   | MockAgent + orchestr. | Builder | Five-step workflow emitting nested Steps              |
+| 4   | Seeded Clock/IdGen    | Builder | Same seed → byte-identical telemetry                  |
+| 5   | Strategy evaluator    | Builder | Deterministic verdict + `execution_strategy` Decision |
+| 6   | CLI command           | Builder | `pnpm playground:happy-path`                          |
 
 ## Validation commands
 
@@ -1514,6 +1634,19 @@ Running `pnpm playground:happy-path` creates a complete Run visible in LenGentic
 - [ ] The same seed produces byte-identical telemetry.
 - [ ] `pnpm check:isolation` still passes.
 - [ ] Playground imports `platform/telemetry-sdk` through its public entry only.
+- [ ] Two eligible independent tasks produce `parallel`.
+- [ ] One task produces `sequential`.
+- [ ] An unresolved dependency produces `sequential`.
+- [ ] Conflicting resource claims produce `sequential`.
+- [ ] Shared mutable state produces `sequential`.
+- [ ] Missing validation readiness produces `sequential`.
+- [ ] Any required field set to `unknown` produces `sequential`.
+- [ ] `availableConcurrency < 2` produces `sequential`.
+- [ ] Identical inputs produce an identical decision, including reason and blocker order.
+- [ ] Reason and blocker codes are asserted by code, never by display text.
+- [ ] The decision reaches the Platform as an `execution_strategy` Decision and is retrievable.
+- [ ] `rawContext` is redacted and size-capped per §15.
+- [ ] The Platform exposes no path that invokes or alters Playground execution.
 
 **Human approval gate.**
 ---
@@ -1541,7 +1674,7 @@ it. Decisions land here — they are the input the analysis engine consumes in P
 Run Summary          (incl. workflowVersion)
 Execution Timeline   (client clocks ONLY)
 Step Hierarchy       (orphans flagged)
-Decisions            (contextKey visible)
+Decisions            (contextKey visible; strategy evidence per §29)
 Model Calls
 Tool Calls           (truncation flagged)
 Errors
@@ -1911,10 +2044,16 @@ Billing                      Kubernetes                   Complex Cloud Infrastr
 Slack Integration            GitHub Integration           Jira Integration
 Enterprise Features          LangChain / LangGraph        Any job runner or broker
 Generic loop detection       Recommendation severity      Cross-session learning
+Awareness Snapshot           Learned strategy switching   Platform→Playground control
+Background analysis worker   Multi-provider comparison    Adaptive orchestration
 ```
 
 OTel _integration_ is out of scope. OTel-shaped _identifiers_ are in scope (§11) — that is a
 naming decision, not a dependency.
+
+The last three lines are the ones §29 is most likely to be misread as authorising. It does
+not. §29 delivers instrumentation and one deterministic decision; everything downstream of
+that stays here until the evidence exists to move it.
 
 ---
 
@@ -1929,6 +2068,8 @@ Shadow mode
   (run the deterministic default alongside the LLM decision and
    compare — the only real counterfactual)
 
+Awareness Snapshot and sequential-vs-parallel comparison (§29 stage 2)
+Orchestrator consumption of strategy recommendations (§29 stage 3)
 Recommendation demotion on regression
 Automatic background analysis on terminal Run
 Context-conditional defaults (per-contextKey analyzer)
@@ -1953,6 +2094,104 @@ Work on one phase at a time. Never automatically begin the next phase.
 
 Do not redesign the approved MVP while implementing it. Anything valuable but unnecessary
 for the current phase goes into `BACKLOG.md`.
+
+---
+
+# 29. Agentic System Awareness
+
+> **Agentic System Awareness** is LenGentic's ability to construct a verified operational
+> model of an agentic workflow — its topology, dependencies, resource constraints, execution
+> state, cost, risk, and evidence — so it can eventually provide evidence-backed execution
+> recommendations.
+
+Read "eventually" as load-bearing. This section exists to stop the MVP from claiming the
+capability while it is still collecting the evidence for it.
+
+## The four things that get confused
+
+Keeping these apart is the whole discipline of this section. Collapsing any two of them is
+how an observability tool starts making promises it cannot keep.
+
+```text
+Deterministic eligibility    a rule the orchestrator evaluates now.
+                             No history. No learning. Reproducible.
+
+Observed execution strategy  what the orchestrator actually chose, recorded.
+                             A fact about one run. Not advice.
+
+Historical recommendation    a claim over many runs, gated by G1-G5.
+                             Does not exist until the evidence does.
+
+Automatic adaptation         execution changing without a human.
+                             Post-MVP, opt-in, and not LenGentic's to trigger.
+```
+
+## Staged delivery
+
+```text
+STAGE 1 — this MVP
+  Instrument → Store → Deterministic Decision
+
+STAGE 2 — after real evidence accumulates
+  Analyze → Awareness Snapshot → Recommend
+
+STAGE 3 — Post-MVP
+  Adapt execution automatically
+```
+
+### Stage 1 — what is actually built
+
+```text
+The Playground evaluates parallelism deterministically   PHASE 3
+Sequential fallback whenever context is incomplete       PHASE 3
+The decision is emitted as an ordinary Decision          §13
+Its context is stored, capped and redacted               §15
+Its outcome is attested through the existing path        §14
+The Run Explorer shows the evidence                      PHASE 4
+```
+
+No new entity, no new event type, no new endpoint, no second analysis pipeline.
+
+### Stage 2 — deliberately not built
+
+An Awareness Snapshot would compare sequential against parallel on success rate, duration,
+token usage, retries, rework, conflicts and validation failures, and return one of
+`PARALLEL_RECOMMENDED`, `SEQUENTIAL_RECOMMENDED` or the equivalent of insufficient evidence —
+which in this plan is already spelled `SUPPRESSED` (§19).
+
+It is not built because the data to build it on does not exist yet, and a comparison over
+zero parallel runs is not a cautious comparison, it is a fabricated one. Stage 1 is what
+makes stage 2 possible later without a migration.
+
+When it is built it goes through §18 and §19 unchanged — same group key, same five gates,
+same `counterexamples` field, present and possibly empty, never omitted (§2).
+
+### Stage 3 — the boundary that must hold
+
+If an external orchestrator ever consumes these recommendations, it consumes them by asking.
+LenGentic exposes evidence; it does not reach into a running system. §4 already forbids the
+control path, and opt-in, guardrails, rollback and sequential fallback are the orchestrator's
+obligations, not the Platform's.
+
+## What this section does not license
+
+The instrumentation is deliberately shaped to look like the foundation of something larger.
+That makes the failure mode specific and worth naming: reading a recorded strategy as a
+recommendation.
+
+```text
+Observed 40 sequential runs                 is NOT   "sequential is correct"
+The evaluator returned eligible: false      is NOT   "parallel would have failed"
+Parallel ran twice and both succeeded       is NOT   evidence — G1 needs 30
+```
+
+LenGentic observes chosen options and attested outcomes. It does not observe counterfactuals
+(§2). A run that went sequential tells us nothing about the parallel run that never happened,
+and no volume of stage-1 data changes that — which is exactly why stage 2 needs the gates
+rather than more rows.
+
+Until a historical recommendation exists, no surface may display a confidence score for a
+strategy. Deterministic eligibility is not confidence; it is a rule that ran.
 
 Prefer the simplest solution satisfying the current Definition of Done.
 

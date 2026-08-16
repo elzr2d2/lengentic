@@ -21,7 +21,7 @@ pnpm oracle packet <id>     # a ready-to-dispatch work packet with the contract 
 
 `unblock` is the one to run when the matrix looks discouraging. Forty blocked deliverables
 is not forty problems — it is nine, and two of them are worth more than the other seven put
-together. See §10.
+together. See §9.
 
 A wave is the set of deliverables with no dependency on each other. Dispatching wider than
 the wave does not go faster — the extra agents are working against files that do not exist
@@ -275,7 +275,104 @@ Whichever runs, the evidence belongs on disk — `p1.docker-runtime` probes for
 `.artifacts/oracle/docker-smoke.ok`. Drop the CI run URL or the local compose output in it.
 A green pipeline nobody recorded is not evidence next month.
 
-## 10. What this playbook does not claim
+## 10. The eligibility gate — fifteen requirements, all hard
+
+Everything above is judgement. This section is the part that is not.
+
+```bash
+pnpm lanes wave 2                              # decide over the next wave of a phase
+pnpm lanes decide p2.merge-rules p2.sdk-core   # decide over a specific set
+```
+
+It emits an `execution_decision` — mode, eligibility, reasons, blockers, dependency order,
+shared contracts, per-lane ownership, and a verdict per requirement. **Sequential is the
+default and unknown counts as false.** A requirement nobody checked is not a requirement
+that passed.
+
+| #   | Requirement                                    | Fails when                                                       |
+| --- | ---------------------------------------------- | ---------------------------------------------------------------- |
+| R1  | at least two meaningful work units             | one unit, or below `minUnits`                                    |
+| R2  | explicit acceptance criteria                   | a node declares no probes                                        |
+| R3  | known validation commands                      | a node has no `validate` array                                   |
+| R4  | dependencies are known                         | an edge points at a node the graph does not have                 |
+| R5  | no lane depends on another in the batch        | the batch is a sequence wearing a batch's clothes                |
+| R6  | contracts frozen before fan-out                | an open decision, or an unbuilt upstream                         |
+| R7  | `allowed_paths` do not overlap                 | two surfaces intersect, or one is undeclared                     |
+| R8  | no two lanes modify the same file              | identical declarations                                           |
+| R9  | no shared write surface                        | a lane claims a migration, lockfile or global config             |
+| R10 | each lane validated independently              | no commands, or no surface                                       |
+| R11 | each lane committed and reverted independently | a revert would reach into another lane                           |
+| R12 | benefit exceeds overhead                       | fewer than `minUnits`, or a lane is not self-contained           |
+| R13 | base safe for worktrees                        | mid-merge, conflicted, or uncommitted work inside a lane surface |
+| R14 | context fits a bounded packet                  | no `sections` entry — the lane would be handed the plan          |
+| R15 | no serialisation risk                          | `risk: high`, or the lane edits `platform/shared/schema/**`      |
+
+**Annotation is the opt-in.** A node without `own.allowed` and `validate` in
+`scripts/oracle/graph.json` fails R3, R7 and R10 and runs sequentially. That is deliberate:
+inferring a write surface from a lane label is exactly the guess that puts two Builders in
+one directory. Phase 2's ten nodes are annotated; the rest are not, and adding an annotation
+is a decision about ownership, not a formality.
+
+The overlap check is **conservative**. Two patterns are called overlapping when one's
+literal prefix contains the other's, so `platform/api/src/a/**` and `platform/api/src/b/**`
+are reported as colliding. A false overlap costs one sequential batch; a missed one costs
+two agents and a merge a model does badly.
+
+Default concurrency is **2**, in `lanePolicy.maxConcurrency`. `--max` overrides it for one
+run. Nothing raises it automatically — §1 already found that peak useful parallelism here is
+three, and the cap exists so a wide wave does not become a wide dispatch by default.
+
+### What it currently says about Phase 2
+
+```text
+$ pnpm lanes decide p2.merge-rules p2.sdk-core
+mode: sequential
+R6 FAIL  unfinished upstream: p2.merge-rules←p2.shared-schema p2.sdk-core←p2.shared-schema
+```
+
+Disjoint paths, distinct lanes, both self-contained — and still sequential, because the
+contract they both derive from does not exist yet. That is §9's point restated by a script:
+`p2.shared-schema` first, alone, reviewed properly. Once it lands, that same pair passes all
+fifteen and fans out at concurrency 2.
+
+## 11. Ownership, isolation, and the integration gate
+
+Four gates, each with a command.
+
+**Pre-dispatch** — `pnpm lanes decide`. Requirements, ownership, dependencies, frozen
+contracts, verified commands.
+
+**Pre-commit, per lane** — `pnpm lanes check <id>` then `pnpm gates`. The first compares the
+lane's changed files against its declared surface; the second is the deterministic suite.
+Inside a lane worktree, `.claude/hooks/check-lane-ownership.mjs` refuses an out-of-surface
+write at the moment it is attempted, driven by `.artifacts/lanes/current.json`. No lane file
+means no lane and no enforcement — the main session is not a lane.
+
+**Pre-integration** — `pnpm lanes integrate <id...>`. Handoff present and valid against
+`.claude/rules/lane-handoff.schema.json`, status `DONE`, commit resolves, changed files
+inside the surface, no collision with an already-integrated lane. It stops at the first
+failure and integrates nothing past it. It gates; it does not merge.
+
+**Post-integration** — each lane's own commands after its merge, then `pnpm gates:full`
+**once**, after the whole batch. Per-lane `gates:full` would pay `check:isolation` — a full
+install and build in a temp checkout — repeatedly for a question with one answer per batch.
+
+Isolation setup is printed, never executed:
+
+```bash
+pnpm lanes worktrees p2.merge-rules p2.sdk-core
+```
+
+Cleanup is deliberately not scripted. Removing a worktree discards uncommitted lane work.
+
+A failed lane halts its dependents and nothing else — `halts_if_failed` and
+`independent_of` on each lane entry say exactly which is which.
+
+The rules themselves are checked: `pnpm check:lanes` runs the workflow scenarios, including
+the hook as a real process with real exit codes. It is wired into CI and is deliberately
+**not** in `pnpm gates`, so the product gate keeps working with `.claude/` deleted.
+
+## 12. What this playbook does not claim
 
 The oracle's probes check presence, not correctness — a file exists, a symbol appears, a
 script is declared. `pnpm oracle status` saying `DONE` means the deliverable is on disk, not
