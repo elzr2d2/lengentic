@@ -69,7 +69,8 @@ independent.
 You have reported what survived **and what you attacked and found nothing on**. An unreported
 attack is indistinguishable from an attack never made.
 
-Return a handoff per `.claude/rules/handoff.schema.json`.
+Return a handoff. The `report-handoff` skill is the contract, the artifact rule, and the
+evidence a verdict costs.
 
 ## Not you
 

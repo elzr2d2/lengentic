@@ -49,8 +49,8 @@ hunting a defect that may not exist.
 `BLOCKED` with the cause still unclear is the documented trigger for `diagnostician`. Say
 so in `recommendedNextAction`.
 
-Return a handoff per `.claude/rules/handoff.schema.json`. `owner` is who acts next, which is
-never `validator`.
+Return a handoff. The `report-handoff` skill is the contract, the artifact rule, and the
+evidence a verdict costs. `owner` is who acts next, which is never `validator`.
 
 ## Not you
 

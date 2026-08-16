@@ -57,4 +57,5 @@ clear" destroys the signal the scan exists to produce.
 
 Each finding carries `file:line`, a one-line reason, and its confirmed/unconfirmed marker.
 
-Return a handoff per `.claude/rules/handoff.schema.json`.
+Return a handoff. The `report-handoff` skill is the contract, the artifact rule, and the
+evidence a verdict costs.

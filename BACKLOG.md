@@ -1,9 +1,9 @@
 # BACKLOG
 
 Ideas that are valuable but not required by the current phase's Definition of Done
-(`MVP_PLAN.md` §8). Nothing here may expand the active phase.
+(`MVP_PLAN_V3.md` §8). Nothing here may expand the active phase.
 
-The standing post-MVP list lives in `MVP_PLAN.md` §94 and is not duplicated here. This
+The standing post-MVP list lives in `MVP_PLAN_V3.md` §27 and is not duplicated here. This
 file records items **discovered during implementation**, with the discovery context that
 makes them actionable later.
 
@@ -211,12 +211,48 @@ from — after enough batches for Reflector to have something to fit.
 
 ---
 
+## Discovered while specifying Agentic System Awareness (2026-08-16)
+
+`MVP_PLAN_V3.md` §29 defines the capability and stages it. Stage 1 is Phase 3 work. Stages 2
+and 3 are recorded here and in §27, and are **not** MVP deliverables — the evidence they
+would operate on does not exist yet.
+
+### Awareness Snapshot — sequential vs parallel comparison
+
+**Source:** §29 stage 2.
+An on-demand snapshot comparing the two strategies on success rate, duration, token usage,
+retries, rework, conflicts and validation failures, plus dominant-option failures and
+minority-option successes. It is an ordinary §20 analyzer over
+`decisionType = execution_strategy` and needs no new gate — G1–G5 already say `SUPPRESSED`
+when the evidence is thin, which is the honest answer for the entire MVP window.
+
+Not built now because a comparison over zero parallel runs is fabricated, not cautious. The
+Phase 3 instrumentation is what lets this be added later without a migration.
+
+### Orchestrator consumption of strategy recommendations
+
+**Source:** §29 stage 3.
+An external orchestrator asking LenGentic what to do, and acting on it. Requires explicit
+opt-in, guardrails, rollback, policy enforcement and sequential fallback — all of which are
+the orchestrator's obligations, not the Platform's. §4 forbids the reverse direction
+permanently: LenGentic exposes evidence and never reaches into a running system.
+
+### Evaluator threshold telemetry
+
+**Source:** §29 condition 11, and the same gap already recorded above for lane requirement R12.
+`availableConcurrency >= 2` and the configurable maximum are both asserted, not derived. The
+product evaluator will accumulate the same kind of evidence `.artifacts/telemetry/lanes.jsonl`
+accumulates for the harness. Worth revisiting once there is enough of it to fit — as one
+change, since both are the same unmeasured overhead question wearing different clothes.
+
+---
+
 ## Environment prerequisites (not backlog — blocking)
 
 - ~~**Node.js v21.0.0**~~ — resolved 2026-08-14. Node 24.19.0 LTS and pnpm 11.21.0 are
   installed and the whole toolchain runs on them.
 
-- **Docker is not installed, and neither is WSL2.** This blocks four `MVP_PLAN.md` §36
+- **Docker is not installed, and neither is WSL2.** This blocks four `MVP_PLAN_V3.md` PHASE 1
   checkboxes — "PostgreSQL starts", "API reaches PostgreSQL", "`docker compose up`
   succeeds" — plus `pnpm test:integration`, since Testcontainers needs a daemon.
 

@@ -14,12 +14,13 @@ came back; the vocabulary changes nothing there.
 
 ## Plan discipline
 
-Follow `MVP_PLAN.md`.
+Follow `MVP_PLAN_V3.md`. It is the single executable plan.
 
-Where `MVP_PLAN.md` and
-`docs/superpowers/specs/2026-08-14-lengentic-mvp-corrections-design.md` disagree, the
-corrections document wins. It records defects found in review, and each correction names
-the section it replaces.
+`MVP_PLAN.md` (v2) and
+`docs/superpowers/specs/2026-08-14-lengentic-mvp-corrections-design.md` are **historical**.
+v3 absorbed the corrections document and retired it, so there is no longer a second document
+that wins on conflict. Section numbers differ between v2 and v3 — a comment citing a section
+may be citing v2.
 
 Work on one phase at a time.
 
@@ -77,6 +78,11 @@ is a different contract: a finding is about someone else's work, a lane handoff 
 lane's own. `DONE` requires a commit, changed files inside the lane's declared paths, and no
 unverified acceptance criteria. Deferred, skipped and unknown are all unverified.
 
+`DONE` is a claim about evidence, not about a green exit code. Every acceptance criterion
+carries its own expected, actual and result, and a command that did not exercise a criterion
+is not evidence for it. The `report-handoff` skill is how a handoff is written; the checks
+`pnpm lanes handoff` enforces are listed there.
+
 ## Dispatch
 
 Sequential execution is the default. Parallel is an exception a batch earns against the
@@ -123,6 +129,7 @@ pnpm oracle waves       # dependency fan-out; which packets can run in parallel 
 pnpm oracle packet <id> # the sliced brief for one work packet
 pnpm lanes wave <n>     # sequential-vs-parallel decision for the next wave of a phase
 pnpm lanes check <id>   # pre-commit lane gate: did the lane stay inside its paths
+pnpm lanes handoff <f>  # is this handoff real: schema, commit, ownership, evidence
 pnpm lanes integrate    # pre-integration gate + ordered integration plan
 pnpm check:lanes        # the dispatch rules' own scenarios (CI; not in `pnpm gates`)
 ```
@@ -135,21 +142,37 @@ keep working with the engineering harness deleted.
 The main session is the **Coordinator**. There is no coordinator agent.
 
 Roles live in `.claude/agents/`; each file states its own posture and boundary. The
-delivery loop and escalation triggers are `MVP_PLAN.md` §26 and `docs/PARALLEL_EXECUTION.md`.
+delivery loop and escalation triggers are `MVP_PLAN_V3.md` §9 and `docs/PARALLEL_EXECUTION.md`.
 
 No subagent is told "read the plan." It gets a work packet — `pnpm oracle packet <id>`.
 
 Run the deterministic gates before dispatching any validation agent. They cost nothing and
 catch a large share of what an agent would otherwise spend tokens discovering.
 
+No agent issues the final verdict on its own work. Builder reports what it built and what it
+ran; the main session accepts it, after whichever gates
+`.claude/rules/agent-activation.json` requires for that change class.
+
 ## Communication
 
-Be concise. Bullets and fragments over prose, compact technical language, no restatement of
-the question.
+Be extremely concise. Sacrifice grammar for concision. Bullets and fragments over prose, no
+restatement of the question.
+
+Never omit failures, uncertainty, blockers, or validation evidence.
+
+Store detail in artifacts under `.artifacts/`; return paths, not pasted content.
 
 Concision applies to what you add, never to what you observed. Captured output — commands,
 exit codes, stack traces, payloads, assertion diffs, failing test names — is quoted
-verbatim. Trim only for length, and say where you cut.
+verbatim wherever it lands. Trim only for length, and say where you cut.
+
+## Plan Mode
+
+Make plans extremely concise. Sacrifice grammar for concision.
+
+End with unresolved questions, if any.
+
+Last section: numbered implementation steps.
 
 ## Current state
 

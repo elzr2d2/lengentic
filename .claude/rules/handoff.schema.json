@@ -39,7 +39,11 @@
           "command": { "type": "string", "minLength": 1 },
           "location": { "type": "string", "minLength": 1 },
           "expected": { "type": "string" },
-          "actual": { "type": "string" }
+          "actual": {
+            "description": "What was observed — the decisive line. A long run goes to a path in `artifact` or in the top-level `artifacts`, not into this string.",
+            "type": "string"
+          },
+          "artifact": { "type": "string" }
         }
       }
     },

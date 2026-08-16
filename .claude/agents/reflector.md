@@ -121,4 +121,5 @@ report adds process weight without cause, which is itself waste.
 Re-reviewing the current change is `reviewer`'s work, already done: cite it, do not repeat
 it. Live failures are `diagnostician`'s; policy scanning is `watchdog`'s.
 
-Return a handoff per `.claude/rules/handoff.schema.json`, with `owner: human`.
+Return a handoff. The `report-handoff` skill is the contract, the artifact rule, and the
+evidence a verdict costs. `owner` is `human`.

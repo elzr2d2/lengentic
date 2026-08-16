@@ -17,8 +17,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   checkOwnership,
@@ -121,6 +122,47 @@ function unit(over: Partial<Unit> & { task_id: string }): Unit {
 function decide(units: Unit[], repo: RepoState = CLEAN_REPO): Decision {
   return evaluate(units, FIXTURE_POLICY, repo);
 }
+
+const CRITERION = 'a documented criterion';
+
+/**
+ * A lane handoff that is honestly DONE: one criterion, evidence that bears on it, a test
+ * command whose counts add up. Every evidence scenario below is this object with exactly one
+ * thing wrong, so a scenario's failure names the rule it broke.
+ */
+function doneHandoff(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    task_id: 'alpha',
+    status: 'DONE',
+    commit: 'a1b2c3d4',
+    changed_files: ['fixture/alpha/index.ts'],
+    validation: {
+      commands: ['pnpm test'],
+      results: [{ command: 'pnpm test', exitCode: 0, passed: true }],
+    },
+    acceptance_criteria: { verified: [CRITERION], unverified: [] },
+    evidence: [
+      {
+        requirement: CRITERION,
+        expected: 'the packet DoD line: emits one row per decision',
+        actual: '1 row',
+        verification: 'pnpm test -- decision.spec.ts',
+        result: 'PASS',
+        artifact: '.artifacts/runs/alpha-test.log',
+      },
+    ],
+    tests: { discovered: 4, passed: 4, failed: 0, skipped: 0 },
+    assumptions: [],
+    risks: [],
+    failures: [],
+    follow_up_required: [],
+    token_or_usage_summary: 'fixture',
+    artifacts: ['.artifacts/runs/alpha-test.log'],
+    ...over,
+  };
+}
+
+const NO_COMMIT_CHECK = { checkCommit: false };
 
 function failedIds(d: Decision): string[] {
   return d.requirements.filter((r) => !r.pass).map((r) => r.id);
@@ -237,6 +279,7 @@ export async function run(): Promise<number> {
       failures: [{ command: 'pnpm test', expected: 'exit 0', actual: 'exit 1' }],
       follow_up_required: [],
       token_or_usage_summary: 'fixture',
+      artifacts: ['.artifacts/runs/alpha-test.log'],
     };
 
     const claimedDone = await validateHandoff({ ...base, status: 'DONE' }, u, {
@@ -540,6 +583,190 @@ export async function run(): Promise<number> {
     return expect(
       r.status === 0,
       `the main session is not a lane and must not be gated; exit ${r.status}, stderr: ${r.stderr}`,
+    );
+  });
+
+  await scenarioAsync(23, 'a DONE lane with evidence per criterion validates', async () => {
+    const u = unit({ task_id: 'alpha' });
+    const v = await validateHandoff(doneHandoff(), u, NO_COMMIT_CHECK);
+    return expect(v.ok, `an evidenced DONE handoff must validate; got: ${v.errors.join('; ')}`);
+  });
+
+  await scenarioAsync(
+    24,
+    'a verified criterion with no evidence does not become DONE',
+    async () => {
+      const u = unit({ task_id: 'alpha' });
+      const missing = await validateHandoff(doneHandoff({ evidence: [] }), u, NO_COMMIT_CHECK);
+      const mismatched = await validateHandoff(
+        doneHandoff({
+          evidence: [
+            {
+              requirement: 'some other thing entirely',
+              expected: 'x',
+              actual: 'x',
+              verification: 'pnpm test',
+              result: 'PASS',
+            },
+          ],
+        }),
+        u,
+        NO_COMMIT_CHECK,
+      );
+      return (
+        expect(!missing.ok, 'DONE with an empty evidence array must be refused') ??
+        expect(
+          mismatched.errors.some((e) => e.includes('has no matching evidence entry')),
+          `evidence for a different requirement must not close this one; got: ${mismatched.errors.join('; ')}`,
+        )
+      );
+    },
+  );
+
+  await scenarioAsync(25, 'FAIL and UNKNOWN evidence both keep a lane out of DONE', async () => {
+    const u = unit({ task_id: 'alpha' });
+    const withResult = async (result: string): Promise<string[]> => {
+      const h = doneHandoff();
+      const evidence = (h.evidence as Array<Record<string, unknown>>).map((e) => ({
+        ...e,
+        result,
+      }));
+      return (await validateHandoff({ ...h, evidence }, u, NO_COMMIT_CHECK)).errors;
+    };
+    const failed = await withResult('FAIL');
+    const unknown = await withResult('UNKNOWN');
+    return (
+      expect(failed.length > 0, 'FAIL evidence must refuse DONE') ??
+      expect(
+        unknown.some((e) => e.includes('UNKNOWN')),
+        `UNKNOWN evidence must refuse DONE by name; got: ${unknown.join('; ')}`,
+      )
+    );
+  });
+
+  await scenarioAsync(26, 'a suite that discovered nothing does not prove anything', async () => {
+    const u = unit({ task_id: 'alpha' });
+    const zero = await validateHandoff(
+      doneHandoff({ tests: { discovered: 0, passed: 0, failed: 0, skipped: 0 } }),
+      u,
+      NO_COMMIT_CHECK,
+    );
+    const absent = await validateHandoff(doneHandoff({ tests: undefined }), u, NO_COMMIT_CHECK);
+    const hiddenSkips = await validateHandoff(
+      doneHandoff({ tests: { discovered: 9, passed: 4, failed: 0, skipped: 0 } }),
+      u,
+      NO_COMMIT_CHECK,
+    );
+    return (
+      expect(
+        zero.errors.some((e) => e.includes('zero tests were discovered')),
+        `zero discovered tests must refuse DONE; got: ${zero.errors.join('; ')}`,
+      ) ??
+      expect(
+        absent.errors.some((e) => e.includes('no `tests` counts')),
+        `a test command with no counts must refuse DONE; got: ${absent.errors.join('; ')}`,
+      ) ??
+      expect(
+        hiddenSkips.errors.some((e) => e.includes('unaccounted')),
+        `counts that do not add up must be reported; got: ${hiddenSkips.errors.join('; ')}`,
+      )
+    );
+  });
+
+  await scenarioAsync(27, 'a green that contradicts its own run is refused', async () => {
+    const u = unit({ task_id: 'alpha' });
+    const falseGreen = await validateHandoff(
+      doneHandoff({
+        validation: {
+          commands: ['pnpm test'],
+          results: [{ command: 'pnpm test', exitCode: 1, passed: true }],
+        },
+      }),
+      u,
+      NO_COMMIT_CHECK,
+    );
+    const unclassified = await validateHandoff(
+      doneHandoff({
+        status: 'FAILED',
+        validation: {
+          commands: ['pnpm test'],
+          results: [{ command: 'pnpm test', exitCode: 1, passed: false }],
+        },
+        failures: [],
+      }),
+      u,
+      NO_COMMIT_CHECK,
+    );
+    const rerun = await validateHandoff(
+      doneHandoff({
+        validation: {
+          commands: ['pnpm test', 'pnpm test'],
+          results: [
+            { command: 'pnpm test', exitCode: 1, passed: false },
+            { command: 'pnpm test', exitCode: 0, passed: true },
+          ],
+        },
+      }),
+      u,
+      NO_COMMIT_CHECK,
+    );
+    return (
+      expect(
+        falseGreen.errors.some((e) => e.includes('contradicts exitCode')),
+        `passed=true on a non-zero exit must be caught; got: ${falseGreen.errors.join('; ')}`,
+      ) ??
+      expect(
+        unclassified.errors.some((e) => e.includes('unclassified failure')),
+        `a failing command in no failures entry must be caught; got: ${unclassified.errors.join('; ')}`,
+      ) ??
+      expect(
+        rerun.errors.some((e) => e.includes('reruns of "pnpm test" disagree')),
+        `a second green must not erase a first red; got: ${rerun.errors.join('; ')}`,
+      )
+    );
+  });
+
+  await scenarioAsync(
+    28,
+    'detail is referenced by path, and only known statuses pass',
+    async () => {
+      const u = unit({ task_id: 'alpha' });
+      const pasted = await validateHandoff(
+        doneHandoff({
+          status: 'FAILED',
+          failures: [{ command: 'pnpm test', expected: 'exit 0', actual: 'exit 1' }],
+          artifacts: [],
+        }),
+        u,
+        NO_COMMIT_CHECK,
+      );
+      const bogus = await validateHandoff(doneHandoff({ status: 'COMPLETE' }), u, NO_COMMIT_CHECK);
+      return (
+        expect(
+          pasted.errors.some((e) => e.includes('no `artifacts` path')),
+          `a failure with no artifact path must be caught; got: ${pasted.errors.join('; ')}`,
+        ) ??
+        expect(
+          bogus.errors.some((e) => e.includes('DONE | BLOCKED | FAILED')),
+          `a status outside the allowed set must be refused; got: ${bogus.errors.join('; ')}`,
+        )
+      );
+    },
+  );
+
+  scenario(29, 'every agent points at the one shared output contract', () => {
+    const dir = fileURLToPath(new URL('../../.claude/agents/', import.meta.url));
+    const skill = fileURLToPath(
+      new URL('../../.claude/skills/report-handoff/SKILL.md', import.meta.url),
+    );
+    const agents = readdirSync(dir).filter((f) => f.endsWith('.md'));
+    const silent = agents.filter(
+      (f) => !readFileSync(join(dir, f), 'utf8').includes('report-handoff'),
+    );
+    return (
+      expect(existsSync(skill), 'the shared output contract must exist at one path') ??
+      expect(agents.length > 0, 'no agent definitions found') ??
+      expect(silent.length === 0, `agents that never reach the contract: ${silent.join(', ')}`)
     );
   });
 

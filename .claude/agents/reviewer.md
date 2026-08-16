@@ -50,4 +50,5 @@ change.
 
 Both axes are reported, each ranked internally, with the worst issue in each named.
 
-Return a handoff per `.claude/rules/handoff.schema.json`. `owner` is never `reviewer`.
+Return a handoff. The `report-handoff` skill is the contract, the artifact rule, and the
+evidence a verdict costs. `owner` is never `reviewer`.

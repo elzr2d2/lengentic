@@ -49,4 +49,5 @@ diagram.
 When the missing information is only a human's to supply, say which fact you need and stop.
 A guess laundered through an architecture document is the most expensive kind.
 
-Return a handoff per `.claude/rules/handoff.schema.json`.
+Return a handoff. The `report-handoff` skill is the contract, the artifact rule, and the
+evidence a verdict costs. Open questions go in `unknowns` rather than into a default.

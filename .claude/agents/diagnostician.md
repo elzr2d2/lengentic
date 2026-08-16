@@ -72,4 +72,5 @@ The classification is stated, with the reproduction rate (n of m runs), the raw 
 the assertion diff, and **what you eliminated and how**. A diagnosis without its evidence is
 an opinion.
 
-Return a handoff per `.claude/rules/handoff.schema.json`.
+Return a handoff. The `report-handoff` skill is the contract, the artifact rule, and the
+evidence a verdict costs.

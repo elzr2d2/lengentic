@@ -47,4 +47,9 @@ A gate failing for a reason outside your packet is reported explicitly and left 
 unrelated fix riding in your diff is invisible to review, which is where it needed to be
 seen.
 
-Return a handoff per `.claude/rules/handoff.schema.json`.
+You report; the main session accepts. `DONE` in your handoff is a claim that every
+acceptance criterion has evidence behind it, not the verdict that the packet is finished.
+
+Return a handoff. The `report-handoff` skill is the contract, the artifact rule, and the
+evidence `DONE` costs — including the criterion-by-criterion mapping `pnpm lanes handoff`
+checks.

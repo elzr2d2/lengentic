@@ -56,6 +56,34 @@ counterfactual claim and is forbidden. §2, §19.
 
 ---
 
+## Agentic System Awareness
+
+**Agentic System Awareness** — LenGentic's ability to build a verified operational model of
+an agentic workflow so it can _eventually_ make evidence-backed execution recommendations.
+"Eventually" is load-bearing: the MVP instruments and decides, it does not recommend. §29.
+
+**execution_strategy** — the `decisionType` for the orchestrator's sequential-vs-parallel
+choice. An ordinary `Decision` (§13), not a second pipeline.
+
+**awarenessContext** — the versioned, bounded `rawContext` of an `execution_strategy`
+decision: topology, resources, readiness, limits, risk, evaluation. §29.
+
+**resourceClaim** — an opaque string naming something two tasks might contend for. The
+Platform compares claims for equality and **never interprets them** — files, branches,
+tables and queues are all just claims, which is what keeps §4's boundary intact.
+
+**evaluatorVersion** — the version of the eligibility rules. Like `contextKeyVersion`, a
+change **splits** groups.
+
+**Deterministic eligibility** — a rule the orchestrator evaluates now, in the Playground.
+No history, no learning, reproducible. **Not** confidence, and **not** a recommendation —
+holding those four apart is the whole discipline of §29.
+
+**Unknown is false** — a required condition nobody verified did not pass. Any `unknown`
+forces the safe sequential fallback. The same rule the harness applies in `scripts/lanes.ts`.
+
+---
+
 ## What the product computes
 
 **Group key** — `(workflowName, workflowVersion, decisionType, contextKeyVersion)`. §18.

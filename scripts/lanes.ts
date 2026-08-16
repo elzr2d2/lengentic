@@ -750,9 +750,10 @@ export interface HandoffVerdict {
 }
 
 /**
- * Schema shape plus the two things a schema cannot see: does the commit exist, and did the
- * changed files stay inside the lane. A handoff that claims DONE against a SHA nobody can
- * resolve is the cheapest possible lie and the easiest one to catch.
+ * Schema shape plus the things a schema cannot see: does the commit exist, did the changed
+ * files stay inside the lane, and does the claimed evidence actually bear on the criteria it
+ * is offered for. A handoff that claims DONE against a SHA nobody can resolve is the cheapest
+ * possible lie and the easiest one to catch; `checkEvidence` below catches the next-cheapest.
  */
 export async function validateHandoff(
   handoff: unknown,
@@ -785,6 +786,8 @@ export async function validateHandoff(
     }
   }
 
+  errors.push(...checkEvidence(h, status));
+
   if (status === 'DONE' && opts.checkCommit) {
     const sha = typeof h?.commit === 'string' ? h.commit : '';
     if (!git(['cat-file', '-e', `${sha}^{commit}`]).ok) {
@@ -792,6 +795,147 @@ export async function validateHandoff(
     }
   }
   return { ok: errors.length === 0, errors, status };
+}
+
+interface RunResult {
+  command: string;
+  exitCode: number;
+  passed: boolean;
+}
+
+interface EvidenceItem {
+  requirement: string;
+  result: string;
+}
+
+/** A command that runs tests, so "the suite discovered nothing" becomes a checkable claim. */
+const TEST_COMMAND = /(^|\s|:)(test|tests|vitest|jest|playwright|check:integrity)(\s|$|:)/;
+
+/**
+ * Everything about whether the claimed evidence supports the claimed status.
+ *
+ * Exported so `pnpm check:lanes` can drive it directly. The rules are deliberately
+ * mechanical: each one is a way a green report can be true about a command and false about
+ * the work, and none of them needs an agent's judgement to detect.
+ */
+export function checkEvidence(h: Record<string, unknown>, status: string | null): string[] {
+  const errors: string[] = [];
+  const done = status === 'DONE';
+
+  const validation: Record<string, unknown> = isRecord(h.validation) ? h.validation : {};
+  const commands = Array.isArray(validation.commands) ? (validation.commands as string[]) : [];
+  const results = Array.isArray(validation.results) ? (validation.results as RunResult[]) : [];
+  const failures = Array.isArray(h.failures) ? (h.failures as Array<Record<string, unknown>>) : [];
+  const risks = Array.isArray(h.risks) ? (h.risks as string[]) : [];
+  const artifacts = Array.isArray(h.artifacts) ? (h.artifacts as string[]) : [];
+  const evidence = Array.isArray(h.evidence) ? (h.evidence as EvidenceItem[]) : [];
+  const criteria: Record<string, unknown> = isRecord(h.acceptance_criteria)
+    ? h.acceptance_criteria
+    : {};
+  const verified = Array.isArray(criteria.verified) ? (criteria.verified as string[]) : [];
+
+  // 1. Results line up with the commands that produced them. A results array the reader
+  //    cannot map back to a command is a summary, not evidence.
+  if (results.length !== commands.length) {
+    errors.push(
+      `validation: ${commands.length} command(s) but ${results.length} result(s) — one result per command, same order`,
+    );
+  }
+  results.forEach((r, i) => {
+    const expected = commands[i];
+    if (expected !== undefined && r?.command !== expected) {
+      errors.push(
+        `validation.results[${i}]: "${String(r?.command)}" does not match commands[${i}] "${expected}"`,
+      );
+    }
+    // 2. `passed` is the observed exit code, never an expectation.
+    if (typeof r?.exitCode === 'number' && r.passed !== (r.exitCode === 0)) {
+      errors.push(
+        `validation.results[${i}]: passed=${String(r.passed)} contradicts exitCode=${r.exitCode}`,
+      );
+    }
+  });
+
+  // 3. Every failing command is classified. An unclassified failure reads as noise and
+  //    gets skimmed past, which is exactly how it survives to the next lane.
+  for (const r of results) {
+    if (r?.passed !== false) continue;
+    const classified = failures.some((f) => f?.command === r.command);
+    if (!classified) {
+      errors.push(
+        `validation: "${String(r.command)}" failed but appears in no failures entry — an unclassified failure`,
+      );
+    }
+    if (done) errors.push(`DONE claimed while "${r.command}" failed`);
+  }
+
+  // 4. A rerun that disagrees with itself is flakiness, and flakiness is evidence. A second
+  //    green does not erase a first red.
+  for (const command of new Set(results.map((r) => r?.command))) {
+    const runs = results.filter((r) => r?.command === command);
+    if (runs.length < 2 || new Set(runs.map((r) => r.passed)).size < 2) continue;
+    if (done) errors.push(`DONE claimed while reruns of "${command}" disagree`);
+    const recorded =
+      failures.some((f) => f?.command === command) || risks.some((r) => r.includes(command));
+    if (!recorded) {
+      errors.push(
+        `reruns of "${command}" disagree but the flakiness is in neither risks nor failures`,
+      );
+    }
+  }
+
+  // 5. Evidence is per criterion, and only PASS evidence closes one. UNKNOWN is the honest
+  //    answer for a check that did not settle its criterion, and it is not a pass.
+  const byRequirement = new Map(evidence.map((e) => [e?.requirement, e]));
+  for (const e of evidence) {
+    if (e?.result === 'PASS') continue;
+    if (done) errors.push(`DONE claimed while evidence for "${e?.requirement}" is ${e?.result}`);
+  }
+  if (done) {
+    for (const criterion of verified) {
+      const hit = byRequirement.get(criterion);
+      if (!hit) {
+        errors.push(`acceptance_criteria.verified: "${criterion}" has no matching evidence entry`);
+      } else if (hit.result !== 'PASS') {
+        errors.push(
+          `acceptance_criteria.verified: "${criterion}" is verified but its evidence is ${hit.result}`,
+        );
+      }
+    }
+  }
+
+  // 6. A suite that discovered nothing passes perfectly.
+  const tests = isRecord(h.tests) ? h.tests : null;
+  const ranTests = commands.some((c) => TEST_COMMAND.test(c));
+  if (tests) {
+    const count = (k: string): number => (typeof tests[k] === 'number' ? (tests[k] as number) : 0);
+    const discovered = count('discovered');
+    const accounted = count('passed') + count('failed') + count('skipped');
+    if (discovered !== accounted) {
+      errors.push(
+        `tests: discovered ${discovered} but passed+failed+skipped is ${accounted} — ${discovered - accounted} unaccounted`,
+      );
+    }
+    if (done && discovered < 1) errors.push('DONE claimed while zero tests were discovered');
+    if (done && count('failed') > 0) {
+      errors.push(`DONE claimed while ${count('failed')} test(s) failed`);
+    }
+  } else if (done && ranTests) {
+    errors.push(
+      'DONE claimed against a test command with no `tests` counts — report discovered, passed, failed and skipped',
+    );
+  }
+
+  // 7. A failure whose output is nowhere is a claim.
+  if (failures.length > 0 && artifacts.length === 0) {
+    errors.push('failures reported with no `artifacts` path holding the captured output');
+  }
+
+  return errors;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
 // ── telemetry ─────────────────────────────────────────────────────────────────────────
