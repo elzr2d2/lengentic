@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lengentic.local/schemas/log-event.schema.json",
+  "title": "Structured Log Event",
+  "description": "One line of `.artifacts/telemetry/events.jsonl`. The console line is a rendering of this record, never a second source of truth, and the record is what an evidence entry cites through `eventIds`. Written by `scripts/lib/log.ts`; the same invariants are enforced there so an unsound event throws at the call site instead of being discovered later by a reader. Colour codes never appear here — an escape sequence in a captured artifact is corruption a reader has to strip before the file parses cleanly.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["timestamp", "level", "eventId", "runId", "message"],
+  "properties": {
+    "timestamp": {
+      "description": "ISO 8601, UTC. The console shows only its clock portion.",
+      "type": "string",
+      "minLength": 20
+    },
+    "level": {
+      "description": "DEBUG is written to the artifact and hidden from the console at the default INFO threshold. The artifact is the evidence sink: evidence filtered at write time cannot be recovered.",
+      "type": "string",
+      "enum": ["DEBUG", "INFO", "PASS", "WARN", "ERROR", "FATAL"]
+    },
+    "eventId": {
+      "description": "Stable across runs and across agents — the same failure reported twice carries the same id. That is what makes deduplication and `this retry is that failure` mechanical rather than two messages a reader decides look alike.",
+      "type": "string",
+      "minLength": 1
+    },
+    "runId": { "type": "string", "minLength": 1 },
+    "message": {
+      "description": "One line, a state fact. Not a narration of what the agent is about to do.",
+      "type": "string",
+      "minLength": 1
+    },
+    "taskId": { "type": "string" },
+    "laneId": { "type": "string" },
+    "agent": { "type": "string" },
+    "phase": { "type": "string" },
+    "status": {
+      "description": "`unknown` is a first-class value. A summary derives its verdict from these, and any unknown keeps it out of DONE.",
+      "type": "string",
+      "enum": ["started", "completed", "passed", "failed", "blocked", "retry", "skipped", "unknown"]
+    },
+    "attempt": { "type": "number" },
+    "durationMs": { "type": "number" },
+    "evidenceId": {
+      "description": "Correlates this event with the evidence entry in a handoff. Required on PASS.",
+      "type": "string"
+    },
+    "artifact": {
+      "description": "Repository-relative path holding the full output this line summarises.",
+      "type": "string"
+    },
+    "tests": {
+      "description": "Present on any event reporting a suite. The summary sums these, so a count here that nobody reported cannot appear there.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["discovered", "passed", "failed", "skipped"],
+      "properties": {
+        "discovered": { "type": "number" },
+        "passed": { "type": "number" },
+        "failed": { "type": "number" },
+        "skipped": { "type": "number" }
+      }
+    },
+    "failure": {
+      "description": "Required on ERROR and FATAL. A failure line without expected and actual costs the same to write as one somebody can act on.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["errorType", "expected", "actual"],
+      "properties": {
+        "errorType": { "type": "string", "minLength": 1 },
+        "expected": { "type": "string", "minLength": 1 },
+        "actual": { "type": "string", "minLength": 1 },
+        "command": { "type": "string" },
+        "exitCode": { "type": "number" },
+        "retryCount": { "type": "number" },
+        "classification": {
+          "description": "The Diagnostician's four, when a classification has actually been established. A failure log proves the failure; it does not establish its cause, so this field stays absent until something else settled it.",
+          "type": "string",
+          "enum": ["product-defect", "automation-defect", "incorrect-assumption", "environment"]
+        },
+        "stackArtifact": { "type": "string" },
+        "stdoutArtifact": { "type": "string" },
+        "stderrArtifact": { "type": "string" }
+      }
+    },
+    "duplicateOf": {
+      "description": "The event this one repeats or propagates. A retry cites the failure it retries, and a caller re-reporting a callee's error cites the original — so one stack is written once and referenced everywhere else.",
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "level": { "const": "PASS" } }, "required": ["level"] },
+      "then": {
+        "required": ["evidenceId"],
+        "properties": { "evidenceId": { "minLength": 1 } }
+      }
+    },
+    {
+      "if": { "properties": { "level": { "const": "ERROR" } }, "required": ["level"] },
+      "then": { "required": ["failure"] }
+    },
+    {
+      "if": { "properties": { "level": { "const": "FATAL" } }, "required": ["level"] },
+      "then": { "required": ["failure"] }
+    }
+  ]
+}

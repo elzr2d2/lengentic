@@ -34,20 +34,48 @@
     ],
     "$lanesComment": "Default write surface per lane, from MVP_PLAN_V3.md §5. These feed collision WARNINGS only. The eligibility gate requires per-node `own.allowed`, because a lane label is a category and a work packet needs a boundary.",
     "lanes": {
-      "api": { "allowed": ["platform/api/**"] },
-      "contract": { "allowed": ["platform/shared/**"] },
-      "doc": { "allowed": ["docs/**", "README.md"] },
-      "engine": { "allowed": ["platform/analysis-engine/**"] },
-      "env": { "allowed": [] },
-      "harness": { "allowed": [".artifacts/**"] },
-      "infra": { "allowed": ["scripts/**", "docker/**"] },
-      "persistence": { "allowed": ["platform/database/**"] },
-      "platform": { "allowed": ["platform/**"] },
-      "playground": { "allowed": ["playground/**"] },
-      "pure": { "allowed": ["platform/api/src/**"] },
-      "sdk": { "allowed": ["platform/telemetry-sdk/**"] },
-      "test": { "allowed": ["platform/api/test/**"] },
-      "ui": { "allowed": ["platform/dashboard/**"] }
+      "api": {
+        "allowed": ["platform/api/**"]
+      },
+      "contract": {
+        "allowed": ["platform/shared/**"]
+      },
+      "doc": {
+        "allowed": ["docs/**", "README.md"]
+      },
+      "engine": {
+        "allowed": ["platform/analysis-engine/**"]
+      },
+      "env": {
+        "allowed": []
+      },
+      "harness": {
+        "allowed": [".artifacts/**"]
+      },
+      "infra": {
+        "allowed": ["scripts/**", "docker/**"]
+      },
+      "persistence": {
+        "allowed": ["platform/database/**"]
+      },
+      "platform": {
+        "allowed": ["platform/**"]
+      },
+      "playground": {
+        "allowed": ["playground/**"]
+      },
+      "pure": {
+        "allowed": ["platform/api/src/**"]
+      },
+      "sdk": {
+        "allowed": ["platform/telemetry-sdk/**"]
+      },
+      "test": {
+        "allowed": ["platform/api/test/**"]
+      },
+      "ui": {
+        "allowed": ["platform/dashboard/**"]
+      }
     }
   },
   "$sectionsComment": "Which plan sections each deliverable actually needs. `pnpm oracle packet <id>` slices exactly these out of the plan and nothing else. MVP_PLAN_V3.md is ~25k tokens; a subagent that reads the whole thing spends 25k to learn 2k. Multiply by every agent in every wave and by every retry, and the plan itself becomes the largest single line in the bill.",
@@ -56,7 +84,6 @@
     "p1.debt.precommit": ["7"],
     "p1.debt.secrets": ["15"],
     "p1.docker-runtime": ["PHASE 1"],
-
     "p2.shared-schema": ["6", "11", "12"],
     "p2.prisma-run-step": ["11", "13", "PHASE 2"],
     "p2.merge-rules": ["12"],
@@ -67,7 +94,6 @@
     "p2.runs-api": ["13", "PHASE 2"],
     "p2.dashboard-runs": ["13", "PHASE 2"],
     "p2.integration-tests": ["6", "12", "PHASE 2"],
-
     "p3.scaffold": ["4", "PHASE 3"],
     "p3.mock-provider": ["PHASE 3"],
     "p3.seeded-clock": ["17", "PHASE 3"],
@@ -75,14 +101,12 @@
     "p3.strategy-evaluator": ["29", "PHASE 3"],
     "p3.strategy-telemetry": ["13", "14", "29"],
     "p3.cli": ["PHASE 3"],
-
     "p4.entities": ["13", "14"],
     "p4.payload-safety": ["15"],
     "p4.sdk-decisions": ["13", "14", "16"],
     "p4.attestation": ["14"],
     "p4.run-explorer": ["PHASE 4"],
     "p4.run-summary": ["23"],
-
     "p5.engine-pkg": ["18", "19", "PHASE 0"],
     "p5.negative-fixtures": ["19", "PHASE 0", "PHASE 5"],
     "p5.det-candidate": ["18", "19", "21"],
@@ -91,13 +115,11 @@
     "p5.analysis-endpoint": ["22"],
     "p5.recs-ui": ["21", "22"],
     "p5.spike-deleted": ["PHASE 0"],
-
     "p6.scenario1": ["PHASE 6"],
     "p6.scenario2": ["20", "PHASE 6"],
     "p6.scenario3": ["18", "19", "PHASE 6"],
     "p6.seed-repro": ["17", "PHASE 6"],
     "p6.real-provider": ["PHASE 6"],
-
     "p7.regression": ["PHASE 7"],
     "p7.e2e": ["PHASE 7"],
     "p7.ci-full": ["7", "PHASE 7"],
@@ -156,10 +178,14 @@
       "title": "Docker daemon available",
       "owner": "human",
       "needs": [],
-      "probes": [{ "kind": "cmd", "run": "docker --version" }],
+      "probes": [
+        {
+          "kind": "cmd",
+          "run": "docker --version"
+        }
+      ],
       "note": "BACKLOG.md records Docker + WSL2 as not installed. Blocks every runtime probe below."
     },
-
     {
       "id": "p1.workspace",
       "phase": 1,
@@ -168,9 +194,18 @@
       "owner": "builder",
       "needs": [],
       "probes": [
-        { "kind": "path", "path": "pnpm-workspace.yaml" },
-        { "kind": "script", "name": "gates" },
-        { "kind": "script", "name": "gates:full" }
+        {
+          "kind": "path",
+          "path": "pnpm-workspace.yaml"
+        },
+        {
+          "kind": "script",
+          "name": "gates"
+        },
+        {
+          "kind": "script",
+          "name": "gates:full"
+        }
       ]
     },
     {
@@ -181,8 +216,14 @@
       "owner": "builder",
       "needs": ["p1.workspace"],
       "probes": [
-        { "kind": "path", "path": ".dependency-cruiser.cjs" },
-        { "kind": "script", "name": "check:boundaries" },
+        {
+          "kind": "path",
+          "path": ".dependency-cruiser.cjs"
+        },
+        {
+          "kind": "script",
+          "name": "check:boundaries"
+        },
         {
           "kind": "grep",
           "dir": ".",
@@ -199,8 +240,14 @@
       "owner": "builder",
       "needs": ["p1.workspace"],
       "probes": [
-        { "kind": "path", "path": "scripts/check-isolation.ts" },
-        { "kind": "script", "name": "check:isolation" }
+        {
+          "kind": "path",
+          "path": "scripts/check-isolation.ts"
+        },
+        {
+          "kind": "script",
+          "name": "check:isolation"
+        }
       ]
     },
     {
@@ -211,12 +258,30 @@
       "owner": "builder",
       "needs": [],
       "probes": [
-        { "kind": "path", "path": ".claude/agents/architect.md" },
-        { "kind": "path", "path": ".claude/agents/builder.md" },
-        { "kind": "path", "path": ".claude/agents/validator.md" },
-        { "kind": "path", "path": ".claude/agents/reviewer.md" },
-        { "kind": "path", "path": ".claude/rules/handoff.schema.json" },
-        { "kind": "path", "path": ".claude/hooks/validate-handoff.mjs" }
+        {
+          "kind": "path",
+          "path": ".claude/agents/architect.md"
+        },
+        {
+          "kind": "path",
+          "path": ".claude/agents/builder.md"
+        },
+        {
+          "kind": "path",
+          "path": ".claude/agents/validator.md"
+        },
+        {
+          "kind": "path",
+          "path": ".claude/agents/reviewer.md"
+        },
+        {
+          "kind": "path",
+          "path": ".claude/rules/handoff.schema.json"
+        },
+        {
+          "kind": "path",
+          "path": ".claude/hooks/validate-handoff.mjs"
+        }
       ]
     },
     {
@@ -227,8 +292,14 @@
       "owner": "builder",
       "needs": ["p1.workspace"],
       "probes": [
-        { "kind": "path", "path": "platform/api/src/main.ts" },
-        { "kind": "path", "path": "platform/api/src/health/health.controller.ts" }
+        {
+          "kind": "path",
+          "path": "platform/api/src/main.ts"
+        },
+        {
+          "kind": "path",
+          "path": "platform/api/src/health/health.controller.ts"
+        }
       ]
     },
     {
@@ -239,8 +310,14 @@
       "owner": "builder",
       "needs": ["p1.api"],
       "probes": [
-        { "kind": "path", "path": "platform/dashboard/src/app/page.tsx" },
-        { "kind": "path", "path": "platform/dashboard/src/lib/api.ts" }
+        {
+          "kind": "path",
+          "path": "platform/dashboard/src/app/page.tsx"
+        },
+        {
+          "kind": "path",
+          "path": "platform/dashboard/src/lib/api.ts"
+        }
       ]
     },
     {
@@ -251,8 +328,14 @@
       "owner": "builder",
       "needs": ["p1.workspace"],
       "probes": [
-        { "kind": "path", "path": "platform/database/prisma/schema.prisma" },
-        { "kind": "path", "path": "platform/database/src/index.ts" }
+        {
+          "kind": "path",
+          "path": "platform/database/prisma/schema.prisma"
+        },
+        {
+          "kind": "path",
+          "path": "platform/database/src/index.ts"
+        }
       ]
     },
     {
@@ -263,9 +346,18 @@
       "owner": "builder",
       "needs": ["p1.api", "p1.dashboard"],
       "probes": [
-        { "kind": "path", "path": "docker-compose.yml" },
-        { "kind": "path", "path": "docker/api.Dockerfile" },
-        { "kind": "path", "path": "docker/dashboard.Dockerfile" }
+        {
+          "kind": "path",
+          "path": "docker-compose.yml"
+        },
+        {
+          "kind": "path",
+          "path": "docker/api.Dockerfile"
+        },
+        {
+          "kind": "path",
+          "path": "docker/dashboard.Dockerfile"
+        }
       ]
     },
     {
@@ -275,8 +367,19 @@
       "title": "docker compose up healthy; API reaches PostgreSQL",
       "owner": "validator",
       "needs": ["p1.docker-files", "env.docker"],
-      "probes": [{ "kind": "manual", "evidence": ".artifacts/oracle/docker-smoke.ok" }],
-      "note": "The only unchecked Phase 1 DoD items. Blocked on env.docker, not on code."
+      "probes": [
+        {
+          "kind": "manual",
+          "evidence": ".artifacts/oracle/docker-smoke.ok"
+        }
+      ],
+      "note": "The only unchecked Phase 1 DoD items. Blocked on env.docker, not on code.",
+      "own": {
+        "allowed": [".artifacts/**"]
+      },
+      "validate": ["pnpm --filter @lengentic/database db:migrate", "pnpm test:integration"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p1.ci",
@@ -285,7 +388,12 @@
       "title": "GitHub Actions CI",
       "owner": "builder",
       "needs": ["p1.boundaries", "p1.isolation"],
-      "probes": [{ "kind": "path", "path": ".github/workflows/ci.yml" }]
+      "probes": [
+        {
+          "kind": "path",
+          "path": ".github/workflows/ci.yml"
+        }
+      ]
     },
     {
       "id": "p1.debt.handoff-files",
@@ -295,9 +403,24 @@
       "owner": "builder",
       "needs": ["p1.harness"],
       "probes": [
-        { "kind": "grep", "dir": ".claude/hooks", "pattern": "artifacts[/\\\\]handoffs" },
-        { "kind": "grep", "dir": ".claude/rules", "pattern": "\"taskId\"" }
-      ]
+        {
+          "kind": "grep",
+          "dir": ".claude/hooks",
+          "pattern": "artifacts[/\\\\]handoffs"
+        },
+        {
+          "kind": "grep",
+          "dir": ".claude/rules",
+          "pattern": "\"taskId\""
+        }
+      ],
+      "own": {
+        "allowed": [".claude/hooks/**", ".claude/rules/**"]
+      },
+      "validate": ["pnpm check:lanes", "pnpm gates"],
+      "risk": "high",
+      "changeClass": "contract",
+      "note": "Surface is alwaysForbidden to lanes — this is Coordinator-only work. Declared so the gate rejects it mechanically instead of a human noticing."
     },
     {
       "id": "p1.debt.precommit",
@@ -306,7 +429,18 @@
       "title": "Carried debt — pre-commit hook running gates:full",
       "owner": "builder",
       "needs": ["p1.workspace"],
-      "probes": [{ "kind": "path", "path": ".husky/pre-commit" }]
+      "probes": [
+        {
+          "kind": "path",
+          "path": ".husky/pre-commit"
+        }
+      ],
+      "own": {
+        "allowed": [".husky/**", "package.json"]
+      },
+      "validate": ["pnpm gates:full"],
+      "risk": "medium",
+      "changeClass": "mechanical"
     },
     {
       "id": "p1.debt.secrets",
@@ -315,23 +449,43 @@
       "title": "Carried debt — secret detection before commit",
       "owner": "builder",
       "needs": ["p1.debt.precommit"],
-      "probes": [{ "kind": "grep", "dir": ".husky", "pattern": "secret|gitleaks|trufflehog" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": ".husky",
+          "pattern": "secret|gitleaks|trufflehog"
+        }
+      ],
+      "own": {
+        "allowed": [".husky/**", "scripts/**"]
+      },
+      "validate": ["pnpm gates:full"],
+      "risk": "medium",
+      "changeClass": "mechanical"
     },
-
     {
       "id": "p2.shared-schema",
       "risk": "high",
       "changeClass": "contract",
       "validate": ["pnpm typecheck", "pnpm check:boundaries", "pnpm gates"],
-      "own": { "allowed": ["platform/shared/**"] },
+      "own": {
+        "allowed": ["platform/shared/**"]
+      },
       "phase": 2,
       "lane": "contract",
       "title": "platform/shared/schema — Zod wire contract (§12)",
       "owner": "builder",
       "needs": ["p1.workspace"],
       "probes": [
-        { "kind": "path", "path": "platform/shared/package.json" },
-        { "kind": "grep", "dir": "platform/shared", "pattern": "TelemetryEvent" }
+        {
+          "kind": "path",
+          "path": "platform/shared/package.json"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/shared",
+          "pattern": "TelemetryEvent"
+        }
       ],
       "note": "CRITICAL PATH ROOT. The SDK and the API both import it. Nothing in Phase 2 parallelises until this exists."
     },
@@ -340,15 +494,25 @@
       "risk": "high",
       "changeClass": "contract",
       "validate": ["pnpm typecheck", "pnpm gates"],
-      "own": { "allowed": ["platform/database/prisma/**", "platform/database/src/**"] },
+      "own": {
+        "allowed": ["platform/database/prisma/**", "platform/database/src/**"]
+      },
       "phase": 2,
       "lane": "persistence",
       "title": "Run + Step Prisma models and migration",
       "owner": "builder",
       "needs": ["p1.database-pkg", "p2.shared-schema"],
       "probes": [
-        { "kind": "grep", "dir": "platform/database/prisma", "pattern": "model Run" },
-        { "kind": "grep", "dir": "platform/database/prisma", "pattern": "model Step" }
+        {
+          "kind": "grep",
+          "dir": "platform/database/prisma",
+          "pattern": "model Run"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/database/prisma",
+          "pattern": "model Step"
+        }
       ]
     },
     {
@@ -356,7 +520,9 @@
       "risk": "medium",
       "changeClass": "behavior",
       "validate": ["pnpm test", "pnpm gates"],
-      "own": { "allowed": ["platform/api/src/**"] },
+      "own": {
+        "allowed": ["platform/api/src/**"]
+      },
       "phase": 2,
       "lane": "pure",
       "title": "Merge rules — out-of-order, precedence, terminal conflict (§12)",
@@ -376,41 +542,66 @@
       "risk": "medium",
       "changeClass": "behavior",
       "validate": ["pnpm test", "pnpm gates"],
-      "own": { "allowed": ["platform/api/src/**"] },
+      "own": {
+        "allowed": ["platform/api/src/**"]
+      },
       "phase": 2,
       "lane": "api",
       "title": "POST /v1/telemetry/events — limits, per-event results (§12)",
       "owner": "builder",
       "needs": ["p2.shared-schema", "p2.prisma-run-step", "p2.merge-rules"],
-      "probes": [{ "kind": "grep", "dir": "platform/api/src", "pattern": "v1/telemetry/events" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/api/src",
+          "pattern": "v1/telemetry/events"
+        }
+      ]
     },
     {
       "id": "p2.idempotency",
       "risk": "medium",
       "changeClass": "behavior",
       "validate": ["pnpm test", "pnpm gates"],
-      "own": { "allowed": ["platform/api/src/**"] },
+      "own": {
+        "allowed": ["platform/api/src/**"]
+      },
       "phase": 2,
       "lane": "persistence",
       "title": "Idempotent upsert on eventId; DUPLICATE is a success",
       "owner": "builder",
       "needs": ["p2.ingest-endpoint"],
-      "probes": [{ "kind": "grep", "dir": "platform/api/src", "pattern": "DUPLICATE" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/api/src",
+          "pattern": "DUPLICATE"
+        }
+      ]
     },
     {
       "id": "p2.sdk-core",
       "risk": "medium",
       "changeClass": "behavior",
       "validate": ["pnpm test", "pnpm check:boundaries", "pnpm gates"],
-      "own": { "allowed": ["platform/telemetry-sdk/**"] },
+      "own": {
+        "allowed": ["platform/telemetry-sdk/**"]
+      },
       "phase": 2,
       "lane": "sdk",
       "title": "Telemetry SDK v1 — async, batched, bounded, silent, flushable, retrying (§16)",
       "owner": "builder",
       "needs": ["p2.shared-schema"],
       "probes": [
-        { "kind": "path", "path": "platform/telemetry-sdk/package.json" },
-        { "kind": "grep", "dir": "platform/telemetry-sdk", "pattern": "shutdown" }
+        {
+          "kind": "path",
+          "path": "platform/telemetry-sdk/package.json"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/telemetry-sdk",
+          "pattern": "shutdown"
+        }
       ],
       "note": "Depends on the contract, NOT on the API. Fully parallel with the whole api/persistence lane."
     },
@@ -419,13 +610,21 @@
       "risk": "low",
       "changeClass": "feature",
       "validate": ["pnpm test", "pnpm gates"],
-      "own": { "allowed": ["platform/telemetry-sdk/**"] },
+      "own": {
+        "allowed": ["platform/telemetry-sdk/**"]
+      },
       "phase": 2,
       "lane": "sdk",
       "title": "Clock + IdGenerator injection points in the SDK (§17)",
       "owner": "builder",
       "needs": ["p2.sdk-core"],
-      "probes": [{ "kind": "grep", "dir": "platform/telemetry-sdk", "pattern": "IdGenerator" }],
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/telemetry-sdk",
+          "pattern": "IdGenerator"
+        }
+      ],
       "note": "PLAN GAP: v3 assigns seeded Clock/IdGen to Phase 3 WP4, but the injection seams live in the SDK. Land the seams here or Phase 3 reopens Phase 2 code."
     },
     {
@@ -433,41 +632,63 @@
       "risk": "medium",
       "changeClass": "behavior",
       "validate": ["pnpm test", "pnpm gates"],
-      "own": { "allowed": ["platform/api/src/**"] },
+      "own": {
+        "allowed": ["platform/api/src/**"]
+      },
       "phase": 2,
       "lane": "api",
       "title": "GET /v1/runs + run detail, STALE derivation",
       "owner": "builder",
       "needs": ["p2.prisma-run-step"],
-      "probes": [{ "kind": "grep", "dir": "platform/api/src", "pattern": "v1/runs" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/api/src",
+          "pattern": "v1/runs"
+        }
+      ]
     },
     {
       "id": "p2.dashboard-runs",
       "risk": "low",
       "changeClass": "feature",
       "validate": ["pnpm build", "pnpm gates"],
-      "own": { "allowed": ["platform/dashboard/src/**"] },
+      "own": {
+        "allowed": ["platform/dashboard/src/**"]
+      },
       "phase": 2,
       "lane": "ui",
       "title": "Dashboard: runs list + run detail with nested/orphaned steps",
       "owner": "builder",
       "needs": ["p2.runs-api"],
-      "probes": [{ "kind": "path", "path": "platform/dashboard/src/app/runs" }]
+      "probes": [
+        {
+          "kind": "path",
+          "path": "platform/dashboard/src/app/runs"
+        }
+      ]
     },
     {
       "id": "p2.integration-tests",
       "risk": "medium",
       "changeClass": "behavior",
       "validate": ["pnpm test:integration"],
-      "own": { "allowed": ["platform/api/test/**"] },
+      "own": {
+        "allowed": ["platform/api/test/**"]
+      },
       "phase": 2,
       "lane": "test",
       "title": "Ingestion / idempotency / ordering / stale integration tests",
       "owner": "validator",
       "needs": ["p2.ingest-endpoint", "p2.idempotency", "env.docker"],
-      "probes": [{ "kind": "grep", "dir": "platform/api/test", "pattern": "telemetry|ingest" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/api/test",
+          "pattern": "telemetry|ingest"
+        }
+      ]
     },
-
     {
       "id": "p3.scaffold",
       "phase": 3,
@@ -476,9 +697,22 @@
       "owner": "builder",
       "needs": ["p2.sdk-core"],
       "probes": [
-        { "kind": "path", "path": "playground/package.json" },
-        { "kind": "grep", "dir": "playground", "pattern": "telemetry-sdk" }
-      ]
+        {
+          "kind": "path",
+          "path": "playground/package.json"
+        },
+        {
+          "kind": "grep",
+          "dir": "playground",
+          "pattern": "telemetry-sdk"
+        }
+      ],
+      "own": {
+        "allowed": ["playground/package.json", "playground/tsconfig.json", "playground/index.ts"]
+      },
+      "validate": ["pnpm check:boundaries", "pnpm check:isolation"],
+      "risk": "medium",
+      "changeClass": "contract"
     },
     {
       "id": "p3.mock-provider",
@@ -487,7 +721,19 @@
       "title": "MockProvider — seeded, offline, configurable delay/failure/context",
       "owner": "builder",
       "needs": ["p3.scaffold"],
-      "probes": [{ "kind": "grep", "dir": "playground", "pattern": "MockProvider" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "playground",
+          "pattern": "MockProvider"
+        }
+      ],
+      "own": {
+        "allowed": ["playground/providers/**"]
+      },
+      "validate": ["pnpm test", "pnpm gates"],
+      "risk": "low",
+      "changeClass": "feature"
     },
     {
       "id": "p3.seeded-clock",
@@ -497,8 +743,18 @@
       "owner": "builder",
       "needs": ["p2.sdk-injection", "p3.scaffold"],
       "probes": [
-        { "kind": "grep", "dir": "playground", "pattern": "SeededClock|SeededIdGenerator" }
-      ]
+        {
+          "kind": "grep",
+          "dir": "playground",
+          "pattern": "SeededClock|SeededIdGenerator"
+        }
+      ],
+      "own": {
+        "allowed": ["playground/determinism/**"]
+      },
+      "validate": ["pnpm test", "pnpm gates"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p3.mock-agent",
@@ -507,7 +763,19 @@
       "title": "MockAgent — Plan/Execute/Validate 5-step workflow",
       "owner": "builder",
       "needs": ["p3.mock-provider"],
-      "probes": [{ "kind": "grep", "dir": "playground", "pattern": "MockAgent" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "playground",
+          "pattern": "MockAgent"
+        }
+      ],
+      "own": {
+        "allowed": ["playground/agents/**"]
+      },
+      "validate": ["pnpm test", "pnpm gates"],
+      "risk": "low",
+      "changeClass": "feature"
     },
     {
       "id": "p3.strategy-evaluator",
@@ -517,7 +785,19 @@
       "owner": "builder",
       "needs": ["p3.scaffold"],
       "note": "Pure function, no LLM, no SDK dependency. The verdict must be testable without telemetry, which is why this does not need p3.mock-agent.",
-      "probes": [{ "kind": "grep", "dir": "playground", "pattern": "evaluatorVersion" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "playground",
+          "pattern": "evaluatorVersion"
+        }
+      ],
+      "own": {
+        "allowed": ["playground/strategy/**"]
+      },
+      "validate": ["pnpm test", "pnpm gates"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p3.strategy-telemetry",
@@ -527,7 +807,19 @@
       "owner": "builder",
       "needs": ["p3.strategy-evaluator", "p3.mock-agent"],
       "note": "Needs p4.sdk-decisions to persist end-to-end. Emitting through the SDK is Phase 3; the Decision entity lands in Phase 4.",
-      "probes": [{ "kind": "grep", "dir": "playground", "pattern": "execution_strategy" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "playground",
+          "pattern": "execution_strategy"
+        }
+      ],
+      "own": {
+        "allowed": ["playground/workflows/**"]
+      },
+      "validate": ["pnpm test", "pnpm gates"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p3.cli",
@@ -536,9 +828,19 @@
       "title": "pnpm playground:happy-path",
       "owner": "builder",
       "needs": ["p3.mock-agent", "p3.seeded-clock"],
-      "probes": [{ "kind": "script", "name": "playground:happy-path" }]
+      "probes": [
+        {
+          "kind": "script",
+          "name": "playground:happy-path"
+        }
+      ],
+      "own": {
+        "allowed": ["playground/cli/**", "package.json"]
+      },
+      "validate": ["pnpm playground:happy-path", "pnpm check:isolation"],
+      "risk": "low",
+      "changeClass": "feature"
     },
-
     {
       "id": "p4.entities",
       "phase": 4,
@@ -547,9 +849,23 @@
       "owner": "builder",
       "needs": ["p2.prisma-run-step"],
       "probes": [
-        { "kind": "grep", "dir": "platform/database/prisma", "pattern": "model Decision" },
-        { "kind": "grep", "dir": "platform/database/prisma", "pattern": "model ToolCall" }
-      ]
+        {
+          "kind": "grep",
+          "dir": "platform/database/prisma",
+          "pattern": "model Decision"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/database/prisma",
+          "pattern": "model ToolCall"
+        }
+      ],
+      "own": {
+        "allowed": ["platform/database/prisma/**", "platform/database/src/**"]
+      },
+      "validate": ["pnpm typecheck", "pnpm gates"],
+      "risk": "high",
+      "changeClass": "contract"
     },
     {
       "id": "p4.payload-safety",
@@ -558,8 +874,20 @@
       "title": "Safe serialize → redact → cap → fingerprint, every JSON field (§15)",
       "owner": "builder",
       "needs": ["p2.sdk-core"],
-      "probes": [{ "kind": "grep", "dir": "platform/telemetry-sdk", "pattern": "redact" }],
-      "note": "Pure and client-side. Highest-value unit-test target in the SDK; no API dependency."
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/telemetry-sdk",
+          "pattern": "redact"
+        }
+      ],
+      "note": "Pure and client-side. Highest-value unit-test target in the SDK; no API dependency.",
+      "own": {
+        "allowed": ["platform/telemetry-sdk/**"]
+      },
+      "validate": ["pnpm --filter @lengentic/telemetry-sdk test", "pnpm gates"],
+      "risk": "high",
+      "changeClass": "behavior"
     },
     {
       "id": "p4.sdk-decisions",
@@ -568,7 +896,19 @@
       "title": "recordDecision returns a handle exposing decisionId",
       "owner": "builder",
       "needs": ["p2.sdk-core", "p2.shared-schema"],
-      "probes": [{ "kind": "grep", "dir": "platform/telemetry-sdk", "pattern": "recordDecision" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/telemetry-sdk",
+          "pattern": "recordDecision"
+        }
+      ],
+      "own": {
+        "allowed": ["platform/telemetry-sdk/**"]
+      },
+      "validate": ["pnpm --filter @lengentic/telemetry-sdk test", "pnpm gates"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p4.attestation",
@@ -577,7 +917,19 @@
       "title": "Cross-process attestOutcome — idempotent, accepts unknown decisionId (§14)",
       "owner": "builder",
       "needs": ["p4.entities", "p4.sdk-decisions"],
-      "probes": [{ "kind": "grep", "dir": "platform/api/src", "pattern": "attest" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/api/src",
+          "pattern": "attest"
+        }
+      ],
+      "own": {
+        "allowed": ["platform/api/src/**"]
+      },
+      "validate": ["pnpm test", "pnpm test:integration"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p4.run-explorer",
@@ -587,8 +939,18 @@
       "owner": "builder",
       "needs": ["p4.entities", "p2.dashboard-runs"],
       "probes": [
-        { "kind": "grep", "dir": "platform/dashboard/src", "pattern": "timeline|Timeline" }
-      ]
+        {
+          "kind": "grep",
+          "dir": "platform/dashboard/src",
+          "pattern": "timeline|Timeline"
+        }
+      ],
+      "own": {
+        "allowed": ["platform/dashboard/src/**"]
+      },
+      "validate": ["pnpm build", "pnpm gates"],
+      "risk": "low",
+      "changeClass": "feature"
     },
     {
       "id": "p4.run-summary",
@@ -598,11 +960,20 @@
       "owner": "builder",
       "needs": ["p4.entities"],
       "probes": [
-        { "kind": "grep", "dir": "platform/api/src", "pattern": "runSummary|run-summary" }
+        {
+          "kind": "grep",
+          "dir": "platform/api/src",
+          "pattern": "runSummary|run-summary"
+        }
       ],
-      "note": "PLAN GAP: §23 is in the final DoD but assigned to no phase. Placed in Phase 4. Its 'repeated failed actions' line depends on p5.repeated-failed — ship that field last."
+      "note": "PLAN GAP: §23 is in the final DoD but assigned to no phase. Placed in Phase 4. Its 'repeated failed actions' line depends on p5.repeated-failed — ship that field last.",
+      "own": {
+        "allowed": ["platform/api/src/**"]
+      },
+      "validate": ["pnpm test", "pnpm gates"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
-
     {
       "id": "p5.engine-pkg",
       "phase": 5,
@@ -611,10 +982,22 @@
       "owner": "builder",
       "needs": ["p1.workspace"],
       "probes": [
-        { "kind": "path", "path": "platform/analysis-engine/package.json" },
-        { "kind": "path", "path": "platform/analysis-engine/src" }
+        {
+          "kind": "path",
+          "path": "platform/analysis-engine/package.json"
+        },
+        {
+          "kind": "path",
+          "path": "platform/analysis-engine/src"
+        }
       ],
-      "note": "Depends on NOTHING in phases 2-4. The spike already proved it. Can be built in parallel with Phase 2 the moment the workspace exists."
+      "note": "Depends on NOTHING in phases 2-4. The spike already proved it. Can be built in parallel with Phase 2 the moment the workspace exists.",
+      "own": {
+        "allowed": ["platform/analysis-engine/**"]
+      },
+      "validate": ["pnpm --filter @lengentic/analysis-engine test", "pnpm check:boundaries"],
+      "risk": "medium",
+      "changeClass": "contract"
     },
     {
       "id": "p5.negative-fixtures",
@@ -623,7 +1006,19 @@
       "title": "Negative fixture suite D4-D9 + R1-R3, each naming its gate",
       "owner": "builder",
       "needs": ["p5.engine-pkg"],
-      "probes": [{ "kind": "grep", "dir": "platform/analysis-engine", "pattern": "\"D4\"|D4" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/analysis-engine",
+          "pattern": "\"D4\"|D4"
+        }
+      ],
+      "own": {
+        "allowed": ["platform/analysis-engine/fixtures/**", "platform/analysis-engine/test/**"]
+      },
+      "validate": ["pnpm --filter @lengentic/analysis-engine test"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p5.det-candidate",
@@ -638,7 +1033,13 @@
           "dir": "platform/analysis-engine",
           "pattern": "minorityContextConcentration"
         }
-      ]
+      ],
+      "own": {
+        "allowed": ["platform/analysis-engine/src/**"]
+      },
+      "validate": ["pnpm --filter @lengentic/analysis-engine test", "pnpm gates"],
+      "risk": "high",
+      "changeClass": "behavior"
     },
     {
       "id": "p5.repeated-failed",
@@ -648,8 +1049,18 @@
       "owner": "builder",
       "needs": ["p5.negative-fixtures"],
       "probes": [
-        { "kind": "grep", "dir": "platform/analysis-engine", "pattern": "inputFingerprint" }
-      ]
+        {
+          "kind": "grep",
+          "dir": "platform/analysis-engine",
+          "pattern": "inputFingerprint"
+        }
+      ],
+      "own": {
+        "allowed": ["platform/analysis-engine/src/**"]
+      },
+      "validate": ["pnpm --filter @lengentic/analysis-engine test", "pnpm gates"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p5.rec-persistence",
@@ -659,8 +1070,18 @@
       "owner": "builder",
       "needs": ["p5.det-candidate", "p4.entities"],
       "probes": [
-        { "kind": "grep", "dir": "platform/database/prisma", "pattern": "model Recommendation" }
-      ]
+        {
+          "kind": "grep",
+          "dir": "platform/database/prisma",
+          "pattern": "model Recommendation"
+        }
+      ],
+      "own": {
+        "allowed": ["platform/database/prisma/**", "platform/database/src/**"]
+      },
+      "validate": ["pnpm typecheck", "pnpm test:integration"],
+      "risk": "high",
+      "changeClass": "contract"
     },
     {
       "id": "p5.analysis-endpoint",
@@ -669,7 +1090,19 @@
       "title": "POST /v1/analysis/run — on demand, never inline with ingestion (§22)",
       "owner": "builder",
       "needs": ["p5.rec-persistence", "p5.repeated-failed"],
-      "probes": [{ "kind": "grep", "dir": "platform/api/src", "pattern": "v1/analysis/run" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/api/src",
+          "pattern": "v1/analysis/run"
+        }
+      ],
+      "own": {
+        "allowed": ["platform/api/src/**"]
+      },
+      "validate": ["pnpm test", "pnpm test:integration"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p5.recs-ui",
@@ -678,7 +1111,19 @@
       "title": "Dashboard: recommendations, gate table, counterexamples, Analyze action",
       "owner": "builder",
       "needs": ["p5.analysis-endpoint", "p4.run-explorer"],
-      "probes": [{ "kind": "grep", "dir": "platform/dashboard/src", "pattern": "recommendation" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/dashboard/src",
+          "pattern": "recommendation"
+        }
+      ],
+      "own": {
+        "allowed": ["platform/dashboard/src/**"]
+      },
+      "validate": ["pnpm build", "pnpm gates"],
+      "risk": "low",
+      "changeClass": "feature"
     },
     {
       "id": "p5.spike-deleted",
@@ -687,9 +1132,19 @@
       "title": "spike/ deleted",
       "owner": "builder",
       "needs": ["p5.det-candidate"],
-      "probes": [{ "kind": "absent", "path": "spike" }]
+      "probes": [
+        {
+          "kind": "absent",
+          "path": "spike"
+        }
+      ],
+      "own": {
+        "allowed": ["spike/**"]
+      },
+      "validate": ["pnpm gates"],
+      "risk": "low",
+      "changeClass": "mechanical"
     },
-
     {
       "id": "p6.scenario1",
       "phase": 6,
@@ -697,7 +1152,18 @@
       "title": "Scenario 1 — happy path, emits nothing",
       "owner": "builder",
       "needs": ["p3.cli", "p5.analysis-endpoint"],
-      "probes": [{ "kind": "script", "name": "playground:happy-path" }]
+      "probes": [
+        {
+          "kind": "script",
+          "name": "playground:happy-path"
+        }
+      ],
+      "own": {
+        "allowed": ["playground/scenarios/happy-path/**"]
+      },
+      "validate": ["pnpm playground:happy-path"],
+      "risk": "low",
+      "changeClass": "feature"
     },
     {
       "id": "p6.scenario2",
@@ -706,7 +1172,18 @@
       "title": "Scenario 2 — repeated failed action",
       "owner": "builder",
       "needs": ["p3.mock-agent", "p5.repeated-failed", "p4.sdk-decisions"],
-      "probes": [{ "kind": "script", "name": "playground:repeated-failure" }]
+      "probes": [
+        {
+          "kind": "script",
+          "name": "playground:repeated-failure"
+        }
+      ],
+      "own": {
+        "allowed": ["playground/scenarios/repeated-failure/**"]
+      },
+      "validate": ["pnpm playground:repeated-failure"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p6.scenario3",
@@ -715,7 +1192,18 @@
       "title": "Scenario 3 — repeated decision, >=30 runs / >=8 contexts, one process",
       "owner": "builder",
       "needs": ["p3.mock-agent", "p5.det-candidate", "p4.sdk-decisions", "p4.attestation"],
-      "probes": [{ "kind": "script", "name": "playground:deterministic-decision" }]
+      "probes": [
+        {
+          "kind": "script",
+          "name": "playground:deterministic-decision"
+        }
+      ],
+      "own": {
+        "allowed": ["playground/scenarios/deterministic-decision/**"]
+      },
+      "validate": ["pnpm playground:deterministic-decision"],
+      "risk": "high",
+      "changeClass": "behavior"
     },
     {
       "id": "p6.seed-repro",
@@ -724,7 +1212,19 @@
       "title": "Same seed → identical telemetry across full scenarios",
       "owner": "validator",
       "needs": ["p6.scenario3", "p3.seeded-clock"],
-      "probes": [{ "kind": "grep", "dir": "playground", "pattern": "seed" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "playground",
+          "pattern": "seed"
+        }
+      ],
+      "own": {
+        "allowed": [".artifacts/**"]
+      },
+      "validate": ["pnpm playground:happy-path", "pnpm playground:deterministic-decision"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p6.real-provider",
@@ -733,10 +1233,20 @@
       "title": "One optional real provider (must not block MVP)",
       "owner": "builder",
       "needs": ["p3.scaffold"],
-      "probes": [{ "kind": "manual", "evidence": ".artifacts/oracle/real-provider.ok" }],
-      "optional": true
+      "probes": [
+        {
+          "kind": "manual",
+          "evidence": ".artifacts/oracle/real-provider.ok"
+        }
+      ],
+      "optional": true,
+      "own": {
+        "allowed": ["playground/providers/**"]
+      },
+      "validate": ["pnpm gates"],
+      "risk": "low",
+      "changeClass": "feature"
     },
-
     {
       "id": "p7.regression",
       "phase": 7,
@@ -744,7 +1254,18 @@
       "title": "Critical unit test list all present and green",
       "owner": "validator",
       "needs": ["p5.det-candidate", "p5.repeated-failed", "p4.payload-safety", "p2.merge-rules"],
-      "probes": [{ "kind": "manual", "evidence": ".artifacts/oracle/regression.ok" }]
+      "probes": [
+        {
+          "kind": "manual",
+          "evidence": ".artifacts/oracle/regression.ok"
+        }
+      ],
+      "own": {
+        "allowed": [".artifacts/**"]
+      },
+      "validate": ["pnpm gates", "pnpm test:integration"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p7.e2e",
@@ -753,7 +1274,18 @@
       "title": "E2E 1-4 including the silence case (E2E 4)",
       "owner": "validator",
       "needs": ["p6.scenario1", "p6.scenario2", "p6.scenario3", "env.docker"],
-      "probes": [{ "kind": "manual", "evidence": ".artifacts/oracle/e2e.ok" }]
+      "probes": [
+        {
+          "kind": "manual",
+          "evidence": ".artifacts/oracle/e2e.ok"
+        }
+      ],
+      "own": {
+        "allowed": ["platform/api/test/**"]
+      },
+      "validate": ["pnpm test:integration"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p7.ci-full",
@@ -762,7 +1294,19 @@
       "title": "CI green on clean checkout including E2E + docker build validation",
       "owner": "builder",
       "needs": ["p1.ci", "p7.e2e"],
-      "probes": [{ "kind": "grep", "dir": ".github/workflows", "pattern": "e2e" }]
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": ".github/workflows",
+          "pattern": "e2e"
+        }
+      ],
+      "own": {
+        "allowed": [".github/workflows/**"]
+      },
+      "validate": ["pnpm gates:full"],
+      "risk": "medium",
+      "changeClass": "mechanical"
     },
     {
       "id": "p7.docker-smoke",
@@ -771,7 +1315,18 @@
       "title": "Clean clone → docker compose up → run visible",
       "owner": "validator",
       "needs": ["p1.docker-runtime", "p6.scenario1"],
-      "probes": [{ "kind": "manual", "evidence": ".artifacts/oracle/docker-smoke-clean.ok" }]
+      "probes": [
+        {
+          "kind": "manual",
+          "evidence": ".artifacts/oracle/docker-smoke-clean.ok"
+        }
+      ],
+      "own": {
+        "allowed": [".artifacts/**"]
+      },
+      "validate": ["pnpm gates:full"],
+      "risk": "medium",
+      "changeClass": "behavior"
     },
     {
       "id": "p7.readme",
@@ -781,10 +1336,31 @@
       "owner": "builder",
       "needs": ["p5.det-candidate"],
       "probes": [
-        { "kind": "grep", "dir": ".", "file": "README.md", "pattern": "attested success" },
-        { "kind": "grep", "dir": ".", "file": "README.md", "pattern": "demotion" },
-        { "kind": "grep", "dir": ".", "file": "README.md", "pattern": "context_diversity|G2" }
-      ]
+        {
+          "kind": "grep",
+          "dir": ".",
+          "file": "README.md",
+          "pattern": "attested success"
+        },
+        {
+          "kind": "grep",
+          "dir": ".",
+          "file": "README.md",
+          "pattern": "demotion"
+        },
+        {
+          "kind": "grep",
+          "dir": ".",
+          "file": "README.md",
+          "pattern": "context_diversity|G2"
+        }
+      ],
+      "own": {
+        "allowed": ["README.md", "docs/**"]
+      },
+      "validate": ["pnpm format:check"],
+      "risk": "low",
+      "changeClass": "mechanical"
     }
   ]
 }

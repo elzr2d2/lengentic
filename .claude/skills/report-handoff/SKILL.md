@@ -44,8 +44,15 @@ expected: # with its source — the DoD line, the contract, the worked example
 actual: # what you observed, the decisive line
 verification: # the command, the request, the file:line, the second interface
 result: # PASS | FAIL | UNKNOWN
+source: # test | command | diff | readback | trace | log
+eventIds: # the log records that bear on it, from the JSONL in `artifact`
 artifact: # where the full output lives
 ```
+
+`source: log` is real and never sufficient: a self-reported success log is the claim, not the
+proof, and `pnpm lanes handoff` refuses a `PASS` carrying only that. A failure log proves the
+failure it observed and never its cause. Emitting those records is the `structured-logging`
+skill.
 
 `UNKNOWN` is the honest result for a check that ran but did not settle the criterion. It is
 not a pass, and it keeps the lane out of `DONE`. Deferred, skipped and not-run are all
@@ -67,6 +74,8 @@ source of truth, and the checker rejects it.
 - reruns of one command disagree; a second green does not erase a first red
 - a test command ran and `tests` is missing, `discovered` is zero, or `failed` is above zero
 - `failures` is non-empty and no `artifacts` path holds the captured output
+- a criterion is `PASS` on `source: log` alone, or cites `eventIds` with no `artifact` holding
+  them
 
 Green is not the claim. The claim is that the thing asked for works, and a suite that
 discovered nothing passes perfectly. Run `pnpm gates` before you report — the deterministic

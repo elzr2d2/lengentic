@@ -17,7 +17,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 
@@ -39,6 +39,16 @@ import {
   type Unit,
 } from '../lanes.ts';
 import { loadActivation, resolveRoles } from '../oracle.ts';
+import {
+  colorsEnabled,
+  createLogger,
+  redact,
+  REDACTED,
+  summaryDisagreements,
+  type EventInput,
+  type LogEvent,
+  type Summary,
+} from '../lib/log.ts';
 
 // ── harness ───────────────────────────────────────────────────────────────────────────
 
@@ -770,7 +780,354 @@ export async function run(): Promise<number> {
     );
   });
 
+  // ── logging ─────────────────────────────────────────────────────────────────────────
+  //
+  // The console is a rendering of the JSONL record, and the JSONL record is what an
+  // evidence entry cites. Everything below is a way the two could disagree, or a way a log
+  // could be read as proof of something it never observed.
+
+  scenario(30, 'colour follows the destination, never the message', () => {
+    const tty = colorsEnabled({}, { isTTY: true });
+    const piped = colorsEnabled({}, { isTTY: false });
+    const noColor = colorsEnabled({ NO_COLOR: '1' }, { isTTY: true });
+    const ci = colorsEnabled({ CI: 'true' }, { isTTY: true });
+    const forced = colorsEnabled({ CI: 'true', FORCE_COLOR: '1' }, { isTTY: false });
+
+    const line = capture({ isTTY: true }).lines[0] ?? '';
+    return (
+      expect(tty, 'an interactive terminal gets colour') ??
+      expect(!piped, 'a redirected stream must be plain text') ??
+      expect(!noColor, 'NO_COLOR must win') ??
+      expect(!ci, 'CI is not a TTY contract; plain text unless it opts in') ??
+      expect(forced, 'FORCE_COLOR must be the opt-in') ??
+      expect(
+        line.includes(ESC),
+        `a TTY line must carry the level colour; got ${JSON.stringify(line)}`,
+      )
+    );
+  });
+
+  await scenarioAsync(31, 'the JSONL artifact parses and carries no escape codes', async () => {
+    const written = capture({ isTTY: true }, LOG_FILE).file;
+    const lines = written.split('\n').filter(Boolean);
+    const parsed = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    const schema = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL('../../.claude/rules/log-event.schema.json', import.meta.url)),
+        'utf8',
+      ),
+    ) as object;
+    const lib = (await import(
+      new URL('../../.claude/hooks/lib/validate-schema.mjs', import.meta.url).href
+    )) as { validate: (v: unknown, s: object) => string[] };
+    const errors = parsed.flatMap((e) => lib.validate(e, schema));
+
+    return (
+      expect(lines.length > 0, 'the artifact must receive the events') ??
+      expect(!written.includes(ESC), 'an escape code in a captured artifact is corruption') ??
+      expect(errors.length === 0, `events must match their schema; got: ${errors.join('; ')}`)
+    );
+  });
+
+  scenario(32, 'the default threshold hides DEBUG and keeps progression visible', () => {
+    const replay = capture({ isTTY: false }, LOG_FILE);
+    const shown = replay.lines.join('');
+    const recorded = replay.file;
+    return (
+      expect(!shown.includes('internal step'), 'DEBUG must not reach the console at INFO') ??
+      expect(recorded.includes('internal step'), 'the artifact keeps what the console hides') ??
+      expect(shown.includes('BUILD started'), 'a phase start must stay visible') ??
+      expect(shown.includes('typecheck 0 errors'), 'a gate result must stay visible') ??
+      expect(shown.includes('RBAC mismatch'), 'a failure must stay visible')
+    );
+  });
+
+  scenario(33, 'a log line cannot claim more than it observed', () => {
+    const log = createLogger({ runId: 'r', artifact: '', stream: sink(), env: {} });
+    const noEvidence = threw(() => log.pass('gates green', {} as { evidenceId: string }));
+    const noExpected = threw(() =>
+      log.error('it broke', {
+        failure: { errorType: 'x', expected: '', actual: 'boom' },
+      }),
+    );
+    const badStatus = threw(() =>
+      log.event({ level: 'INFO', message: 'x', status: 'COMPLETE' as 'completed' }),
+    );
+    const badCounts = threw(() =>
+      log.info('suite', { tests: { discovered: 4, passed: 1, failed: 0, skipped: 0 } }),
+    );
+    return (
+      expect(
+        noEvidence.includes('evidenceId'),
+        `PASS without evidence must throw; got ${noEvidence}`,
+      ) ??
+      expect(
+        noExpected.includes('expected'),
+        `ERROR without expected must throw; got ${noExpected}`,
+      ) ??
+      expect(badStatus !== '', 'a status outside the allowed set must be refused') ??
+      expect(
+        badCounts.includes('discovered'),
+        `counts that do not add up must throw; got ${badCounts}`,
+      )
+    );
+  });
+
+  scenario(34, 'a failure line carries what a reader can act on, and no more', () => {
+    const replay = capture({ isTTY: false }, LOG_FILE);
+    const failure = replay.events.find((e) => e.level === 'ERROR');
+    const raw = replay.file;
+    const byKey = redact({ password: 'hunter2', nested: { api_key: 'live-key' } }) as {
+      password: string;
+      nested: { api_key: string };
+    };
+    return (
+      expect(failure !== undefined, 'the failure must be recorded') ??
+      expect(
+        byKey.password === REDACTED && byKey.nested.api_key === REDACTED,
+        'a secret-shaped key is redacted at any depth',
+      ) ??
+      expect(
+        failure?.failure?.expected === '200 for an authorised caller' &&
+          failure?.failure?.actual === '403',
+        'a failure event carries expected and actual',
+      ) ??
+      expect(
+        failure?.evidenceId === 'EV-014' && (failure?.eventId ?? '').startsWith('ev_'),
+        'a failure correlates to its evidence and to a stable event id',
+      ) ??
+      expect(
+        failure?.failure?.classification === undefined,
+        'a failure log must not classify its own root cause',
+      ) ??
+      expect(!raw.includes('hunter2') && !raw.includes('ghp_'), 'secrets must be redacted') ??
+      expect(raw.includes(REDACTED), 'the redaction must be visible, not silent') ??
+      expect(raw.includes('truncated'), 'a bounded field says where it was cut')
+    );
+  });
+
+  scenario(35, 'one failure is written once and referenced afterwards', () => {
+    const replay = capture({ isTTY: false }, LOG_FILE);
+    const rendered = replay.lines.filter((l) => l.includes('RBAC mismatch')).length;
+    const repeats = replay.events.filter((e) => e.duplicateOf !== undefined);
+    const original = replay.events.find((e) => e.level === 'ERROR');
+    return (
+      expect(rendered === 1, `a repeated failure must render once; rendered ${rendered}`) ??
+      expect(repeats.length === 1, `the repeat must still be recorded; got ${repeats.length}`) ??
+      expect(
+        repeats[0]?.duplicateOf === original?.eventId,
+        'the repeat must reference the original event',
+      )
+    );
+  });
+
+  scenario(36, 'the summary is derived from the events, and an unknown is not a pass', () => {
+    const replay = capture({ isTTY: false }, LOG_FILE);
+    const summary = replay.summary;
+    const honest = summaryDisagreements(replay.events, summary, summary.evidence_artifact);
+    const inflated = summaryDisagreements(
+      replay.events,
+      { ...summary, gates_passed: summary.gates_passed + 1 },
+      summary.evidence_artifact,
+    );
+
+    const clean = createLogger({ runId: 'r2', artifact: '', stream: sink(), env: {} });
+    clean.info('phase done', { phase: 'p', status: 'completed' });
+    const cleanVerdict = clean.summary().verdict;
+    clean.info('could not settle it', { phase: 'p', status: 'unknown' });
+    const withUnknown = clean.summary();
+
+    return (
+      expect(
+        honest.length === 0,
+        `a derived summary must match its events; got: ${honest.join('; ')}`,
+      ) ??
+      expect(inflated.length === 1, 'a summary that disagrees with its events must be caught') ??
+      expect(summary.verdict === 'BLOCKED', 'a run with a failure is not DONE') ??
+      expect(cleanVerdict === 'DONE', 'a clean run is DONE') ??
+      expect(withUnknown.verdict === 'BLOCKED', 'an unknown keeps the verdict out of DONE') ??
+      expect(withUnknown.unknowns === 1, 'the unknown stays visible in the summary')
+    );
+  });
+
+  await scenarioAsync(37, 'a log may support a verdict and may never authorize one', async () => {
+    const u = unit({ task_id: 'alpha' });
+    const logOnly = await validateHandoff(
+      doneHandoff({
+        evidence: [
+          {
+            requirement: CRITERION,
+            expected: 'the packet DoD line: emits one row per decision',
+            actual: '1 row',
+            verification: 'read back from the run log',
+            result: 'PASS',
+            source: 'log',
+            eventIds: ['ev_3f21c084aa10'],
+            artifact: '.artifacts/telemetry/events.jsonl',
+          },
+        ],
+      }),
+      u,
+      NO_COMMIT_CHECK,
+    );
+    const uncitable = await validateHandoff(
+      doneHandoff({
+        evidence: [
+          {
+            requirement: CRITERION,
+            expected: 'the packet DoD line: emits one row per decision',
+            actual: '1 row',
+            verification: 'pnpm test -- decision.spec.ts',
+            result: 'PASS',
+            source: 'test',
+            eventIds: ['ev_3f21c084aa10'],
+          },
+        ],
+      }),
+      u,
+      NO_COMMIT_CHECK,
+    );
+    const supported = await validateHandoff(
+      doneHandoff({
+        evidence: [
+          {
+            requirement: CRITERION,
+            expected: 'the packet DoD line: emits one row per decision',
+            actual: '1 row',
+            verification: 'pnpm test -- decision.spec.ts',
+            result: 'PASS',
+            source: 'test',
+            eventIds: ['ev_3f21c084aa10'],
+            artifact: '.artifacts/telemetry/events.jsonl',
+          },
+        ],
+      }),
+      u,
+      NO_COMMIT_CHECK,
+    );
+    return (
+      expect(
+        logOnly.errors.some((e) => e.includes('log alone')),
+        `a PASS on a log alone must be refused; got: ${logOnly.errors.join('; ')}`,
+      ) ??
+      expect(
+        uncitable.errors.some((e) => e.includes('no artifact path')),
+        `an eventId nobody can follow must be refused; got: ${uncitable.errors.join('; ')}`,
+      ) ??
+      expect(
+        supported.ok,
+        `a log citation alongside a test must validate; got: ${supported.errors.join('; ')}`,
+      )
+    );
+  });
+
+  scenario(38, 'the logging policy is stated once and reachable from the roles that log', () => {
+    const root = readFileSync(fileURLToPath(new URL('../../CLAUDE.md', import.meta.url)), 'utf8');
+    const skill = fileURLToPath(
+      new URL('../../.claude/skills/structured-logging/SKILL.md', import.meta.url),
+    );
+    const concision = root.split('Be extremely concise').length - 1;
+    return (
+      expect(existsSync(skill), 'the shared logging contract must exist at one path') ??
+      expect(concision === 1, `the concision policy must be stated once; found ${concision}`) ??
+      expect(root.includes('structured-logging'), 'the root must reach the logging contract') ??
+      expect(
+        readFileSync(
+          fileURLToPath(new URL('../../.claude/skills/report-handoff/SKILL.md', import.meta.url)),
+          'utf8',
+        ).includes('structured-logging'),
+        'the output contract must reach the logging contract rather than restate it',
+      )
+    );
+  });
+
   return report();
+}
+
+// ── logging fixtures ──────────────────────────────────────────────────────────────────
+
+const ESC = String.fromCharCode(27);
+const LOG_FILE = fileURLToPath(
+  new URL('../../.artifacts/scratch/selftest-events.jsonl', import.meta.url),
+);
+
+function sink(over: { isTTY?: boolean } = {}): {
+  write: (chunk: string) => void;
+  isTTY?: boolean;
+  lines: string[];
+} {
+  const lines: string[] = [];
+  return { write: (chunk: string) => void lines.push(chunk), lines, ...over };
+}
+
+function threw(fn: () => unknown): string {
+  try {
+    fn();
+    return '';
+  } catch (e: unknown) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/**
+ * One scripted run, replayed by every logging scenario: a phase start, a DEBUG the console
+ * must hide, a gate that passed with its evidence, a failure carrying a secret and an
+ * oversized field, that same failure reported a second time, and the derived summary.
+ *
+ * Fixed clock and fixed run id, so the event ids are stable and a scenario asserts on a
+ * value rather than on whatever the last run happened to produce.
+ */
+function capture(
+  stream: { isTTY?: boolean },
+  artifact = '',
+): { lines: string[]; file: string; events: readonly LogEvent[]; summary: Summary } {
+  if (artifact !== '') rmSync(artifact, { force: true });
+  const out = sink(stream);
+  const log = createLogger({
+    runId: 'selftest',
+    agent: 'builder',
+    phase: 'p9.fixture',
+    taskId: 'alpha',
+    artifact,
+    stream: out,
+    env: {},
+    clock: () => '2026-08-16T12:41:03.000Z',
+  });
+
+  log.info('BUILD started', { status: 'started' });
+  log.debug('internal step 41 of 900', { status: 'started' });
+  log.pass('typecheck 0 errors', {
+    status: 'passed',
+    durationMs: 15200,
+    evidenceId: 'EV-013',
+    tests: { discovered: 12, passed: 12, failed: 0, skipped: 0 },
+  });
+  const broken: EventInput = {
+    level: 'ERROR',
+    message: 'RBAC mismatch',
+    status: 'failed',
+    evidenceId: 'EV-014',
+    failure: {
+      errorType: 'assertion',
+      expected: '200 for an authorised caller',
+      actual: '403',
+      // Both redaction shapes and the length bound, in the one field a real failure would
+      // carry them in: the invocation.
+      command: `curl -H "Authorization: Bearer ghp_0123456789abcdefghij" && psql postgres://svc:hunter2@db:5432/app -c "${'x'.repeat(2400)}"`,
+      exitCode: 1,
+      stdoutArtifact: '.artifacts/runs/rbac.log',
+    },
+  };
+  log.event(broken);
+  log.event(broken);
+  const summary = log.finish();
+
+  return {
+    lines: out.lines,
+    file: artifact === '' ? '' : readFileSync(artifact, 'utf8'),
+    events: log.events(),
+    summary,
+  };
 }
 
 function report(): number {

@@ -43,6 +43,11 @@
             "description": "What was observed — the decisive line. A long run goes to a path in `artifact` or in the top-level `artifacts`, not into this string.",
             "type": "string"
           },
+          "eventIds": {
+            "description": "Structured log records that bear on this finding, from the JSONL named in `artifact`. A failure log is sufficient evidence that the failure was observed, and never sufficient evidence of its cause — see `.claude/skills/structured-logging/SKILL.md`.",
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
           "artifact": { "type": "string" }
         }
       }

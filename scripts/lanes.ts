@@ -31,6 +31,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { createLogger, evidenceIdFor, type Logger } from './lib/log.ts';
 import {
   describeProbe,
   graph,
@@ -806,6 +807,9 @@ interface RunResult {
 interface EvidenceItem {
   requirement: string;
   result: string;
+  source?: string;
+  eventIds?: string[];
+  artifact?: string;
 }
 
 /** A command that runs tests, so "the suite discovered nothing" becomes a checkable claim. */
@@ -931,6 +935,24 @@ export function checkEvidence(h: Record<string, unknown>, status: string | null)
     errors.push('failures reported with no `artifacts` path holding the captured output');
   }
 
+  // 8. A log is a real evidence source and never a sufficient one. The run that emits the
+  //    success line is the same run making the claim, so `source: log` on a PASS is the
+  //    claim restated — pair it with a test, command, diff, read-back or trace. And an
+  //    eventId with no artifact behind it is a reference nobody can follow.
+  for (const e of evidence) {
+    if (e?.source === 'log' && e.result === 'PASS') {
+      errors.push(
+        `evidence for "${e.requirement}" is PASS on a log alone — a self-reported success log is the claim, not the proof`,
+      );
+    }
+    const cited = Array.isArray(e?.eventIds) ? e.eventIds : [];
+    if (cited.length > 0 && (e?.artifact ?? '') === '') {
+      errors.push(
+        `evidence for "${e?.requirement}" cites ${cited.length} log event(s) with no artifact path holding them`,
+      );
+    }
+  }
+
   return errors;
 }
 
@@ -946,6 +968,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * cost you are measuring is how a retrospective becomes the most expensive step.
  */
 export function recordTelemetry(event: Record<string, unknown>): void {
+  logGate(event);
   const dest = join(ROOT, '.artifacts/telemetry/lanes.jsonl');
   mkdirSync(dirname(dest), { recursive: true });
   const key = `${String(event.batch_id)}|${String(event.task_id)}|${String(event.event)}`;
@@ -964,6 +987,61 @@ export function recordTelemetry(event: Record<string, unknown>): void {
     if (seen) return;
   }
   appendFileSync(dest, `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`, 'utf8');
+}
+
+/**
+ * The same gate decision, rendered for a human and recorded as evidence.
+ *
+ * `lanes.jsonl` above is Reflector's coordination-overhead ledger. This is the run's event
+ * log — one line on the console, one record in `.artifacts/telemetry/events.jsonl` that an
+ * evidence entry can cite by `eventId`. The two sinks answer different questions, and
+ * neither is derived from the other's prose.
+ */
+let gateLogger: Logger | null = null;
+
+function logGate(event: Record<string, unknown>): void {
+  gateLogger ??= createLogger({
+    runId: `lanes-${process.pid}`,
+    agent: 'lanes',
+    artifact: join(ROOT, '.artifacts/telemetry/events.jsonl'),
+  });
+  const kind = String(event.event);
+  const task = typeof event.task_id === 'string' ? event.task_id : String(event.batch_id);
+  const scope = { taskId: task, phase: kind };
+
+  if (kind === 'decide') {
+    const blockers = Array.isArray(event.blockers) ? (event.blockers as string[]) : [];
+    gateLogger.info(
+      `decide ${String(event.mode)}${blockers.length > 0 ? ` — blockers ${blockers.join(',')}` : ''}`,
+      { ...scope, status: event.eligible === true ? 'completed' : 'blocked' },
+    );
+    return;
+  }
+
+  const ok = kind === 'lane-gate' ? event.ok === true : event.blocked !== true;
+  if (ok) {
+    gateLogger.pass(`${kind} clean`, {
+      ...scope,
+      status: 'passed',
+      evidenceId: evidenceIdFor(`${kind}:${task}`),
+    });
+    return;
+  }
+  gateLogger.error(`${kind} refused`, {
+    ...scope,
+    status: 'failed',
+    failure: {
+      errorType: kind,
+      expected:
+        kind === 'lane-gate'
+          ? 'every changed file inside the lane allowed_paths'
+          : 'every lane handoff DONE and inside its surface',
+      actual:
+        kind === 'lane-gate'
+          ? `${String(event.violations)} file(s) outside ownership`
+          : 'at least one lane failed the pre-integration gate',
+    },
+  });
 }
 
 // ── rendering ─────────────────────────────────────────────────────────────────────────

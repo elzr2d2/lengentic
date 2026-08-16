@@ -83,6 +83,10 @@ carries its own expected, actual and result, and a command that did not exercise
 is not evidence for it. The `report-handoff` skill is how a handoff is written; the checks
 `pnpm lanes handoff` enforces are listed there.
 
+Structured log records are a fourth evidence source alongside tests, commands and read-back,
+cited by `eventId`. A log never authorizes its own success. The `structured-logging` skill is
+the contract for emitting them and for citing them.
+
 ## Dispatch
 
 Sequential execution is the default. Parallel is an exception a batch earns against the

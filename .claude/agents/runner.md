@@ -47,6 +47,10 @@ One path is yours to write: `.artifacts/runs/**`, and only to capture output you
 alter. Tee a long run there and cite the path, so the caller gets the whole thing without
 wearing it in their context. Everywhere else in the tree stays exactly as you found it.
 
+Where the command emits structured events, cite their `eventId`s and the JSONL path rather
+than re-pasting them — `structured-logging` is the contract, including why a green log line
+is not a verdict.
+
 A failure is reported as it happened. Rerunning until green, adding a retry, or adjusting a
 command to dodge an error converts evidence into fiction.
 

@@ -247,6 +247,28 @@ change, since both are the same unmeasured overhead question wearing different c
 
 ---
 
+## Discovered while wiring structured logging (2026-08-16)
+
+### `pnpm gates` fails on an untracked local settings file
+
+`prettier --check .` reports `.claude/settings.local.json`, which is a per-developer
+permissions file, untracked, and ignored globally rather than by this repository's
+`.gitignore`. `.prettierignore` therefore does not exclude it and the format gate fails for
+anyone who has one. Observed 2026-08-16: `pnpm gates` stops at `format:check` with that file
+as the only complaint; every other gate stage passes.
+
+One line in `.prettierignore` fixes it. Left alone here because it is outside the change that
+found it, and a formatting fix riding in an unrelated diff is invisible to review.
+
+### The logger has no `WARN`-and-above escalation path
+
+`scripts/lib/log.ts` throws on an unsound event, which is right for a script. An agent-side
+caller may want the event downgraded and recorded rather than the run aborted. Worth deciding
+once something outside `pnpm lanes` emits events; deciding it now would be designing against
+a caller that does not exist.
+
+---
+
 ## Environment prerequisites (not backlog — blocking)
 
 - ~~**Node.js v21.0.0**~~ — resolved 2026-08-14. Node 24.19.0 LTS and pnpm 11.21.0 are
