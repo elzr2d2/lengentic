@@ -12,6 +12,11 @@ Read it when you will **name** something (code, test, finding, ticket) or **judg
 something is correct. Skip it when you are only executing a command and reporting what
 came back; the vocabulary changes nothing there.
 
+Two neighbours, neither loaded by default. `docs/decisions/` holds a settled trade-off that
+blocks nothing — read one when a shape surprises you, write one only when all three
+exclusion tests in its README fail. `docs/research/` holds external facts that expire —
+check `review-by` before citing, and never cite a stale note as-is.
+
 ## Plan discipline
 
 Follow `MVP_PLAN_V3.md`. It is the single executable plan.
@@ -182,6 +187,13 @@ Last section: numbered implementation steps.
 
 Phase 0 complete — thesis validated, all nine fixture groups produce agreed verdicts.
 Phase 1 complete and approved — gates, isolation, Docker runtime and integration tests all
-re-verified against a live stack. Carried debt (file-based handoffs, pre-commit hook, secret
-detection) is tracked in the Phase 1 section and does not block Phase 2.
-Phase 2 not started. Do not begin it without an explicit instruction.
+re-verified against a live stack.
+
+**Execution order was amended at the Phase 1 gate: `0 → 1 → 5a → 2 → 3 → 4 → 5b → 6 → 7`.**
+Phase numbers are identity, not sequence. See the amendment in `MVP_PLAN_V3.md` Part III for
+the rationale and the two rejected alternatives. `5a` is Phase 5 waves 1–3 — the pure analysis
+engine, no database, no HTTP, no SDK, no UI. `5b` is waves 4–6 and stays after Phase 4.
+
+**Next up is 5a, framed but not started.** Do not begin it without an explicit instruction.
+Phase 1's carried debt (file-based handoffs OD-5, pre-commit hook, secret detection) runs
+**after 5a and before Phase 2** — human decision, 2026-08-16.

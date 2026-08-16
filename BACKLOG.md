@@ -804,6 +804,152 @@ Branch `dod9-repro` is deleted; the archive is tag `archive/dod9-repro` plus
 
 ---
 
+## Discovered while framing 5a (2026-08-16)
+
+The execution order was amended at the Phase 1 gate — see the amendment in `MVP_PLAN_V3.md`
+Part III. 5a is Phase 5 waves 1–3, pure functions over fixtures, and runs before Phase 2.
+Everything below was surfaced during that framing and is **not** required by the 5a
+Definition of Done.
+
+### Two test packets are self-graded — and three are not
+
+**Source:** council finding in `.artifacts/plans/phases-2-7-execution-plan.md` §6b, then
+checked against `scripts/oracle/graph.json` on 2026-08-16.
+
+The council named `p2.integration-tests`, `p6.seed-repro` and "all of Phase 7 wave 1" as
+packets where Validator authors the evidence and then issues the verdict on it. **Only two of
+those are true.** `p2.integration-tests` and `p7.e2e` own `platform/api/test/**`, so Validator
+writes the test code. `p6.seed-repro`, `p7.regression` and `p7.docker-smoke` own `.artifacts/**`
+only — they run documented commands and write a report, which is what a validator is for. Do
+not "fix" the last three; nothing is wrong with them.
+
+The fix for the two real ones is mechanical and adds two nodes: flip `owner` to `builder`,
+then add `p2.integration-falsify` and `p7.e2e-falsify`, each owned by `validator`, allowed
+`.artifacts/**` only, `needs` the packet it grades. This matters most at **E2E 4**, the silence
+case — the test that is supposed to prove the product has judgment is the one that must not be
+graded by whoever wrote it.
+
+Deferred out of 5a because these are Phase 2 and Phase 7 packets and §8 forbids expanding the
+active phase. 5a's own separation already holds without any change: `p5.negative-fixtures` owns
+`fixtures/** test/**` and the analyzer packets own `src/**`, so an analyzer Builder physically
+cannot edit the fixtures it must satisfy.
+
+**Trigger:** the Phase 2 frame. Do it before `p2.integration-tests` is dispatched, not after.
+
+### Council findings deferred out of 5a
+
+**Source:** `.artifacts/plans/phases-2-7-execution-plan.md` §6b, five-advisor council plus peer
+review, 2026-08-16. Full reasoning lives there; this entry exists so the items are not lost
+between now and the phase that owns each one.
+
+- **Per-lane `DATABASE_URL`.** R9 compares file paths, so two lane worktrees sharing one
+  Postgres is an undeclared shared write surface and `check-lane-ownership.mjs` cannot see it.
+  _Does not apply to 5a — nothing in it touches a database._ **Trigger:** the first wave that
+  runs a migration alongside any other lane, i.e. Phase 2 wave 2 (`p2.prisma-run-step`).
+- **`pnpm lanes worktrees` prints a comment, not a command.** It emits `current.json` as a `#`
+  block for a human to hand-type. No lane file means no enforcement, silently — the worst
+  available failure mode. Roughly five lines in `scripts/lanes.ts` case `'worktrees'`.
+  _Does not apply to 5a — its waves are 1, 1 and 2 packets and the last two collide on
+  `src/**`, so it is sequential with no worktrees._ **Trigger:** the first worktree.
+- **The repair loop has no ceiling.** "One bounded repair attempt" never defines bounded, and
+  re-validates only the failing criterion. Proposed: bounded = one Builder dispatch; re-run the
+  whole DoD after any repair; hard stop to the human after two Diagnostician cycles on one
+  criterion. **Trigger:** the first repair, in any phase. Cheap enough to settle at the 5a gate
+  if one occurs.
+- **Tester contradicts its own agent file.** `.claude/agents/tester.md` says rare and never per
+  packet; the delivery plan schedules Tester (opus) on every behavior-class wave, and Phases 3,
+  5, 6 and 7 are almost entirely behavior class. Pin it to phase gates. **Trigger:** the 5a
+  gate — 5a _is_ a phase gate, and it is the thesis-critical one, so Tester running there is the
+  intended case rather than the cost problem.
+- **`docs/PARALLEL_EXECUTION.md` §2 is stale.** It says Validator ships as `opus` and recommends
+  `sonnet`; `.claude/agents/validator.md` already says `sonnet`. Documentation only.
+- **`env.docker`'s note in `graph.json` is stale.** It reads "BACKLOG.md records Docker + WSL2 as
+  not installed", which this file resolved on 2026-08-16. `pnpm oracle unblock` therefore reports
+  a phantom root cause and `oracle status` still shows Phase 1 at 10/14. Two-line fix, deferred
+  only because it is outside the 5a change.
+- **The delivery plan is unreadable to a stranger.** R1, R6, R9, R11, R12, R15, OD-5, §23, G2 and
+  D4–D9 are cited as load-bearing and defined nowhere in that file. Add a one-line gloss at first
+  use. **Trigger:** `p7.readme`, where the portfolio-reader audience becomes the point.
+
+---
+
+## Discovered reviewing an external method against the harness (2026-08-16)
+
+Full review: `.artifacts/reports/matt-pocock-kb-review-2026-08-16.md`. Source note:
+`docs/research/2026-08-16-matt-pocock-ai-engineering.md`. The review closed two gaps
+directly — research notes and ADRs now have homes — and left these three.
+
+### An outside method agrees that lane cost is unmeasured — and it does not move the trigger
+
+**Source:** review of `docs/research/2026-08-16-matt-pocock-ai-engineering.md`, 2026-08-16.
+
+The note's §11.1 lists `tokenCost` and `elapsedMs` as required per-iteration fields, and
+§15 lists "context health and token-cost telemetry" as a thing to build. This repository
+already knows: **`BACKLOG.md:249`** (R12's "benefit exceeds overhead" is a count heuristic
+over an unmeasured quantity, deferred behind ≥20 dispatched batches with ≥5 parallel) and
+**`BACKLOG.md:655`** (`UserPromptSubmit` does not fire inside a subagent, so the
+Coordinator never learns what a packet cost; fix named as a `SubagentStop` hook appending
+`usage` to `.artifacts/telemetry/lanes.jsonl`).
+
+Both entries stay deferred on their existing triggers. The reason is the point of this
+entry: §11.1 and §15 are labelled **"El/LenGentic extension"** in the note's own text.
+They are this repository's output, not outside evidence. Reopening a named deferral on the
+strength of a mirror is how a trigger quietly stops meaning anything.
+
+**Trigger:** unchanged — whichever of `BACKLOG.md:249` or `:655` fires first. This entry
+adds no new one.
+
+### Dogfood the harness through the product's own schema
+
+**Source:** review of `docs/research/2026-08-16-matt-pocock-ai-engineering.md` §11.1,
+2026-08-16.
+
+That section's per-iteration record — `runId`, `workflowVersion`, `contextKey`,
+`parentEvidenceIds[]`, `tokenCost`, `status` — is LenGentic's product model pointed at
+LenGentic's own delivery harness. A dispatch decision is an `execution_strategy` Decision
+(§29). A lane handoff is an attestation. `pnpm lanes decide` is a deterministic evaluator.
+The shapes already line up because both were designed by the same person for the same
+reason.
+
+Value if built: the harness becomes a telemetry source that is **structurally independent**
+of the Playground, which is exactly what the existing entry _One structurally independent
+attestation in the demo_ asks for. A portfolio reader sees the product observing its own
+construction.
+
+Cost: it is a second instrumented system to maintain, and `.claude/**` is in `graph.json`'s
+`alwaysForbidden` list precisely so the harness and the product stay apart. Wiring product
+telemetry into the harness is not a small architectural question — it may violate the
+boundary that `pnpm check:isolation` exists to protect.
+
+**Trigger:** `p7` portfolio work, and only if `p6` scenarios have not already produced a
+structurally independent attestation source. Not before Phase 5 makes the analyzer real.
+
+### `CLAUDE.md` is 187 lines and pays that on every turn
+
+**Source:** review of `docs/research/2026-08-16-matt-pocock-ai-engineering.md` §3.4 and
+§4.1, 2026-08-16.
+
+The note's rule for an always-loaded file is a one-sentence description, the non-default
+package manager, non-standard commands, and "only rules relevant to virtually every task".
+`CLAUDE.md` carries twelve sections. Several bind narrowly: **Types** binds work crossing a
+module boundary, **Product claims** binds analyzer and recommendation work, **Dispatch**
+binds the Coordinator at a wave boundary. A session that runs one command and reports the
+result pays for all three.
+
+The instrument is the note's §4.1 no-op test: if deleting a sentence would not change agent
+behaviour, delete it. The counter-rule from the same section is why nothing was cut here —
+"Do not shorten useful behavior into ambiguity; delete no-ops rather than merely
+compressing wording." A line count is not evidence that a rule is a no-op.
+
+Recorded rather than acted on because the audit is judgement, not a script, and because
+moving a rule behind a pointer trades context load for the risk that it stops being read.
+
+**Trigger:** the first time a session demonstrably misses a `CLAUDE.md` rule that was in
+context the whole time — that is evidence of dilution, and dilution is the argument for
+cutting. Or `p7.readme`, where the file gets a stranger-facing pass anyway.
+
+---
+
 ## Environment prerequisites (not backlog — blocking)
 
 - ~~**Node.js v21.0.0**~~ — resolved 2026-08-14. Node 24.19.0 LTS and pnpm 11.21.0 are

@@ -978,7 +978,7 @@
       "id": "p5.engine-pkg",
       "phase": 5,
       "lane": "engine",
-      "title": "platform/analysis-engine package; Phase 0 pure functions graduate",
+      "title": "platform/analysis-engine package + graduated types. NO aggregation, NO gate logic.",
       "owner": "builder",
       "needs": ["p1.workspace"],
       "probes": [
@@ -988,10 +988,10 @@
         },
         {
           "kind": "path",
-          "path": "platform/analysis-engine/src"
+          "path": "platform/analysis-engine/src/types.ts"
         }
       ],
-      "note": "Depends on NOTHING in phases 2-4. The spike already proved it. Can be built in parallel with Phase 2 the moment the workspace exists.",
+      "note": "5a wave 1. Graduates spike/types.ts only. aggregate.ts and gates.ts graduate in p5.det-candidate and p5.repeated-failed, AFTER p5.negative-fixtures is red - MVP_PLAN_V3 Phase 5 objective forbids the positive path landing first. Types are engine-local plain TypeScript; this packet does NOT create or import platform/shared/schema. Scaffolding that reaches outside allowed_paths (pnpm-workspace.yaml, tsconfig.base.json, .dependency-cruiser.cjs) is a coordinator commit landed BEFORE dispatch, not this lane's work: report BLOCKED if it is missing.",
       "own": {
         "allowed": ["platform/analysis-engine/**"]
       },
@@ -1003,7 +1003,7 @@
       "id": "p5.negative-fixtures",
       "phase": 5,
       "lane": "engine",
-      "title": "Negative fixture suite D4-D9 + R1-R3, each naming its gate",
+      "title": "Fixture suite D1-D9 + R1-R3, each negative one naming its gate",
       "owner": "builder",
       "needs": ["p5.engine-pkg"],
       "probes": [
@@ -1013,6 +1013,7 @@
           "pattern": "\"D4\"|D4"
         }
       ],
+      "note": "5a wave 2. Reuse spike/fixtures/decisions.json INPUT data verbatim for D1-D9; write every EXPECTED value fresh from the MVP_PLAN_V3 tables (Phase 0 D1-D9 table, Phase 5 D4-D9 + R1-R3 table). Never read an expectation off `pnpm spike` output - an expectation sourced from the implementation cannot fail when the implementation is wrong. R1-R3 are new: build them from scratch. This packet lands RED; no analyzer exists yet.",
       "own": {
         "allowed": ["platform/analysis-engine/fixtures/**", "platform/analysis-engine/test/**"]
       },

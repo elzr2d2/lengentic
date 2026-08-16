@@ -1241,6 +1241,42 @@ Every implementation phase carries at most **five major work packages**, each wi
 owner, acceptance criteria, concrete validation commands, a Definition of Done, and a human
 approval gate. **Do not automatically start the next phase.**
 
+## Execution order amendment — 2026-08-16
+
+**Phase numbers above are identity, not sequence.** A human amended the running order at the
+Phase 1 gate. Phase 5 splits at its own wave boundary and its first half runs next, before
+Phase 2:
+
+```text
+0 → 1 → 5a → 2 → 3 → 4 → 5b → 6 → 7
+```
+
+`5a` is Phase 5 waves 1–3 — `p5.engine-pkg`, `p5.negative-fixtures`, `p5.det-candidate`,
+`p5.repeated-failed`. Pure functions over fixtures. No database, no HTTP, no SDK, no UI.
+`5b` is Phase 5 waves 4–6 — persistence, the analysis endpoint, and the Dashboard. It stays
+downstream of Phases 2 and 4 because it cannot exist without them.
+
+**Rationale.** The product's differentiator is the refusal — gates G1–G5, counterexamples,
+`N/A` never `0.0%`. Phase 0 proved it and §6 already states the engine needs no container.
+Leaving it behind 34 deliverables gated on a Zod schema defers the only work that can
+falsify the thesis. Reordering costs nothing now and is expensive once the ingest pipeline
+exists.
+
+**Rejected: renumbering.** Task IDs stay `p5.*` and section numbers stay put. Renumbering
+would rewrite `scripts/oracle/graph.json`, `docs/PARALLEL_EXECUTION.md`, every plan
+cross-reference and the git trail, and manufacture a new generation of stale citations for
+no behavioral gain.
+
+**Rejected: a second front.** Running 5a concurrently with Phase 2 was rejected on two
+independent grounds — see `.artifacts/plans/phases-2-7-execution-plan.md` §6b. 5a runs
+alone, sequentially, and takes its own human approval gate.
+
+**Types in 5a are engine-local.** `platform/analysis-engine` defines its own input and
+output types in plain TypeScript, graduated from `spike/types.ts`. It does **not** create or
+import `platform/shared/schema`. §6's "one wire contract" binds what crosses a process
+boundary; nothing in 5a crosses one. The Zod schema and an explicit mapper land in 5b, when
+the API first serves a Recommendation over HTTP.
+
 Testing ownership is distributed, not deferred:
 
 | Phase | Owns these tests                                                |
@@ -1722,13 +1758,29 @@ mode that kills a recommendations product.
 
 ## Work packages
 
-| #   | Package                    | Owner   | Acceptance                                                       |
-| --- | -------------------------- | ------- | ---------------------------------------------------------------- |
-| 1   | Graduate Phase 0 functions | Builder | Pure aggregation + gates move into `platform/analysis-engine`    |
-| 2   | Negative fixture suite     | Builder | Every gate has a dedicated suppressor; each names its gate       |
-| 3   | Deterministic candidate    | Builder | §18 aggregation, §19 gates, §21 output shape                     |
-| 4   | Repeated failed action     | Builder | §20.2 conditions only; `R1`–`R3` fixtures pass                   |
-| 5   | Persistence + trigger + UI | Builder | Fingerprint dedupe, `POST /v1/analysis/run`, Dashboard rendering |
+| #   | Package                    | Owner   | Acceptance                                                                   |
+| --- | -------------------------- | ------- | ---------------------------------------------------------------------------- |
+| 1   | Package + types only       | Builder | `platform/analysis-engine` exists; `spike/types.ts` graduates. **No logic.** |
+| 2   | Negative fixture suite     | Builder | Every gate has a dedicated suppressor; each names its gate                   |
+| 3   | Deterministic candidate    | Builder | §18 aggregation, §19 gates, §21 output shape                                 |
+| 4   | Repeated failed action     | Builder | §20.2 conditions only; `R1`–`R3` fixtures pass                               |
+| 5   | Persistence + trigger + UI | Builder | Fingerprint dedupe, `POST /v1/analysis/run`, Dashboard rendering             |
+
+Packages 1–4 are **5a** and run before Phase 2. Package 5 is **5b** and stays after Phase 4.
+See the execution order amendment in Part III.
+
+**Package 1 carries no aggregation and no gate code.** Graduating Phase 0's `aggregate.ts`
+and `gates.ts` in package 1 would land the positive path before package 2's fixtures exist,
+which is the exact inversion this phase's objective forbids. The logic graduates in
+packages 3 and 4, against fixtures that are already red.
+
+**Fixture provenance.** `spike/fixtures/decisions.json` supplies the `D1`–`D9` _input_ data
+verbatim; Phase 0 already reconciled it with the tables in this document. Every _expected_
+result is written fresh from the `D1`–`D9` table in Phase 0 and the `D4`–`D9` / `R1`–`R3`
+table below — never from what `pnpm spike` printed. A fixture whose expectation was read off
+the implementation cannot fail when the implementation is wrong. `R1`–`R3` are new here and
+are built from scratch. `spike/` therefore survives 5a as an independent cross-check and is
+deleted in 5b, per `p5.spike-deleted`.
 
 ## Negative fixture suite — required
 
@@ -1756,14 +1808,29 @@ pnpm gates
 pnpm test:integration
 ```
 
-## Definition of Done
+## Definition of Done — 5a
+
+Validated by `pnpm --filter @lengentic/analysis-engine test` and `pnpm gates`. No container,
+no `pnpm test:integration` — nothing in 5a touches a database.
 
 - [ ] Phase 0's pure functions and fixtures live in `platform/analysis-engine`.
+- [ ] `platform/analysis-engine` imports nothing from `platform/api`, `platform/database`,
+      `platform/dashboard` or `playground`, and `pnpm check:boundaries` proves it.
 - [ ] All nine `D` fixtures and three `R` fixtures pass.
-- [ ] Every suppression names **every** failing gate.
+- [ ] Every suppression names **every** failing gate, not the first one to fire.
 - [ ] `counterexamples` is present on every deterministic recommendation, empty or not.
 - [ ] Counterexamples include dominant-option failures **and** minority-option successes.
-- [ ] `minorityContextConcentration` is computed and rendered.
+- [ ] `minorityContextConcentration` is computed.
+- [ ] `attestedSuccessRate` is `null`, never `0`, when no outcomes are attested.
+- [ ] Each expected value traces to a table in this document, not to `pnpm spike` output.
+
+**Human approval gate. Phase 2 begins only after it.**
+
+## Definition of Done — 5b
+
+Everything above still holds, plus:
+
+- [ ] `minorityContextConcentration` is rendered.
 - [ ] Re-analysis with the same fingerprint updates, never duplicates.
 - [ ] A `DISMISSED` recommendation stays dismissed across re-analysis.
 - [ ] `POST /v1/analysis/run` triggers analysis; nothing runs inline with ingestion.
