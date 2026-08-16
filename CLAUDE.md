@@ -181,4 +181,7 @@ Last section: numbered implementation steps.
 ## Current state
 
 Phase 0 complete — thesis validated, all nine fixture groups produce agreed verdicts.
-Phase 1 in progress.
+Phase 1 complete and approved — gates, isolation, Docker runtime and integration tests all
+re-verified against a live stack. Carried debt (file-based handoffs, pre-commit hook, secret
+detection) is tracked in the Phase 1 section and does not block Phase 2.
+Phase 2 not started. Do not begin it without an explicit instruction.

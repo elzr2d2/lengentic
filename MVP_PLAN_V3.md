@@ -1353,7 +1353,11 @@ new evidence.
 
 # PHASE 1 — FOUNDATION + INFRASTRUCTURE
 
-**Status: in progress. Everything except the Docker runtime checks is verified.**
+**Status: COMPLETE.** Every Definition of Done item was re-verified on 2026-08-16 against a
+live stack: `pnpm gates:full` green, `docker compose up --wait --build` reporting all three
+services healthy, `db:migrate` in sync, `pnpm test:integration` 4/4, and `GET /health`
+returning `200 {"status":"ok","checks":{"database":"up"}}` with the Dashboard rendering
+"API up · Database up". Human approval gate passed. Carried debt below is non-blocking.
 
 ## Objective
 
