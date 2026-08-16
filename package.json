@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit && pnpm -r typecheck",
     "check:boundaries": "depcruise platform playground --config .dependency-cruiser.cjs",
     "check:isolation": "tsx scripts/check-isolation.ts",
+    "oracle": "tsx scripts/oracle.ts",
     "gates": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm check:boundaries",
     "gates:full": "pnpm gates && pnpm check:isolation",
     "spike": "tsx spike/main.ts",
