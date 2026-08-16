@@ -1421,9 +1421,9 @@ already catches proves the suite works, not that the routing works.
 - [x] `pnpm typecheck` passes.
 - [x] `pnpm test` passes.
 - [x] `pnpm build` passes.
-- [ ] PostgreSQL starts.
-- [ ] API reaches PostgreSQL.
-- [ ] `docker compose up` succeeds.
+- [x] PostgreSQL starts.
+- [x] API reaches PostgreSQL.
+- [x] `docker compose up` succeeds.
 
 **Human approval gate.** Only then may Phase 2 begin.
 

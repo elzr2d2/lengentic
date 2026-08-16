@@ -691,6 +691,83 @@ mechanism gets turned off.
 
 ---
 
+## Discovered while reproducing DoD #9 (2026-08-16)
+
+Workflow `dod9-routing-repro`, seven agents on throwaway branch `dod9-repro`. Full evidence in
+`.artifacts/phase1-validation-2026-08-16.md`. #9 passed; three things it surfaced are recorded
+here rather than acted on.
+
+### `pnpm check:routing` — make the seeded-defect run permanent
+
+**Source:** council verdict on #9, 2026-08-16; deferred there, unchanged by the run.
+
+#9 cost seven agents, 852s and 242K subagent tokens to prove once. A permanent script holding a
+small set of seeded defects — each with the assertion that does _not_ catch it — would re-prove
+the routing chain every phase at near-zero marginal cost, and would catch the case where a new
+test accidentally makes a seed visible (which is itself a signal worth having).
+
+Deliberately **not** built during #9: it is scope expansion on the item being negotiated for
+cost, and a suite generalising from one sample would encode that sample's accidents. The run
+also left the retry path untested — the loop-back for an over-obvious seed never fired, because
+attempt 1 was already silent — so the one branch a permanent suite most needs has no exercise
+behind it.
+
+**Trigger:** build it when a second seeded-defect run is wanted for any reason. Two samples is
+the minimum from which a shape can be abstracted; one is a transcription.
+
+### Misrouting under parallel dispatch is uncovered — blocks parallel in Phase 2
+
+**Source:** council caveat on #9, 2026-08-16; confirmed unaddressed by the run.
+
+#9 proved routing at **N=1, sequential, single worktree**. The actual Phase 2 risk is different:
+several lanes in flight at once, each producing handoffs, and a handoff reaching the wrong lane
+or a lane acting on another lane's finding. Nothing in #9 touches that.
+
+`pnpm lanes decide`'s fifteen requirements gate **whether** a batch may go parallel. None of
+them test whether **routing survives concurrency** — that is a different question wearing
+similar clothes, and R3/R7/R10 passing is not evidence for it.
+
+**This item blocks parallel dispatch in Phase 2** (human decision, 2026-08-16). Sequential
+dispatch is unaffected and remains the documented default, so this blocks nothing that is not
+already an exception a batch has to earn.
+
+**Trigger:** the first batch that `pnpm lanes wave <phase>` returns `parallel` for. Prove
+routing across ≥2 concurrent lanes before that batch dispatches — a second seeded defect, in a
+second worktree, checking that each handoff reaches its own lane and no other.
+
+### `onModuleInit` reports a connection it never verified
+
+**Source:** Validator, during #9 detection. `.artifacts/dod9/handoff.json`, evidence entries 1-3.
+
+`PrismaService.onModuleInit` calls `$connect()` and then logs `Database connection established`.
+Under Prisma 7.9.1 with `@prisma/adapter-pg`, `$connect()` **does not reject** for an unreachable
+database. Reproduced against an unreachable host, a non-existent domain, a malformed URL and
+wrong credentials — all four log success and resolve with `threw:false`, while the same client
+reports `isReachable(): false` one line later.
+
+`docker-compose.yml:44-46` documents the opposite contract — _"the API validates its environment
+and connects at boot, so starting it against a Postgres that is merely running produces a restart
+loop."_ That restart loop cannot happen. The API boots reporting itself alive against a database
+it never reached.
+
+This is **on `main`**. It was not introduced by the #9 seed; the seed sat on top of it, and the
+Validator flagged the distinction unprompted in its `unknowns`.
+
+A fix exists and is **already written**, on branch `dod9-repro` — a `$queryRaw\`SELECT 1\``round-trip after`$connect()`, with the failure allowed to propagate. `git diff main..dod9-repro`
+is exactly that change and nothing else. **The branch is deliberately not deleted.**
+
+Not carried to `main` unilaterally: it is production code outside the change that found it, and
+`CLAUDE.md` puts that decision with the human. Note that `pnpm gates` is green either way — the
+defect is invisible to the current suite, which is why #9's seed could hide behind it. Whoever
+takes it should add the `prisma.service.spec.ts` case the seed record names, or it stays
+invisible after the fix too.
+
+**Open question this does not answer:** whether the health endpoint's steady-state
+`isReachable()` posture ("report, don't fail") was meant to extend to boot. The Validator's
+`recommendedNextAction` lays out both readings and declines to pick. Someone has to.
+
+---
+
 ## Environment prerequisites (not backlog — blocking)
 
 - ~~**Node.js v21.0.0**~~ — resolved 2026-08-14. Node 24.19.0 LTS and pnpm 11.21.0 are
