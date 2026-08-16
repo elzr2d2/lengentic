@@ -194,6 +194,18 @@ Phase numbers are identity, not sequence. See the amendment in `MVP_PLAN_V3.md` 
 the rationale and the two rejected alternatives. `5a` is Phase 5 waves 1–3 — the pure analysis
 engine, no database, no HTTP, no SDK, no UI. `5b` is waves 4–6 and stays after Phase 4.
 
-**Next up is 5a, framed but not started.** Do not begin it without an explicit instruction.
+**5a is in progress.** Step 0 — the coordinator commit that must land before any dispatch —
+is done: the `analysis-engine-is-pure` boundary rule with a captured red-then-green proof, the
+gate expectation grid in `MVP_PLAN_V3.md` Phase 5, fixtures `D10`, `D11` and `R4`,
+`docs/decisions/0004`, and all four 5a packets re-briefed in `scripts/oracle/graph.json`.
+Waves 1–3 are next and have not started. The schedule is
+`.artifacts/plans/remaining-roadmap.md` §4.
+
+Two step-0 findings bind every 5a packet. The gate expectation grid in `MVP_PLAN_V3.md` is the
+**only** legal source for an expected value — not `pnpm spike`, not `src/`. And wave 2 lands
+**green**: `pnpm lanes handoff` refuses `DONE` on any failing test, so expectations ship as
+data in `fixtures/**` plus a comparator in `test/grid/**`, and the analyzer packets own
+`src/**` and `test/analyzer/**` and cannot edit either.
+
 Phase 1's carried debt (file-based handoffs OD-5, pre-commit hook, secret detection) runs
 **after 5a and before Phase 2** — human decision, 2026-08-16.

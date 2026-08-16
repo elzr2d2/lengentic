@@ -85,6 +85,18 @@ module.exports = {
       to: { path: '^platform/(?!telemetry-sdk/|shared/)' },
     },
     {
+      name: 'analysis-engine-is-pure',
+      severity: 'error',
+      comment:
+        'The analysis engine is pure functions over decision records (MVP_PLAN_V3.md §18-20). ' +
+        'It owns no persistence, no transport and no rendering, so it may not reach the ' +
+        'database, the API, the Dashboard or the Playground. The Zod schema and the explicit ' +
+        'mapper that carry its output across a process boundary land in 5b, on the far side ' +
+        'of that boundary — never inside the engine.',
+      from: { path: '^platform/analysis-engine/' },
+      to: { path: '^(platform/(api|database|dashboard)|playground)/' },
+    },
+    {
       name: 'nothing-to-spike',
       severity: 'error',
       comment:

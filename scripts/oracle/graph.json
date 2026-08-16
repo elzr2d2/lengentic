@@ -991,7 +991,7 @@
           "path": "platform/analysis-engine/src/types.ts"
         }
       ],
-      "note": "5a wave 1. Graduates spike/types.ts only. aggregate.ts and gates.ts graduate in p5.det-candidate and p5.repeated-failed, AFTER p5.negative-fixtures is red - MVP_PLAN_V3 Phase 5 objective forbids the positive path landing first. Types are engine-local plain TypeScript; this packet does NOT create or import platform/shared/schema. Scaffolding that reaches outside allowed_paths (pnpm-workspace.yaml, tsconfig.base.json, .dependency-cruiser.cjs) is a coordinator commit landed BEFORE dispatch, not this lane's work: report BLOCKED if it is missing.",
+      "note": "5a wave 1. Graduates spike/types.ts only. aggregate.ts and gates.ts graduate in p5.det-candidate and p5.repeated-failed, AFTER p5.negative-fixtures has landed the expectation table - MVP_PLAN_V3 Phase 5 objective forbids the positive path landing first. Types are engine-local plain TypeScript; this packet does NOT create or import platform/shared/schema. The .dependency-cruiser.cjs rule `analysis-engine-is-pure` was landed by the coordinator before dispatch and proven to fire - see .artifacts/evidence/5a/boundary-rule-proof.md; pnpm-workspace.yaml already globs platform/* and tsconfig.base.json has no paths block, so there is no remaining out-of-lane scaffolding. Report BLOCKED if the depcruise rule is missing. This packet MUST land at least one real test: `pnpm lanes handoff` refuses DONE on a test command that discovered zero tests, so a package with no tests cannot be reported. The right one is a contract smoke test over the public entry, not a placeholder.",
       "own": {
         "allowed": ["platform/analysis-engine/**"]
       },
@@ -1003,19 +1003,19 @@
       "id": "p5.negative-fixtures",
       "phase": 5,
       "lane": "engine",
-      "title": "Fixture suite D1-D9 + R1-R3, each negative one naming its gate",
+      "title": "Fixture suite D1-D11 + R1-R4, the gate expectation grid as data, and the comparator that reads it",
       "owner": "builder",
       "needs": ["p5.engine-pkg"],
       "probes": [
         {
           "kind": "grep",
           "dir": "platform/analysis-engine",
-          "pattern": "\"D4\"|D4"
+          "pattern": "D10|D11|R4"
         }
       ],
-      "note": "5a wave 2. Reuse spike/fixtures/decisions.json INPUT data verbatim for D1-D9; write every EXPECTED value fresh from the MVP_PLAN_V3 tables (Phase 0 D1-D9 table, Phase 5 D4-D9 + R1-R3 table). Never read an expectation off `pnpm spike` output - an expectation sourced from the implementation cannot fail when the implementation is wrong. R1-R3 are new: build them from scratch. This packet lands RED; no analyzer exists yet.",
+      "note": "5a wave 2. Reuse spike/fixtures/decisions.json INPUT data verbatim for D1-D9; write every EXPECTED value from the `Gate expectation grid` in MVP_PLAN_V3 Phase 5, which is the ONLY legal source. Never read an expectation off `pnpm spike` output or off src/ - an expectation sourced from the implementation cannot fail when the implementation is wrong. D10, D11 and R1-R4 are new: build them from scratch, inputs included. D10 must fail G1 AND G2 together - it is the only fixture that can catch failedGates=[firstFailure]. D11 must have every outcome UNKNOWN, so G5 fails while G4 is N-A and attestedSuccessRate is null, never 0. R4 must EMIT: R1-R3 all expect silence, so without R4 the analyzer passes with `return []`. This packet LANDS GREEN and contains no analyzer assertions - see `The fixture wave lands green` in MVP_PLAN_V3 Phase 5 for why a red suite cannot be reported under lane-handoff. Deliver fixtures/inputs/**, fixtures/expectations.ts (the grid as typed data), and test/grid/** holding assertAgainstGrid() plus meta-tests proving that comparator catches a missing second failedGate, an attestedSuccessRate of 0 where null is required, and an N-A counted as a pass. A comparator nobody mutation-checked is the green that lies.",
       "own": {
-        "allowed": ["platform/analysis-engine/fixtures/**", "platform/analysis-engine/test/**"]
+        "allowed": ["platform/analysis-engine/fixtures/**", "platform/analysis-engine/test/grid/**"]
       },
       "validate": ["pnpm --filter @lengentic/analysis-engine test"],
       "risk": "medium",
@@ -1035,8 +1035,9 @@
           "pattern": "minorityContextConcentration"
         }
       ],
+      "note": "5a wave 3, first of two. Graduates spike/aggregate.ts and spike/gates.ts. Assert NOTHING here: feed each D fixture through assertAgainstGrid() from test/grid/**, which p5.negative-fixtures owns and this packet may not edit. fixtures/** and test/grid/** are outside allowed_paths on purpose - an analyzer packet that could relax its own expectations is the failure this split exists to prevent. Hash fixtures/expectations.ts and test/grid/** before and after this packet and compare; `pnpm lanes check` validates paths, not that a later packet weakened an earlier one's assertions. Also lands the threshold-binding spec that ADR docs/decisions/0004 substitutes for Tester at the gate: shift each of the five thresholds one unit in each direction and assert that every verdict that should flip does, and every verdict that should not stay put. A threshold no fixture binds is a threshold that can move silently. LANE COLLISION with p5.repeated-failed on src/** and test/analyzer/** - serialise.",
       "own": {
-        "allowed": ["platform/analysis-engine/src/**"]
+        "allowed": ["platform/analysis-engine/src/**", "platform/analysis-engine/test/analyzer/**"]
       },
       "validate": ["pnpm --filter @lengentic/analysis-engine test", "pnpm gates"],
       "risk": "high",
@@ -1056,8 +1057,9 @@
           "pattern": "inputFingerprint"
         }
       ],
+      "note": "5a wave 3, second of two. §20.2 conditions only - same toolName, same sanitized inputFingerprint, result FAILED or an Error, at least three CONSECUTIVE attempts, no success between them. Generic loop detection is out of scope and the recommendation text says `repeated failed action`, never `loop detection`. R1-R3 all expect silence, so `return []` passes three of the four fixtures: R4 is the one that proves the analyzer exists, and a run where R4 does not emit is a FAILED handoff, not a DONE with a caveat. Assert nothing directly; feed fixtures through assertAgainstGrid() from test/grid/**, which this packet may not edit. LANE COLLISION with p5.det-candidate on src/** and test/analyzer/** - serialise, and re-hash fixtures/expectations.ts and test/grid/** afterwards.",
       "own": {
-        "allowed": ["platform/analysis-engine/src/**"]
+        "allowed": ["platform/analysis-engine/src/**", "platform/analysis-engine/test/analyzer/**"]
       },
       "validate": ["pnpm --filter @lengentic/analysis-engine test", "pnpm gates"],
       "risk": "medium",

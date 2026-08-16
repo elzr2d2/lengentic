@@ -80,3 +80,4 @@ item to name how much data.
 | [0001](0001-nine-agent-roster.md)             | Nine agents, not the plan's four            | 2026-08-16 | accepted |
 | [0002](0002-sequential-is-the-default.md)     | Sequential default; unknown counts as false | 2026-08-16 | accepted |
 | [0003](0003-contextkey-is-caller-computed.md) | The caller computes `contextKey`            | 2026-08-16 | accepted |
+| [0004](0004-no-tester-at-the-5a-gate.md)      | No Tester at the 5a gate; a spec instead    | 2026-08-16 | accepted |

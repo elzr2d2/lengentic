@@ -1332,13 +1332,18 @@ prohibits database, HTTP, NestJS, UI, and agents — not a package manifest. `ts
 
 ## Fixtures — one namespace, split by analyzer
 
-| Prefix    | Analyzer                | Introduced | Count |
-| --------- | ----------------------- | ---------- | ----- |
-| `D1`–`D9` | Deterministic candidate | Phase 0    | 9     |
-| `R1`–`R3` | Repeated failed action  | Phase 5    | 3     |
+| Prefix      | Analyzer                | Introduced | Count |
+| ----------- | ----------------------- | ---------- | ----- |
+| `D1`–`D9`   | Deterministic candidate | Phase 0    | 9     |
+| `D10`–`D11` | Deterministic candidate | Phase 5a   | 2     |
+| `R1`–`R4`   | Repeated failed action  | Phase 5a   | 4     |
 
 Phase 0 defines **all five gates** and carries a dedicated suppressor for each, so no gate
 graduates into Phase 5 unexercised.
+
+`D10` and `D11` are Phase 5a additions, not Phase 0 fixtures. Phase 0 achieved one dedicated
+suppressor per gate, which is a different and weaker property than the 5a Definition of Done
+requires — see **Gate expectation grid** in Phase 5 for what each of them closes.
 
 | ID   | Shape                                                                    | Expected                                 |
 | ---- | ------------------------------------------------------------------------ | ---------------------------------------- |
@@ -1761,9 +1766,9 @@ mode that kills a recommendations product.
 | #   | Package                    | Owner   | Acceptance                                                                   |
 | --- | -------------------------- | ------- | ---------------------------------------------------------------------------- |
 | 1   | Package + types only       | Builder | `platform/analysis-engine` exists; `spike/types.ts` graduates. **No logic.** |
-| 2   | Negative fixture suite     | Builder | Every gate has a dedicated suppressor; each names its gate                   |
+| 2   | Negative fixture suite     | Builder | Gate expectation grid transcribed as data; `D10` fails two gates at once     |
 | 3   | Deterministic candidate    | Builder | §18 aggregation, §19 gates, §21 output shape                                 |
-| 4   | Repeated failed action     | Builder | §20.2 conditions only; `R1`–`R3` fixtures pass                               |
+| 4   | Repeated failed action     | Builder | §20.2 conditions only; `R1`–`R4` fixtures pass, and `R4` emits               |
 | 5   | Persistence + trigger + UI | Builder | Fingerprint dedupe, `POST /v1/analysis/run`, Dashboard rendering             |
 
 Packages 1–4 are **5a** and run before Phase 2. Package 5 is **5b** and stays after Phase 4.
@@ -1791,14 +1796,140 @@ D6  Dominant and wrong         60 samples, 96.7% dominance, 61% success → G4
 D7  Poor outcome coverage      50 samples, 95% dominance, 60% coverage → G5
 D9  Genuine judgment call      45 samples, 60/40 split                 → G3
 D8  Version boundary           50 samples, two workflowVersions        → splits, both G1
+D10 Two gates at once          12 samples, 2 contexts                  → G1 AND G2
+D11 Nothing attested           40 samples, every outcome UNKNOWN       → G5 fails, G4 is N-A
 
 R1  Batch iteration            10 identical SUCCESSFUL actions         → silent
 R2  Below threshold            2 consecutive failures, threshold 3     → silent
 R3  Changing inputs            4 failures, different target each time  → silent (progress)
+R4  Genuine repeated failure   3 consecutive failures, same target     → EMIT
 ```
 
 Each negative fixture asserts both that no recommendation is emitted **and** which gate
 suppressed it. `R3` is the important one: different targets means progress, not a loop.
+
+## Gate expectation grid
+
+This grid is the **only** legal source for a Phase 5a expected value. It was computed twice,
+independently, from the raw inputs in `spike/fixtures/decisions.json` against the denominators
+in §18 and the thresholds in §19, by two agents that were denied sight of `spike/aggregate.ts`,
+`spike/gates.ts` and the fixture file's own `expect` blocks. Both grids agree cell for cell.
+Evidence: `.artifacts/evidence/5a/gate-expectation-grid.md`.
+
+`D8` splits on `workflowVersion` before gating, so it occupies two rows.
+
+| Fixture      | samples | contexts | dominant | dominance | coverage | dominant success | G1   | G2   | G3   | G4   | G5   | Verdict    | failedGates | counterexamples |
+| ------------ | ------- | -------- | -------- | --------- | -------- | ---------------- | ---- | ---- | ---- | ---- | ---- | ---------- | ----------- | --------------- |
+| `D1`         | 50      | 12       | YES      | 98.00%    | 94.00%   | 95.65%           | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 1               |
+| `D2`         | 40      | 9        | SKIP     | 92.50%    | 90.00%   | 91.43%           | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 3               |
+| `D3`         | 50      | 10       | YES      | 94.00%    | 100.00%  | 91.49%           | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 3               |
+| `D4`         | 50      | 2        | YES      | 96.00%    | 96.00%   | 95.65%           | PASS | FAIL | PASS | PASS | PASS | SUPPRESSED | G2          | 2               |
+| `D5`         | 12      | 8        | YES      | 100.00%   | 100.00%  | 100.00%          | FAIL | PASS | PASS | PASS | PASS | SUPPRESSED | G1          | 0               |
+| `D6`         | 60      | 15       | YES      | 96.67%    | 93.33%   | 61.11%           | PASS | PASS | PASS | FAIL | PASS | SUPPRESSED | G4          | 2               |
+| `D7`         | 50      | 10       | YES      | 96.00%    | 60.00%   | 96.55%           | PASS | PASS | PASS | PASS | FAIL | SUPPRESSED | G5          | 2               |
+| `D8` a1b2c3d | 26      | 8        | YES      | 96.15%    | 100.00%  | 100.00%          | FAIL | PASS | PASS | PASS | PASS | SUPPRESSED | G1          | 1               |
+| `D8` e4f5a6b | 24      | 8        | YES      | 95.83%    | 100.00%  | 100.00%          | FAIL | PASS | PASS | PASS | PASS | SUPPRESSED | G1          | 1               |
+| `D9`         | 45      | 11       | YES      | 60.00%    | 95.56%   | 96.15%           | PASS | PASS | FAIL | PASS | PASS | SUPPRESSED | G3          | 18              |
+| `D10`        | 12      | 2        | YES      | 100.00%   | 100.00%  | 100.00%          | FAIL | FAIL | PASS | PASS | PASS | SUPPRESSED | G1, G2      | 0               |
+| `D11`        | 40      | 8        | YES      | 95.00%    | 0.00%    | _undefined_      | PASS | PASS | PASS | N-A  | FAIL | SUPPRESSED | G5          | 2               |
+
+`D5` additionally excludes 20 stale-run rows and 5 null-`contextKey` rows before any of the
+above is computed. Those 25 never reach `sampleCount`.
+
+### Why `D10` and `D11` exist
+
+Nine fixtures is not enough to verify the Definition of Done, and this is not a matter of
+taste. `D1`–`D9` produce **exactly one failing gate on every suppressed row**. That is a
+clean one-suppressor-per-gate design and it was the right Phase 0 target, but it leaves two
+Definition of Done items with no fixture that can fail:
+
+- _"Every suppression names **every** failing gate, not the first one to fire."_ With no row
+  that fails twice, `failedGates = [firstFailure]` is indistinguishable from the correct
+  implementation. **`D10`** is the discriminator: 12 samples across 2 contexts fails `G1` and
+  `G2` together, and a short-circuiting implementation reports one of them.
+- _"`attestedSuccessRate` is `null`, never `0`, when no outcomes are attested."_ Every
+  `D1`–`D9` dominant option has a non-empty attested denominator, so the null path is never
+  taken. **`D11`** takes it: every outcome is `UNKNOWN`, so `G5` fails on 0% coverage while
+  `G4` reports `N-A` — never `FAIL`, never `0.0%`. This is §18's "G5 is evaluated first in
+  that case" made testable.
+
+`N-A` is not `PASS`. A group carrying an `N-A` cell is `SUPPRESSED`, and `G4` appears in the
+report as `N-A` rather than in `failedGates`. Reporting an unmeasured rate as a failure
+invents a finding out of missing data; reporting it as a pass is the lie §2 forbids.
+
+### `R` fixtures — no gates apply
+
+`G1`–`G5` are the deterministic-candidate analyzer's gates. §20.2 is a conditions analyzer:
+it emits when all five of its own conditions hold and is otherwise silent. There is no gate
+grid for `R1`–`R4`, and writing one would imply a suppression mechanism that does not exist.
+
+| Fixture | Shape                                                          | Expected                      |
+| ------- | -------------------------------------------------------------- | ----------------------------- |
+| `R1`    | 10 identical actions, all SUCCESS                              | silent — no failure at all    |
+| `R2`    | 2 consecutive failures, same target, threshold 3               | silent — below threshold      |
+| `R3`    | 4 failures, a different `inputFingerprint` each time           | silent — progress, not a loop |
+| `R4`    | 3 consecutive failures, same `toolName` and `inputFingerprint` | **EMIT** — one recommendation |
+
+**`R4` is required, not optional.** `R1`, `R2` and `R3` all expect silence, so an
+implementation of §20.2 that is literally `return []` passes all three and the analyzer
+graduates into 5b unexercised. `D1`–`D3` already carry the positive path for the
+deterministic analyzer; `R` had no equivalent until `R4`.
+
+## The fixture wave lands green, and still lands before the positive path
+
+### The problem this settles
+
+Work package 2 exists to author expectations before the code that produces them. The obvious
+way to do that — write the analyzer specs first and let them fail — cannot be reported. Every
+lane closes with `.claude/rules/lane-handoff.schema.json`, `pnpm lanes handoff` refuses `DONE`
+while any test failed (`scripts/lanes.ts`, _"DONE claimed while N test(s) failed"_), and the
+schema has no `expected-red` status. `BLOCKED` would be a lie — nothing blocked the lane.
+
+The property the phase objective actually protects is **not** that a suite is red. It is that
+no expected value can be read off the implementation. A red suite is one way to get that
+property. It is not the only way, and it is the one this repository's own contracts cannot
+express.
+
+### What package 2 lands instead
+
+Three things, all green, none of which the analyzer packets may edit:
+
+```text
+fixtures/inputs/**          D1-D11 and R1-R4 input data
+fixtures/expectations.ts    the grid above, transcribed as a typed table
+test/grid/**                assertAgainstGrid() + its own meta-tests
+```
+
+`assertAgainstGrid(actual, expected)` is the whole assertion — sample counts, distinct
+contexts, dominant option, all five gate cells, `failedGates` as a **set**, verdict,
+counterexample count, and `attestedSuccessRate === null` where the grid says `N-A`. Package 2
+proves it works without any analyzer, against hand-built objects: one conforming object that
+must pass, and a deliberately wrong object per assertion — a `failedGates` list missing its
+second entry, an `attestedSuccessRate` of `0` where `null` is required, an `N-A` counted as a
+pass — each of which must throw. A comparator nobody mutation-checked is the green that lies
+this whole phase is about.
+
+Its meta-tests also assert the table itself is complete: every fixture present, every gate
+cell populated, every `SUPPRESSED` row naming at least one gate, every `CANDIDATE` row naming
+none, `R4` the only `R` row expecting an emission.
+
+### What packages 3 and 4 land
+
+```text
+src/**                      the analyzer
+test/analyzer/**            one spec each, feeding fixtures through assertAgainstGrid()
+```
+
+They supply `actual`. They do not own a single `expect` call about analyzer behaviour.
+
+`fixtures/**` and `test/grid/**` are outside their `allowed_paths`, so an analyzer packet
+**physically cannot** relax an expectation to make its own code pass. `pnpm lanes check`
+enforces that on paths. Hash `fixtures/expectations.ts` and `test/grid/**` before and after
+each analyzer packet and compare as well — paths are what the tool validates, and a hash is
+what catches an edit that stayed inside a path it was allowed to touch.
+
+The ordering guarantee survives intact: the numbers are committed, reviewed and merged before
+any line of `src/**` exists.
 
 ## Validation commands
 
@@ -1816,8 +1947,10 @@ no `pnpm test:integration` — nothing in 5a touches a database.
 - [ ] Phase 0's pure functions and fixtures live in `platform/analysis-engine`.
 - [ ] `platform/analysis-engine` imports nothing from `platform/api`, `platform/database`,
       `platform/dashboard` or `playground`, and `pnpm check:boundaries` proves it.
-- [ ] All nine `D` fixtures and three `R` fixtures pass.
-- [ ] Every suppression names **every** failing gate, not the first one to fire.
+- [ ] All eleven `D` fixtures and four `R` fixtures pass.
+- [ ] Every suppression names **every** failing gate, not the first one to fire — `D10`
+      fails two gates and both are named.
+- [ ] `R4` emits. An implementation of §20.2 that returns nothing fails the suite.
 - [ ] `counterexamples` is present on every deterministic recommendation, empty or not.
 - [ ] Counterexamples include dominant-option failures **and** minority-option successes.
 - [ ] `minorityContextConcentration` is computed.

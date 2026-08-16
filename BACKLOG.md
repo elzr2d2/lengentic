@@ -861,6 +861,14 @@ between now and the phase that owns each one.
   5, 6 and 7 are almost entirely behavior class. Pin it to phase gates. **Trigger:** the 5a
   gate — 5a _is_ a phase gate, and it is the thesis-critical one, so Tester running there is the
   intended case rather than the cost problem.
+
+  **Amended 2026-08-16, 5a step 0.** "Pin Tester to phase gates" stands. The last sentence does
+  not. `docs/decisions/0004-no-tester-at-the-5a-gate.md` skips Tester at the 5a gate specifically,
+  on a ground this bullet never weighed: 5a has no running system for Tester to attack, so its
+  job there reduces to shifting thresholds, which is a threshold-binding spec. The exception is
+  narrow and paid for — if that script is not landed by the gate, Tester runs. Tester returns at
+  the 5b gate, where the analyzer sits behind an endpoint.
+
 - **`docs/PARALLEL_EXECUTION.md` §2 is stale.** It says Validator ships as `opus` and recommends
   `sonnet`; `.claude/agents/validator.md` already says `sonnet`. Documentation only.
 - **`env.docker`'s note in `graph.json` is stale.** It reads "BACKLOG.md records Docker + WSL2 as
@@ -870,6 +878,88 @@ between now and the phase that owns each one.
 - **The delivery plan is unreadable to a stranger.** R1, R6, R9, R11, R12, R15, OD-5, §23, G2 and
   D4–D9 are cited as load-bearing and defined nowhere in that file. Add a one-line gloss at first
   use. **Trigger:** `p7.readme`, where the portfolio-reader audience becomes the point.
+
+---
+
+## Discovered computing the gate expectation grid (2026-08-16, 5a step 0)
+
+Two agents independently computed a five-gate grid over `D1`–`D9` from the raw fixture inputs,
+with `spike/aggregate.ts`, `spike/gates.ts` and the fixture `expect` blocks withheld. Both
+grids agree cell for cell. Provenance and full findings:
+`.artifacts/evidence/5a/gate-expectation-grid.md`.
+
+Two of the findings were absorbed into 5a because each was the only way to verify a Definition
+of Done item that already existed — `D10` for "names every failing gate", `D11` for
+"`attestedSuccessRate` is null, never 0". The four below are not required by any Definition of
+Done item and are deferred.
+
+### No fixture sits on a gate threshold
+
+**Source:** both grid computations, independently.
+
+Sample counts across the whole corpus are 12, 24, 26, 40, 45, 50, 50, 50, 60 — never 30.
+Distinct-context counts are 2, 8, 8, 9, 10, 10, 11, 12, 15 — never 5. No ratio equals 0.90 or
+0.80. Every fixture sits far from every threshold, so `>=` versus `>` is untested across the
+entire suite and an off-by-one in any comparison operator is invisible.
+
+Wanted: `29 / 30 / 31` samples and `89.9% / 90.0% / 90.1%` dominance, six small groups. Cheap,
+and cheapest now while the analyzer is pure functions with no persistence around it.
+
+Deferred because no 5a Definition of Done item asserts the comparison operator, and §8 forbids
+expanding the active phase. The threshold-binding spec (ADR 0004) partially covers the same ground by
+shifting each threshold one unit — it would catch a `>` written as `>=` at a shifted threshold,
+but not a fixture corpus that never binds. **Trigger:** 5b, or `p7.regression`, whichever comes
+first. If the threshold-binding spec ever reports that a threshold can move without flipping any
+verdict, do it immediately instead.
+
+### `spike/fixtures/decisions.json` declares a `$schema` that does not exist
+
+**Source:** grid computation A.
+
+The file declares `"$schema": "./decisions.fixture-format.md"`. `spike/fixtures/` contains only
+`decisions.json`. Either the format spec was never written, or it was deleted, or it lives
+elsewhere under another name. A pointer to nothing is worse than no pointer — it reads as
+though the expansion semantics are documented somewhere.
+
+Matters at graduation: the fixture rows are run-length encoded with an implicit round-robin
+`contextKey` assignment, and that expansion rule is currently inferred from a `$comment` plus
+`spike/expand.ts`. **Trigger:** `p5.negative-fixtures`, which graduates these fixtures. Either
+write the format note or drop the `$schema` key.
+
+### The round-robin `contextKey` cursor scope is unspecified
+
+**Source:** both grid computations, independently, as an open question.
+
+When a fixture row omits `contextKey`, keys are dealt round-robin from the group's `contexts`
+array. Whether the cursor resets per row or runs continuously across the group's `decisions`
+list is written down nowhere.
+
+**Provably immaterial today.** One of the two agents tested all three plausible semantics and
+every `distinctContextKeyCount` is identical under all three, because in every group the
+largest unkeyed row's `count` is at least `contexts.length`. It stops being immaterial for any
+future fixture whose dominant row is smaller than the context list — which the threshold
+fixtures above would be. **Trigger:** whichever lands first, the boundary fixtures or the
+format note.
+
+### Two fixture `rationale` strings quote a blended success rate
+
+**Source:** grid computation A.
+
+`D7`'s rationale says "a 96.7% success rate" — that is 29/30 across both options. The dominant
+option's own rate, which is what `G4` evaluates, is 28/29 = 96.55%. `D9`'s says "a 93% success
+rate", which is 40/43 blended; `YES` alone is 25/26 = 96.15%.
+
+Neither flips a gate, and both fixtures suppress on other grounds. The risk is narrower and
+real: §19 exists partly to forbid exactly this blend — "a blended success rate across all
+options can clear the gate while the option being recommended is the one that fails" — and
+these two strings encode the forbidden blend in prose sitting next to the numbers. Anyone
+sourcing an expected value from the rationale rather than the grid inherits it.
+
+Deferred because the fixture-provenance rule already forbids sourcing an expectation from
+anywhere but the plan's tables, so the strings are inert as long as that rule holds. **Trigger:**
+`p5.negative-fixtures`, when these rationales are graduated into
+`platform/analysis-engine`. Correct them to the dominant-option rate, or delete the number
+from the prose.
 
 ---
 
