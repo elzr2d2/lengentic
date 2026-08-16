@@ -17,3 +17,7 @@ MVP_PLAN.md
 # Emitted by `pnpm oracle md`. Hand-formatting a generated file only makes the next
 # generation a spurious diff.
 docs/PROJECT_STATUS.md
+
+# Machine-local and gitignored — rewritten whenever a permission is granted. A file git
+# refuses to track cannot be allowed to fail a shared gate.
+.claude/settings.local.json

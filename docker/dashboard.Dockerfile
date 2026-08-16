@@ -16,25 +16,22 @@ FROM base AS build
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
 COPY platform/dashboard/package.json ./platform/dashboard/
 
-# Hoisted, and configured rather than passed as a flag.
+# Hoisted node_modules, inside the image only.
 #
-# pnpm's default isolated layout puts every package behind a symlink in node_modules/.pnpm.
-# Next's standalone tracer records those symlinked paths without copying everything they
-# point at — `@swc/helpers`, which next/dist/server/require-hook.js resolves at runtime
-# rather than statically, is dropped, and the container restart-loops on MODULE_NOT_FOUND.
-# A flat node_modules removes the indirection the tracer mishandles.
+# `@swc/helpers` declares `module-sync` first in its exports map. Node 24 honours that
+# condition from `require()` and resolves the subpath to `esm/_interop_require_default.js`,
+# but Next's file tracer takes the `default` target and records `cjs/_interop_require_default.cjs`
+# instead. Under pnpm's default isolated layout that is all the tracer records, so
+# `.next/standalone` ships the package without its `esm/` directory and the container
+# restart-loops on MODULE_NOT_FOUND the moment next/dist/server/require-hook.js runs. Under a
+# flat layout the tracer records both variants and the standalone output boots.
 #
-# It has to be config, not `pnpm install --node-linker=hoisted`. pnpm 11 verifies dependency
-# state before running any script, and a flag leaves that verification still expecting the
-# isolated layout: it reported the hoisted tree as "installed by a different package manager"
-# and silently re-installed the whole workspace (`+179 -593`) before `next build` started,
-# restoring the symlink farm and reintroducing the crash. The verification is also what
-# dragged root devDependencies into this stage, defeating the filtered install above.
-ENV NPM_CONFIG_NODE_LINKER=hoisted
-ENV NPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
-
+# `--config.node-linker` is the channel that works. pnpm 11 does not read `node-linker` from
+# NPM_CONFIG_*, and does not read it from .npmrc either; the only alternative is `nodeLinker`
+# in pnpm-workspace.yaml, which would impose a flat layout on every developer and CI job to
+# fix a problem that exists only in this image.
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile --filter "@lengentic/dashboard..."
+    pnpm install --frozen-lockfile --config.node-linker=hoisted --filter "@lengentic/dashboard..."
 
 COPY platform/dashboard ./platform/dashboard
 
@@ -45,7 +42,12 @@ COPY platform/dashboard ./platform/dashboard
 ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:3001
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 
-RUN pnpm --filter @lengentic/dashboard build
+# The linker has to be declared here too. pnpm verifies dependency state before running a
+# script, and a build command that omits it evaluates the hoisted tree against isolated
+# expectations, reports it as "installed by a different package manager" and silently
+# re-installs the whole workspace before `next build` starts — restoring the symlink farm
+# and the crash with it.
+RUN pnpm --config.node-linker=hoisted --filter @lengentic/dashboard build
 
 
 FROM base AS runtime

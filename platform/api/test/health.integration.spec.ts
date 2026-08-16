@@ -4,7 +4,6 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { HttpAdapterHost } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { AppModule } from '../src/app.module';
 import { AllExceptionsFilter } from '../src/common/all-exceptions.filter';
 import { PrismaService } from '../src/prisma/prisma.service';
 
@@ -35,7 +34,18 @@ describe('GET /health (integration)', () => {
 
     process.env.DATABASE_URL = container.getConnectionUri();
     process.env.NODE_ENV = 'test';
-    process.env.LOG_LEVEL = 'silent';
+    // 'fatal', not pino's 'silent'. `envSchema` admits six levels and 'silent' is not one of
+    // them, so setting it fails validation rather than quieting anything. 'fatal' is the
+    // quietest value the contract actually allows.
+    process.env.LOG_LEVEL = 'fatal';
+
+    // Imported here, not at the top of the file. `AppModule` calls `ConfigModule.forRoot`
+    // in its decorator, and `forRoot` validates the environment synchronously as the module
+    // is evaluated — which, for a static import, is before this hook has run and before the
+    // container above exists to supply DATABASE_URL. A static import fails the suite during
+    // collection, so both tests report as skipped and the container's connection URI is
+    // never read by anything.
+    const { AppModule } = await import('../src/app.module');
 
     moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
 

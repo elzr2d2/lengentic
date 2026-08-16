@@ -50,10 +50,16 @@ services:
       context: .
       dockerfile: docker/dashboard.Dockerfile
       args:
-        # Browser-resolved, so it must be the host address even though the API is a
-        # sibling container.
+        # Inlined into the client bundle at build time, so this is the address the browser
+        # uses — host-reachable, even though the API is a sibling container.
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3001}
     restart: unless-stopped
+    environment:
+      # The other half of the same question. Server Components run inside this container,
+      # where the browser address above is its own loopback and nothing answers — the status
+      # page rendered "API unreachable" against a healthy API until this existed. Runtime
+      # rather than build-time, so the image stays portable across environments.
+      API_BASE_URL_INTERNAL: http://api:3001
     ports:
       - '3000:3000'
     networks:

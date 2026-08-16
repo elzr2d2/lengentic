@@ -260,6 +260,10 @@ as the only complaint; every other gate stage passes.
 One line in `.prettierignore` fixes it. Left alone here because it is outside the change that
 found it, and a formatting fix riding in an unrelated diff is invisible to review.
 
+**Addressed 2026-08-16** during the first Docker execution. It stopped being outside the
+change that found it: `pnpm gates:full` had to be green to claim the Phase 1 Definition of
+Done, and this file was the only thing standing in the way.
+
 ### The logger has no `WARN`-and-above escalation path
 
 `scripts/lib/log.ts` throws on an unsound event, which is right for a script. An agent-side
@@ -269,23 +273,148 @@ a caller that does not exist.
 
 ---
 
+## Discovered during a product-strategy session (2026-08-16)
+
+### The first thing that gives a user value is the last thing built
+
+**Source:** product-strategy session, 2026-08-16 — a strategy finding, not an implementation
+finding. No command, fixture or file produced it; it is a cross-read of §20.2, Phase 4 and
+Phase 5 work packages.
+
+§20.2 Repeated Failed Action fires on three consecutive failed attempts with the same
+`inputFingerprint` — inside a single run. No `contextKey`, no gates, no volume. It is the only
+analyzer that produces output for a user on their first run. It is scheduled for Phase 5, work
+package 4, with fixtures R1–R3 marked "Introduced: Phase 5". Run Explorer is Phase 4; the SDK
+is Phases 2–3.
+
+Consequence: under the current build order a new user gets nothing until the second-to-last
+phase. This reads the two analyzers as two value tiers rather than as two peers — §20.2 works
+at volume zero, §20.1 needs G1×G2 (30 samples × 5 contexts). The plan never frames them that
+way.
+
+Not a request to re-sequence the approved MVP. `CLAUDE.md` forbids redesigning it mid-flight.
+Decide at the Phase 3→4 boundary, where the ordering consequence becomes real.
+
+### The plan already picked a beachhead without declaring it
+
+**Source:** product-strategy session, 2026-08-16 — a strategy finding, not an implementation
+finding. No command or fixture produced it; it was observed by reading Phase 6 Scenario 3 and
+§20.2's required example.
+
+Phase 6 Scenario 3 uses decisionType `run_tests_after_code_change` with contextKeys
+`post_edit_small_diff`, `post_refactor`, `post_dependency_bump`, `post_config_change`. §20.2's
+required emission example is `run_tests("checkout.spec.ts") → FAILED ×3`. The reference
+consumer is a coding/QA agent.
+
+Argued rationale for making that explicit: G5 (outcome coverage >= 80%) is the scarcest input
+in the product, and coding/QA is the only candidate domain where attestation is automatic and
+objective — a test exit code. Customer-facing agents have volume but no cheap ground truth,
+and §26 excludes Authentication and Multi-Tenancy, which that market requires on day one.
+Internal automation has bespoke workflows, so `contextKey` means something different per
+customer.
+
+The identified risk is not volume. It is `workflowVersion` churn: §18 makes `workflowVersion`
+part of the group key and fixture D8 shows a 50-sample group splitting into 26+24 and both
+halves failing G1. Coding agents change prompts often, and each change resets the counter.
+
+No product change requested. Record so the Playground's implicit domain choice is a stated
+one, and so the churn risk is visible before Phase 6.
+
+### `contextKey` is an onboarding wall with no on-ramp
+
+**Source:** product-strategy session, 2026-08-16 — a strategy finding, not an implementation
+finding. No command, fixture or file produced it; it comes from reading §14 and §19.
+
+§14 requires the caller to compute `contextKey` and forbids the Platform from inferring it.
+The epistemic rule is correct for aggregation claims. As an onboarding requirement it asks a
+new user to formalize their domain's equivalence classes before they have seen any value, and
+§14 also makes cardinality entirely their obligation with no feedback loop — a
+high-cardinality key is indistinguishable from a diverse one until the data runs out.
+
+Two candidate mitigations, neither designed:
+
+- Caller-side derivation helpers shipped in the SDK (e.g. deriving a key from a declared set
+  of coarse enumerated fields). The derivation still runs in the caller's process, so §14's
+  boundary holds; the Platform still infers nothing.
+- A progress display toward the gates ("17/30 samples · 3/5 contexts · needs 13 more samples,
+  2 more contexts") instead of an empty result. Same thresholds, but it makes the wait legible
+  and teaches what `contextKey` is without a document.
+
+Explicitly not: lowering G2 for low-volume users. G2 is the differentiator per §2, and a lower
+default manufactures exactly the false positives the plan names as the failure mode.
+
+---
+
+## Discovered during the first Docker execution (2026-08-16)
+
+Three defects, all in files committed earlier and executed for the first time on this date.
+All three are fixed; what follows is what was deliberately **not** chased.
+
+### `@vercel/nft` resolves `@swc/helpers` differently under pnpm's isolated layout
+
+**Source:** Diagnostician, `.artifacts/diag-dashboard-swc/`.
+
+`@swc/helpers` lists `module-sync` first in its exports map. Node 24 honours that condition
+from `require()` and lands on `esm/_interop_require_default.js`; Next 16.3.1's tracer takes
+the `default` target and records `cjs/_interop_require_default.cjs`. Under a flat
+`node_modules` the tracer records both and the standalone output boots; under pnpm's default
+symlinked layout it records only the CJS variant and the container restart-loops on
+`MODULE_NOT_FOUND`.
+
+Verified empirically in both directions. The internal mechanism — why the layout changes
+which condition the tracer picks — is **not** established, and establishing it belongs in a
+Next.js issue with a minimal repro, not in this repository. `docker/dashboard.Dockerfile`
+works around it with `--config.node-linker=hoisted` on both the install and the build.
+
+Two untested alternatives, recorded so nobody re-derives them: declaring `@swc/helpers` as a
+direct dashboard dependency (reasoning says no — the package is already present and correctly
+symlinked, only its `esm/` subdirectory is missing, but that is inference), and
+`outputFileTracingIncludes` in `next.config.ts` (the glob would have to encode the `.pnpm`
+hash directory name, which changes on every peer-dependency bump).
+
+### Cost of hoisting the dashboard build stage is unquantified
+
+**Source:** same investigation.
+
+`--config.node-linker=hoisted` takes the filtered install from 9 top-level packages to 547 and
+runs the `@swc/core`, `esbuild`, `prisma` and `@prisma/engines` postinstalls. Build stage only
+— the runtime image is assembled from `.next/standalone` and is unaffected — but build time
+and build-cache size both rise, and neither was measured. Revisit if CI build time becomes a
+constraint; it is not one for a local-only MVP.
+
+### `platform/dashboard/tsconfig.tsbuildinfo` is tracked
+
+**Source:** observed in `git status` after a dashboard build.
+
+It is a TypeScript incremental-build cache, it is not in `.gitignore`, and it is committed.
+Every build dirties the working tree with a file nobody reads, which trains everyone to
+`git add .` past it — and that is how an unrelated change rides into a commit unnoticed. Fix
+is `.gitignore` plus `git rm --cached`, but that is a tracked-file removal outside the change
+that found it, so it is recorded rather than done here.
+
+### `pnpm test:integration` needs Docker on PATH, and nothing says so
+
+**Source:** observed while running the Phase 1 validation block.
+
+A shell without `C:\Program Files\Docker\Docker\resources\bin` on PATH fails with
+`spawn docker-credential-desktop ENOENT` from inside Testcontainers' credential provider —
+which reads as a Testcontainers bug rather than a missing PATH entry. Cost a diagnostic cycle
+here. Worth a line in the README's prerequisites when `p7.readme` is written, since Phase 7's
+clean-clone smoke test will hit exactly this on a fresh machine.
+
+---
+
 ## Environment prerequisites (not backlog — blocking)
 
 - ~~**Node.js v21.0.0**~~ — resolved 2026-08-14. Node 24.19.0 LTS and pnpm 11.21.0 are
   installed and the whole toolchain runs on them.
 
-- **Docker is not installed, and neither is WSL2.** This blocks four `MVP_PLAN_V3.md` PHASE 1
-  checkboxes — "PostgreSQL starts", "API reaches PostgreSQL", "`docker compose up`
-  succeeds" — plus `pnpm test:integration`, since Testcontainers needs a daemon.
+- ~~**Docker is not installed, and neither is WSL2.**~~ — resolved 2026-08-16. WSL2 with an
+  Ubuntu distro was already present; only Docker Desktop was missing. Docker 29.7.2 and
+  Compose v5.3.1 now run, `docker compose up --wait` exits 0 with all three services healthy,
+  and `pnpm test:integration` passes against a Testcontainers PostgreSQL.
 
-  Docker Desktop on Windows requires WSL2 or Hyper-V, so this is an elevated install plus
-  a reboot, not a package fetch:
-
-  ```
-  wsl --install
-  winget install Docker.DockerDesktop
-  ```
-
-  Everything else in Phase 1 is verified. `docker-compose.yml` and both Dockerfiles are
-  written but **have never been executed** — treat them as unreviewed until
-  `docker compose up` runs once.
+  The warning above was right. Running those files for the first time found three defects in
+  code that had been committed and never executed — see _Discovered during the first Docker
+  execution_ below. Note for every future phase that adds a container surface: the first run
+  is a review, not a smoke test.

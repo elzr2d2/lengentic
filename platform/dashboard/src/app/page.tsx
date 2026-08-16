@@ -1,4 +1,4 @@
-import { API_BASE_URL, fetchHealth, type HealthResult } from '@/lib/api';
+import { fetchHealth, type HealthResult } from '@/lib/api';
 
 // A status page that renders a cached snapshot is a status page that lies.
 export const dynamic = 'force-dynamic';
@@ -30,7 +30,7 @@ function PlatformStatus({ health }: { health: HealthResult }) {
       <>
         <Row label="API" value={<Status state="down">unreachable</Status>} />
         <Row label="Database" value={<Status state="down">unknown</Status>} />
-        <Row label="Endpoint" value={<code>{API_BASE_URL}/health</code>} />
+        <Row label="Endpoint" value={<code>{health.endpoint}/health</code>} />
         <Row label="Reason" value={<span className="value">{health.reason}</span>} />
       </>
     );
