@@ -645,6 +645,52 @@ a differently-shaped one will look like scope creep instead of the point.
 
 ---
 
+## Discovered while wiring the dumbzone detector (2026-08-16)
+
+`.claude/hooks/dumbzone-detector.mjs` warns when session context passes 100K/120K/150K tokens,
+`.claude/skills/session-handoff/` writes the continuation brief, and
+`.claude/hooks/inject-session-handoff.mjs` injects it on the next `/clear`. Two gaps were left
+open deliberately.
+
+### Nobody measures what a lane costs in context
+
+**Source:** observed while choosing where the detector could fire.
+
+`UserPromptSubmit` does not fire inside a subagent, so a lane cannot detect its own dumb zone
+and the Coordinator never learns how much window a packet consumed. `SubagentStop` receives
+`agent_id`, `agent_type` and a transcript path, so the last assistant turn's `usage` — the same
+figure the detector already reads — could be appended to `.artifacts/telemetry/lanes.jsonl` per
+dispatch, at the cost of one hook.
+
+This is the missing half of _`pnpm lanes decide` has no cost model_ above. That entry names
+"dispatch tokens plus review plus integration" as unmeasured and points at the same JSONL file;
+this is the mechanism that would measure the first term, and a packet that repeatedly lands a
+lane past 100K is also the packet that was sliced too wide. Do it as one change with R12, not
+separately, and inherit R12's trigger: **≥20 dispatched batches with both modes represented.**
+Instrumenting earlier is cheap, but fitting anything to it is not.
+
+### The write half is model-in-the-loop, and a dead session writes nothing
+
+**Source:** stated when the detector was built, recorded so it is not rediscovered as a defect.
+
+Injection is automatic; writing is not. A session that runs to 140K and is closed without
+anyone invoking `session-handoff` leaves nothing to inject, and the hook cannot write the brief
+itself — a deterministic script has no model. The detector makes saving cheap; it does not save.
+
+Two mechanisms exist and were both rejected for now, with reasons, because the next person to
+notice this will reach for them. `Stop` can exit 2 to refuse to end a turn until a brief exists,
+and `UserPromptSubmit` can exit 2 to refuse new work in a spent window: both are blocking hooks
+in a repository whose own `format-changed.mjs` says a hook that can fail a task is a hook that
+gets disabled, and both need a marker file to avoid nagging forever. `PreCompact` fires before
+auto-compaction and could dump a mechanical snapshot — branch, HEAD, `git status --porcelain`,
+the last few assistant turns — which is not a brief but is better than nothing.
+
+**Trigger:** the first time real work is actually lost this way. Not before — the cost of the
+gap is currently a guess, and a blocking hook installed against a guess is how the whole
+mechanism gets turned off.
+
+---
+
 ## Environment prerequisites (not backlog — blocking)
 
 - ~~**Node.js v21.0.0**~~ — resolved 2026-08-14. Node 24.19.0 LTS and pnpm 11.21.0 are
