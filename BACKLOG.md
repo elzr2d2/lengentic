@@ -7,6 +7,13 @@ The standing post-MVP list lives in `MVP_PLAN_V3.md` §27 and is not duplicated 
 file records items **discovered during implementation**, with the discovery context that
 makes them actionable later.
 
+Entries are **never deleted.** A resolved item gains an **Addressed `<date>`** paragraph and
+stays where it is, because the reasoning that deferred it is worth as much as the fix. This
+file is a ledger, not a queue — read the closing paragraph before assuming an entry is open.
+
+An item deferred on "not enough data yet" must name **how much data**, or it is deferred
+forever and nobody notices.
+
 ---
 
 ## Discovered during Phase 0 plan review (2026-08-14)
@@ -22,13 +29,25 @@ not an MVP variant of the existing one.
 
 ### Recommendation demotion on regression
 
-**Source:** [Progressive Crystallization](https://arxiv.org/abs/2607.07052), §0 of the
-corrections doc.
+**Source:** [Progressive Crystallization](https://arxiv.org/abs/2607.07052) — Arun Malik,
+"Turning Agent Exploration into Deterministic, Lower-Cost Workflows in Production",
+submitted 2026-07-08. Citation verified 2026-08-16. Also §0 of the corrections doc.
+
 That system pairs promotion with a circuit-breaker that demotes a deterministic playbook
 back to hybrid on execution failure or acceptance-test regression. LenGentic has an
 `ACCEPTED` recommendation status and no mechanism to notice that an accepted default
 stopped holding. Related to, and probably subsumed by, §94's **shadow mode**, which is the
 honest version — it produces the counterfactual instead of inferring it.
+
+Two things worth carrying forward from the paper itself, since §2's prior-art table quotes
+only its promotion gate. Its reported production result — deterministic execution 0% → 45%
+over eight months, per-incident agent cost down >70% at doubled incident volume, on a cloud
+networking AIOps platform handling tens of thousands of incidents monthly — is the closest
+external evidence that the thesis LenGentic shares with it holds at scale, and §2 currently
+cites the paper only to differentiate from it. Second: its domain, AIOps incident
+resolution, has automatic objective attestation, which is a direct counterexample to the
+"only coding/QA has cheap ground truth" claim recorded below under _the plan already picked a
+beachhead_.
 
 ### Weight counterexamples by attestation
 
@@ -59,13 +78,31 @@ symlinks with copies, which degrades the day-to-day dev loop. The dashboard imag
 already lean via Next's `output: 'standalone'`. Revisit if image size becomes a real
 constraint; it is not one for a local-only MVP.
 
-### Upgrade to the next tooling majors
+### Upgrade ESLint 10 and dependency-cruiser 18
 
-**Source:** pnpm reported newer majors during install.
-ESLint 10, TypeScript 7, and dependency-cruiser 18 are all available. TypeScript 7 is the
-Go port, and NestJS, Prisma, and typescript-eslint have not all landed support. Deferred
-deliberately: a portfolio project that cannot build is worse than one on a
-six-month-old compiler. Revisit once `typescript-eslint` ships a TS 7 parser.
+**Source:** pnpm reported newer majors during install. Gate corrected 2026-08-16 after
+checking upstream.
+
+ESLint v10.0.0 shipped 2026-02 and is on 10.8.1; dependency-cruiser 18 is out. **Neither
+depends on TypeScript 7** — the original entry bundled all three majors behind one blocker
+that applies to only one of them, which is why nothing moved. These two are an ordinary
+dependency bump and can go whenever a phase has room. Check `eslint-config-next` supports
+ESLint 10 first (vercel/next.js#91702); that is the only known coupling.
+
+### Upgrade to TypeScript 7 — blocked upstream, not by us
+
+**Source:** same install, corrected 2026-08-16.
+
+TypeScript 7.0 (the Go port) reached GA in 2026-08. The blocker is not "typescript-eslint
+has not got round to it": typescript-eslint **closed the TS 7 support request as `not
+planned` on 7.0 launch day**, because TS 7.0 ships without a stable programmatic API. That
+API is targeted at **TS 7.1**, several months out as of mid-2026. Microsoft's
+`@typescript/typescript6` package provides a `tsc6` executable and re-exports the 6.0 API so
+tooling that imports `typescript` directly keeps working in the meantime.
+
+So the trigger is precise and external: **typescript-eslint publishes a release naming TS 7.1
+as supported.** Nothing this repository does moves it earlier. Deferred deliberately — a
+portfolio project that cannot build is worse than one on a six-month-old compiler.
 
 ### Teach Validator the mutation check
 
@@ -180,6 +217,15 @@ which directory, not a formality. Do it at the start of each phase, not in a bat
 paths for code that does not exist yet are guesses, and a guessed boundary is worse than an
 absent one because the gate then reports green.
 
+**Partly superseded 2026-08-16.** The count is no longer accurate: `pnpm lanes decide
+p2.shared-schema p5.engine-pkg` returns `R3 ok`, `R7 ok`, `R10 ok` and `R14 ok` with
+`p5.engine-pkg` declaring its own surface and packet source, so at least one node outside
+Phase 2 is annotated. The reasoning above still holds and the policy is unchanged — annotate
+at the start of the phase, never in a batch. Only the "thirty-five do not" figure is wrong.
+Re-derive from `scripts/oracle/graph.json` before planning a fan-out on it; this entry was
+cited in a delivery plan and the stale number would have added an annotation packet that was
+not needed.
+
 ### `diagnostician.md` names commands this repository does not have
 
 **Source:** `.claude/agents/diagnostician.md:28`.
@@ -209,6 +255,11 @@ plus the probability of a conflicted merge, and none of that is measured. The te
 `.artifacts/telemetry/lanes.jsonl` is where the data to replace the heuristic will come
 from — after enough batches for Reflector to have something to fit.
 
+**Trigger (added 2026-08-16):** ≥20 dispatched batches in `lanes.jsonl` with both modes
+represented, ≥5 of them parallel. Below that a fitted model is a story about four data
+points. If the MVP ends without reaching it — likely, since it is one developer locally —
+close this entry as _not reachable at this scale_ rather than carrying it indefinitely.
+
 ---
 
 ## Discovered while specifying Agentic System Awareness (2026-08-16)
@@ -229,6 +280,11 @@ when the evidence is thin, which is the honest answer for the entire MVP window.
 Not built now because a comparison over zero parallel runs is fabricated, not cautious. The
 Phase 3 instrumentation is what lets this be added later without a migration.
 
+**Trigger (added 2026-08-16):** the gates already state it — G1 (30 `execution_strategy`
+samples) and G2 (5 distinct `contextKey`s) on a single `(workflowName, workflowVersion)`
+pair. That is the honest threshold and it is the same one every other group answers to. Say
+so here rather than "later", because "later" is how an item outlives the project.
+
 ### Orchestrator consumption of strategy recommendations
 
 **Source:** §29 stage 3.
@@ -244,6 +300,10 @@ permanently: LenGentic exposes evidence and never reaches into a running system.
 product evaluator will accumulate the same kind of evidence `.artifacts/telemetry/lanes.jsonl`
 accumulates for the harness. Worth revisiting once there is enough of it to fit — as one
 change, since both are the same unmeasured overhead question wearing different clothes.
+
+**Trigger (added 2026-08-16):** whichever of R12's ≥20 batches or the Awareness Snapshot's
+G1/G2 arrives first. Do not fit either in isolation; the shared cause is that nobody has
+measured what a parallel dispatch actually costs.
 
 ---
 
@@ -307,11 +367,26 @@ required emission example is `run_tests("checkout.spec.ts") → FAILED ×3`. The
 consumer is a coding/QA agent.
 
 Argued rationale for making that explicit: G5 (outcome coverage >= 80%) is the scarcest input
-in the product, and coding/QA is the only candidate domain where attestation is automatic and
-objective — a test exit code. Customer-facing agents have volume but no cheap ground truth,
-and §26 excludes Authentication and Multi-Tenancy, which that market requires on day one.
-Internal automation has bespoke workflows, so `contextKey` means something different per
-customer.
+in the product, and coding/QA is the candidate domain where attestation is **cheapest** — a
+test exit code the caller already has. Customer-facing agents have volume but expensive
+ground truth, and §26 excludes Authentication and Multi-Tenancy, which that market requires
+on day one. Internal automation has bespoke workflows, so `contextKey` means something
+different per customer.
+
+**Corrected 2026-08-16.** This entry originally said coding/QA is the _only_ domain where
+attestation is automatic and objective. That is false, and the counterexample is sitting in
+this same file: the Progressive Crystallization paper's domain is AIOps incident resolution,
+where the outcome is attested by whether the incident closed. Any domain with a downstream
+deterministic checker qualifies. The argument survives on **cheapness**, not uniqueness —
+overstating it invites a rebuttal that discredits the whole section.
+
+Market context, also checked 2026-08-16: the trace-and-eval layer this sits next to is
+crowded — LangSmith, Langfuse, Braintrust, Arize, Opik, AgentOps, Laminar. The gated,
+counterexample-carrying recommendation is a different object from a trace with eval scores
+attached, so this is not a me-too. But coding/QA plus CI-gated evaluation is precisely
+Braintrust's occupied ground, and this entry reads as though the slot were empty. It is not.
+What none of them do is the `workflowVersion` churn problem named below — which is a better
+differentiator than the domain choice.
 
 The identified risk is not volume. It is `workflowVersion` churn: §18 makes `workflowVersion`
 part of the group key and fixture D8 shows a 50-sample group splitting into 26+24 and both
@@ -372,6 +447,29 @@ symlinked, only its `esm/` subdirectory is missing, but that is inference), and
 `outputFileTracingIncludes` in `next.config.ts` (the glob would have to encode the `.pnpm`
 hash directory name, which changes on every peer-dependency bump).
 
+**Surveyed 2026-08-16, after the fix was already in.** This failure is a well-known class,
+and the survey should have happened before `node-linker=hoisted` was reached for:
+
+- vercel/next.js [#48017](https://github.com/vercel/next.js/issues/48017) — missing
+  dependencies in standalone output under pnpm.
+- vercel/next.js [#95450](https://github.com/vercel/next.js/issues/95450) — standalone
+  symlinks resolving outside `.next/standalone`. Reported as **Windows-only, not reproducing
+  on Linux**, which matters: our build runs in a Linux container, so the mechanism recorded
+  above may be misattributed even though the workaround empirically works.
+- vercel/next.js [#40482](https://github.com/vercel/next.js/discussions/40482) — same shape
+  in a pnpm monorepo.
+
+The community fix is **`outputFileTracingRoot`** pointed at the workspace root, plus copying
+store entries with `cp -rL` so scoped packages keep their internal symlinks. That is cheaper
+than hoisting the whole build stage and is **not** among the two alternatives above. The
+ingredients of our mechanism are real — Node's `module-sync` condition
+([nodejs/node#54648](https://github.com/nodejs/node/pull/54648)) and `@swc/helpers` exposing
+`module-sync` ([swc#9995](https://github.com/swc-project/swc/pull/9995)) both exist — but the
+documented root cause in every report above is symlink handling during the standalone copy,
+not the tracer choosing a different exports condition. Try `outputFileTracingRoot` before
+filing anything upstream; a bug report resting on an unproven mechanism wastes a maintainer's
+time and ours.
+
 ### Cost of hoisting the dashboard build stage is unquantified
 
 **Source:** same investigation.
@@ -379,8 +477,15 @@ hash directory name, which changes on every peer-dependency bump).
 `--config.node-linker=hoisted` takes the filtered install from 9 top-level packages to 547 and
 runs the `@swc/core`, `esbuild`, `prisma` and `@prisma/engines` postinstalls. Build stage only
 — the runtime image is assembled from `.next/standalone` and is unaffected — but build time
-and build-cache size both rise, and neither was measured. Revisit if CI build time becomes a
-constraint; it is not one for a local-only MVP.
+and build-cache size both rise, and neither was measured. It is not a constraint for a
+local-only MVP.
+
+**Trigger, per this file's rule against unbounded deferral:** `p7.ci-full` is the first thing
+that runs this build on a cold cache where the cost is visible. Measure the dashboard build
+stage there and record the number in this entry. Revisit only if it exceeds **3 minutes cold**
+or the build cache exceeds **2 GB** — otherwise close the entry with the measurement and the
+finding that hoisting was free. Both figures are chosen as "obviously fine below this", not
+derived; the point is that a number exists to test against, not that it is the right number.
 
 ### `platform/dashboard/tsconfig.tsbuildinfo` is tracked
 
@@ -401,6 +506,142 @@ A shell without `C:\Program Files\Docker\Docker\resources\bin` on PATH fails wit
 which reads as a Testcontainers bug rather than a missing PATH entry. Cost a diagnostic cycle
 here. Worth a line in the README's prerequisites when `p7.readme` is written, since Phase 7's
 clean-clone smoke test will hit exactly this on a fresh machine.
+
+---
+
+## Discovered while pressure-testing the premise (2026-08-16)
+
+Six findings about the thesis itself rather than about any implementation of it. None was
+produced by a command or a fixture; all came from reading §1, §2, §14, §18, §19 and §20
+against each other and against the outside world.
+
+Every one of these touches `MVP_PLAN_V3.md`. **None may be taken mid-phase** — `CLAUDE.md`
+forbids redesigning the approved MVP while implementing it, and two of them change what a
+gate means. Recorded here so the decision is available at the boundary where it becomes
+cheap, and so nobody re-derives the argument from scratch.
+
+### `workflowVersion` belongs in the dimension, not the group key
+
+**Source:** premise review, 2026-08-16. §18 group key vs fixture D8.
+
+§18 makes `workflowVersion` part of the group key, so a prompt edit **splits** the group.
+Fixture D8 already demonstrates the cost: a 50-sample group splits into 26+24 and both halves
+fail G1. The window in which a group can reach 30 samples is therefore the window in which
+nobody edits the workflow — and agentic systems are the least version-stable software there
+is. The realistic steady state for a real caller is `SUPPRESSED` forever, which is
+indistinguishable from broken.
+
+The candidate inversion: keep `workflowVersion` as a **measured dimension inside** the group,
+exactly as §18 already does for `contextKey`, and add a gate requiring dominance to hold
+within every version present. Three consequences, and the second and third are why this is
+worth the disruption:
+
+- Churn stops destroying evidence. A default that survives three prompt revisions is
+  strictly stronger evidence than one observed inside a single revision; the current design
+  discards its best available signal as contamination.
+- **Dominance reversal across versions becomes a finding** — which is the circuit-breaker
+  demotion §2 explicitly records as absent, obtained as a by-product rather than as post-MVP
+  shadow mode. See _Recommendation demotion on regression_ above; this may subsume it.
+- G2's claim gains a second leg: diversity across situations _and_ across system versions.
+
+The real cost, stated so it is not discovered later: a version bump can genuinely change what
+a decision means, and this design would blend two different decisions under one group. That
+case is not silent — it surfaces as a reversal — but "surfaces as a finding" is weaker than
+"cannot happen", which is what splitting buys today. The trade is deliberate and is the whole
+decision.
+
+Not a Phase 1–3 change. §18 and §19 are load-bearing for every fixture already written.
+
+### Ship the gate verdict as a finding, not only the recommendation
+
+**Source:** premise review, 2026-08-16. §19 reporting rule.
+
+`SUPPRESSED` is currently a terminal state with no payload beyond which gates failed. But
+"50 samples, all in one `contextKey`" is a **finding today** — it says the agent kept meeting
+the same situation and that repetition is being mistaken for evidence. That is worth telling
+a caller at volume 50, with no recommendation emitted and no epistemic claim made.
+
+Pairs with _`contextKey` is an onboarding wall_ below, which proposes the same surface from
+the onboarding side ("17/30 samples · 3/5 contexts"). They are one feature: a gate verdict
+that carries a **distance and a diagnosis** instead of an absence. Recorded separately
+because the arguments are independent — one is about teaching a new user, this one is about
+the product having something true to say in the state it will spend most of its life in.
+
+Thresholds unchanged. This adds no claim; it reports the shape of the evidence already
+computed in §18.
+
+### The thesis has no falsification criterion
+
+**Source:** premise review, 2026-08-16. §1, §2, Phase 0 exit.
+
+Phase 0 is recorded complete on the grounds that "all nine fixture groups produce agreed
+verdicts" — against fixtures written by the same people who wrote the thesis. In this
+project's own vocabulary that is a **green that lies**, one level above the code: the
+analyzers are falsifiable and well tested, the premise they serve is not.
+
+The premise is also never stated in one sentence; it is distributed across §1, §2, §18 and
+§19, and a claim spread over four sections cannot be contradicted. A single line would fix
+both — roughly: _for a recurring agent decision, option dominance that persists across varied
+contexts is evidence the decision can carry a deterministic default with a named escape
+hatch_ — followed by what observation would refute it. The honest refutation is a group that
+clears G1–G5, whose default is adopted, and whose attested success rate then drops.
+
+The MVP cannot run that test; §2 already concedes there is no demotion mechanism. State the
+criterion anyway. A thesis with a stated, currently-unrunnable falsification is honest; one
+with no criterion at all is unfalsifiable, which is the failure mode §2 exists to prevent
+everywhere else.
+
+### §1's fourth question invites the claim §2 forbids
+
+**Source:** premise review, 2026-08-16. §1 vs §2, same document.
+
+§1 asks _"Can part of this probabilistic behavior become deterministic software?"_ §2 forbids
+_"This decision does not require an LLM."_ These are the same sentence at different
+confidence levels, and §1 is the one on the README-facing side. The document argues with
+itself, and the version a reader meets first is the forbidden one.
+
+A reframing that keeps the product and drops the counterfactual: _"Which of these decisions
+do we have enough evidence to stop guessing about?"_ Same loop, same analyzers, no claim
+about what would have happened otherwise.
+
+This is also the commercial gap in miniature. The paper cited above sold on >70% cost
+reduction — a counterfactual claim LenGentic has structurally banned itself from making. The
+resolution is to move the pitch to evidence quality, which is claimable and which nothing in
+the crowded observability layer currently occupies. Not to weaken §2.
+
+Documentation-only, and the smallest item here.
+
+### The five thresholds are undefended
+
+**Source:** premise review, 2026-08-16. §19.
+
+`30 / 5 / 90% / 90% / 80%` are load-bearing, configurable, and given without provenance. For
+a product whose entire position is epistemic humility, five unexplained magic numbers at the
+exact point where the claim is made is the one place it does not apply its own standard.
+
+Not asking for derivation — there is no data to derive from, and inventing one would be worse
+than admitting none. Asking for a paragraph in §19 saying these are **defaults, not
+findings**, naming what evidence would justify each, and stating that a caller who changes
+them changes what the recommendation means. Cheap, honest, and it pre-empts the first
+question any reviewer asks.
+
+### One structurally independent attestation in the demo
+
+**Source:** premise review, 2026-08-16. §14's "marking its own homework", §25.
+
+§14 concedes the Playground both generates decisions and grades them, and requires that this
+be visible via `outcomeAttestedBy`. Honest, and correctly handled. The consequence it does
+not draw: **every attested rate in the demo is synthetic**, so the one input the entire design
+depends on is the one thing §25 never demonstrates.
+
+One scenario would fix it — a decision whose `outcome` comes from a real process result, a
+test exit code or a compile result, rather than a scripted verdict. No new infrastructure, no
+schema change, `outcomeAttestedBy` stays `CALLER`. It is also the honest version of the
+coding/QA beachhead argument recorded above: not "this domain is best" but "here is the
+attestation actually working end to end, once."
+
+Phase 6 scenario work. Recorded now because by then the scenarios will be written and adding
+a differently-shaped one will look like scope creep instead of the point.
 
 ---
 
