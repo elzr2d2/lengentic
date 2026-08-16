@@ -735,6 +735,25 @@ already an exception a batch has to earn.
 routing across ≥2 concurrent lanes before that batch dispatches — a second seeded defect, in a
 second worktree, checking that each handoff reaches its own lane and no other.
 
+**Shape settled 2026-08-16** (human decision). Both expensive extremes were rejected: neither a
+full parallel-routing programme nor a blanket sequential Phase 2. The trial is **minimal** —
+one run, two worktrees, two **disjoint packages**, after `p2.shared-schema` completes solo.
+Later collision-free work parallelises only if all five hold:
+
+1. both tasks route correctly,
+2. commits remain independent,
+3. integration is conflict-free,
+4. all tests pass,
+5. coordination cost is below the projected elapsed-time saving.
+
+Criterion 5 is the one with no instrument — `pnpm lanes decide` has no cost model
+(see _`pnpm lanes decide` has no cost model_ above), so it is a judgement made in the open
+rather than a measurement. Say which it was.
+
+The `api`-lane collision in wave 3 (`p2.ingest-endpoint` + `p2.runs-api`, flagged by
+`pnpm oracle waves`) is **serialised regardless of the trial's outcome.** R7/R8 do not catch
+it because the collision is directory-level, not file-level.
+
 ### `onModuleInit` reports a connection it never verified
 
 **Source:** Validator, during #9 detection. `.artifacts/dod9/handoff.json`, evidence entries 1-3.
@@ -765,6 +784,23 @@ invisible after the fix too.
 **Open question this does not answer:** whether the health endpoint's steady-state
 `isReachable()` posture ("report, don't fail") was meant to extend to boot. The Validator's
 `recommendedNextAction` lays out both readings and declines to pick. Someone has to.
+
+**Addressed 2026-08-16** by `e149c86`. The open question was decided in favour of reading (a):
+boot fails loudly, steady-state reports. `docker-compose.yml:44-46` already documented that
+contract and the code contradicted it, so the code moved. `isReachable()` is unchanged and
+keeps the opposite posture on purpose — the two postures are now each stated in a comment at
+their own site, because the next reader will otherwise "fix" one to match the other.
+
+Reapplied cleanly rather than merged, with the coverage `dod9-repro` never had:
+`prisma.service.spec.ts` over three seams (call order, propagated rejection, absence of the
+success log), mutation-proven — including against the exact `try/catch` shape of the #9 seed,
+which the suite was blind to before — and `prisma-boot.integration.spec.ts`, one bounded
+real-adapter check against a closed port, no container, 442ms. That check found no gap, so no
+Compose or restart-loop work was started. Evidence:
+`.artifacts/phase1-validation-2026-08-16.md`, _Fix carried to main_.
+
+Branch `dod9-repro` is deleted; the archive is tag `archive/dod9-repro` plus
+`.artifacts/dod9/{ARCHIVE.md,dod9-repro.bundle,dod9-repro.patch}`.
 
 ---
 
