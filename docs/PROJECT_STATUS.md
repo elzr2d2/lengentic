@@ -6,13 +6,13 @@ Every status below is probed from the repository. Do not hand-edit this file.
 ## Phase progress
 
 ```text
-  Phase 1  [#############.......]  9/14  ready:3  maxParallel:3
+  Phase 1  [##############......] 10/14  ready:2  maxParallel:2
   Phase 2  [....................]  0/10  ready:1  maxParallel:3
-  Phase 3  [....................]  0/5   ready:0  maxParallel:2
+  Phase 3  [....................]  0/7   ready:0  maxParallel:3
   Phase 4  [....................]  0/6   ready:0  maxParallel:3
   Phase 5  [....................]  0/8   ready:1  maxParallel:2
   Phase 6  [....................]  0/4   ready:0  maxParallel:4
-  Phase 7  [....................]  0/5   ready:0  maxParallel:4
+  Phase 7  [####................]  1/5   ready:0  maxParallel:3
 ```
 
 ## Open decisions
@@ -24,16 +24,16 @@ Every status below is probed from the repository. Do not hand-edit this file.
 ## Root causes, ranked by leverage
 
 ```text
-  38 deliverables are blocked. They trace to 4 root causes.
+  40 deliverables are blocked. They trace to 4 root causes.
 
-  DISPATCH  p2.shared-schema         unblocks 32
+  DISPATCH  p2.shared-schema         unblocks 34
     platform/shared/schema — Zod wire contract (§12)
     note: CRITICAL PATH ROOT. The SDK and the API both import it. Nothing in Phase 2 parallelises until this exists.
-    gates: p2.dashboard-runs, p2.idempotency, p2.ingest-endpoint, p2.integration-tests, p2.merge-rules, p2.prisma-run-step, p2.runs-api, p2.sdk-core, p2.sdk-injection, p3.cli, p3.mock-agent, p3.mock-provider, p3.scaffold, p3.seeded-clock, p4.attestation, p4.entities, p4.payload-safety, p4.run-explorer, p4.run-summary, p4.sdk-decisions, p5.analysis-endpoint, p5.rec-persistence, p5.recs-ui, p6.real-provider, p6.scenario1, p6.scenario2, p6.scenario3, p6.seed-repro, p7.ci-full, p7.docker-smoke, p7.e2e, p7.regression
+    gates: p2.dashboard-runs, p2.idempotency, p2.ingest-endpoint, p2.integration-tests, p2.merge-rules, p2.prisma-run-step, p2.runs-api, p2.sdk-core, p2.sdk-injection, p3.cli, p3.mock-agent, p3.mock-provider, p3.scaffold, p3.seeded-clock, p3.strategy-evaluator, p3.strategy-telemetry, p4.attestation, p4.entities, p4.payload-safety, p4.run-explorer, p4.run-summary, p4.sdk-decisions, p5.analysis-endpoint, p5.rec-persistence, p5.recs-ui, p6.real-provider, p6.scenario1, p6.scenario2, p6.scenario3, p6.seed-repro, p7.ci-full, p7.docker-smoke, p7.e2e, p7.regression
 
   DISPATCH  p5.engine-pkg            unblocks 15
-    platform/analysis-engine package; Phase 0 pure functions graduate
-    note: Depends on NOTHING in phases 2-4. The spike already proved it. Can be built in parallel with Phase 2 the moment the workspace exists.
+    platform/analysis-engine package + graduated types. NO aggregation, NO gate logic.
+    note: 5a wave 1. Graduates spike/types.ts only. aggregate.ts and gates.ts graduate in p5.det-candidate and p5.repeated-failed, AFTER p5.negative-fixtures has landed the expectation table - MVP_PLAN_V3 Phase 5 objective forbids the positive path landing first. Types are engine-local plain TypeScript; this packet does NOT create or import platform/shared/schema. The .dependency-cruiser.cjs rule `analysis-engine-is-pure` was landed by the coordinator before dispatch and proven to fire - see .artifacts/evidence/5a/boundary-rule-proof.md; pnpm-workspace.yaml already globs platform/* and tsconfig.base.json has no paths block, so there is no remaining out-of-lane scaffolding. Report BLOCKED if the depcruise rule is missing. This packet MUST land at least one real test: `pnpm lanes handoff` refuses DONE on a test command that discovered zero tests, so a package with no tests cannot be reported. The right one is a contract smoke test over the public entry, not a placeholder. THREE AMENDMENTS - spike/types.ts does NOT graduate verbatim, and each rename is a defect fix rather than a preference. (1) `attestedSuccessRate` becomes `dominantOptionAttestedSuccessRate`: §19 evaluates G4 on the dominant option, spike/aggregate.ts:100 computes it group-wide, and the two disagree on D1, D3 and D6 - D3 is 43/47 over the YES rows and 46/50 group-wide. Graduating the old name lets wave 3 keep the wrong denominator and still match on the fixtures that happen not to discriminate. Retarget the null-never-zero doc comment to the renamed field. (2) `distinctContextCount` becomes `distinctContextKeyCount`, the name §18 and §19 both use; free now, expensive after three packets cite it. (3) `label` drops off `GateResult` - derivable from GateId, bound by no grid column, and rendering belongs to 5b. Keep `comparison: string` as human-readable failure evidence, never an assertion target. Everything else graduates unchanged, including GroupKey with no contextKey member and the comment explaining why. isolatedModules is on and relative specifiers are extensionless, so `from './types.ts'` will not compile and every type re-export needs `export type`. THE GATE-CONTRACT SPLIT: src/gate-contract.ts holds GateId, GateStatus, Verdict, GateResult, GateEvaluation and GATE_IDS - permanently, and never a function. Wave 3 creates a NEW src/gates.ts for the gate functions. `platform/analysis-engine/src/gates.ts` must NOT exist when this packet reports DONE; that is the whole point of the split, because it makes `no gate logic in wave 1` checkable by existence instead of by reading a diff. The third validate command checks it, and it is an acceptance criterion in its own right. Rejected alternatives - wave 1 creating src/gates.ts with only the types, and gate types living in src/types.ts - both lose that check. THE GateEvaluation DOC COMMENTS ARE THE CONTRACT, not decoration: `failedGates` holds exactly the ids whose status is FAIL and a NOT_APPLICABLE gate NEVER appears in it; `verdict` is CANDIDATE iff every status is PASS, and NOT_APPLICABLE is not PASS. spike/gates.ts:116 computes failedGates as `status !== 'PASS'`, which puts a NOT_APPLICABLE G4 into D11's failedGates while the grid says D11 fails G5 only. Do NOT fix spike/ - it is outside allowed_paths, it is disposable, and it is deleted at the end of Phase 5. Land the comments instead, so wave 3 cannot graduate that line blind.
     gates: p5.analysis-endpoint, p5.det-candidate, p5.negative-fixtures, p5.rec-persistence, p5.recs-ui, p5.repeated-failed, p5.spike-deleted, p6.scenario1, p6.scenario2, p6.scenario3, p6.seed-repro, p7.ci-full, p7.docker-smoke, p7.e2e, p7.regression
 
   ENV       env.docker               unblocks  5
@@ -56,12 +56,12 @@ Every status below is probed from the repository. Do not hand-edit this file.
 | 1 | — | DONE | infra | `p1.ci` — GitHub Actions CI | builder | — |
 | 1 | — | DONE | platform | `p1.dashboard` — Next.js dashboard boots and reaches API | builder | — |
 | 1 | — | DONE | platform | `p1.database-pkg` — Prisma package + client generation | builder | — |
+| 1 | — | DONE | harness | `p1.debt.handoff-files` — Carried debt — file-based handoffs (§10) | builder | — |
 | 1 | — | DONE | infra | `p1.docker-files` — docker-compose + Dockerfiles authored | builder | — |
 | 1 | — | DONE | harness | `p1.harness` — Engineering harness — 4 agents, handoff schema, hooks, skills | builder | — |
 | 1 | — | DONE | infra | `p1.isolation` — check:isolation (2 arms) | builder | — |
 | 1 | — | DONE | infra | `p1.workspace` — pnpm workspace + root gate scripts | builder | — |
 | 1 | 1 | READY | env | `env.docker` — Docker daemon available | human | — |
-| 1 | 1 | READY | harness | `p1.debt.handoff-files` — Carried debt — file-based handoffs (§10) | builder | — |
 | 1 | 1 | READY | infra | `p1.debt.precommit` — Carried debt — pre-commit hook running gates:full | builder | — |
 | 1 | 2 | BLOCKED | infra | `p1.debt.secrets` — Carried debt — secret detection before commit | builder | p1.debt.precommit |
 | 1 | 2 | BLOCKED | infra | `p1.docker-runtime` — docker compose up healthy; API reaches PostgreSQL | validator | env.docker |
@@ -78,16 +78,18 @@ Every status below is probed from the repository. Do not hand-edit this file.
 | 3 | 1 | BLOCKED | playground | `p3.scaffold` — Playground package consuming the public SDK entry only | builder | p2.sdk-core |
 | 3 | 2 | BLOCKED | playground | `p3.mock-provider` — MockProvider — seeded, offline, configurable delay/failure/context | builder | p3.scaffold |
 | 3 | 2 | BLOCKED | playground | `p3.seeded-clock` — SeededClock + SeededIdGenerator wired into the SDK | builder | p2.sdk-injection, p3.scaffold |
+| 3 | 2 | BLOCKED | playground | `p3.strategy-evaluator` — Deterministic sequential-vs-parallel evaluator (§29); unknown forces sequential | builder | p3.scaffold |
 | 3 | 3 | BLOCKED | playground | `p3.mock-agent` — MockAgent — Plan/Execute/Validate 5-step workflow | builder | p3.mock-provider |
 | 3 | 4 | BLOCKED | playground | `p3.cli` — pnpm playground:happy-path | builder | p3.mock-agent, p3.seeded-clock |
+| 3 | 4 | BLOCKED | playground | `p3.strategy-telemetry` — Emit the verdict as an execution_strategy Decision with bounded awarenessContext | builder | p3.strategy-evaluator, p3.mock-agent |
 | 4 | 1 | BLOCKED | persistence | `p4.entities` — Decision, ModelCall, ToolCall, Error models + migrations (§13) | builder | p2.prisma-run-step |
 | 4 | 1 | BLOCKED | sdk | `p4.payload-safety` — Safe serialize → redact → cap → fingerprint, every JSON field (§15) | builder | p2.sdk-core |
 | 4 | 1 | BLOCKED | sdk | `p4.sdk-decisions` — recordDecision returns a handle exposing decisionId | builder | p2.sdk-core, p2.shared-schema |
 | 4 | 2 | BLOCKED | api | `p4.attestation` — Cross-process attestOutcome — idempotent, accepts unknown decisionId (§14) | builder | p4.entities, p4.sdk-decisions |
 | 4 | 2 | BLOCKED | ui | `p4.run-explorer` — Run Explorer — timeline, hierarchy, decisions, calls, errors, ingestion health | builder | p4.entities, p2.dashboard-runs |
 | 4 | 2 | BLOCKED | api | `p4.run-summary` — Run Summary aggregation (§23) | builder | p4.entities |
-| 5 | 1 | READY | engine | `p5.engine-pkg` — platform/analysis-engine package; Phase 0 pure functions graduate | builder | — |
-| 5 | 2 | BLOCKED | engine | `p5.negative-fixtures` — Negative fixture suite D4-D9 + R1-R3, each naming its gate | builder | p5.engine-pkg |
+| 5 | 1 | READY | engine | `p5.engine-pkg` — platform/analysis-engine package + graduated types. NO aggregation, NO gate logic. | builder | — |
+| 5 | 2 | BLOCKED | engine | `p5.negative-fixtures` — Fixture suite D1-D11 + R1-R5, the gate expectation grid as data, and the comparator that reads it | builder | p5.engine-pkg |
 | 5 | 3 | BLOCKED | engine | `p5.det-candidate` — Deterministic candidate analyzer — §18 aggregation, §19 gates, §21 output | builder | p5.negative-fixtures |
 | 5 | 3 | BLOCKED | engine | `p5.repeated-failed` — Repeated failed action analyzer — §20.2 conditions only | builder | p5.negative-fixtures |
 | 5 | 4 | BLOCKED | persistence | `p5.rec-persistence` — Recommendation entity, fingerprint dedupe, OPEN/DISMISSED lifecycle (§21) | builder | p5.det-candidate, p4.entities |
@@ -99,9 +101,9 @@ Every status below is probed from the repository. Do not hand-edit this file.
 | 6 | 1 | BLOCKED | playground | `p6.scenario2` — Scenario 2 — repeated failed action | builder | p3.mock-agent, p5.repeated-failed, p4.sdk-decisions |
 | 6 | 1 | BLOCKED | playground | `p6.scenario3` — Scenario 3 — repeated decision, >=30 runs / >=8 contexts, one process | builder | p3.mock-agent, p5.det-candidate, p4.sdk-decisions, p4.attestation |
 | 6 | 2 | BLOCKED | test | `p6.seed-repro` — Same seed → identical telemetry across full scenarios | validator | p6.scenario3, p3.seeded-clock |
+| 7 | — | DONE | doc | `p7.readme` — README leading with G2 + prior art, §2 verbatim, limits section | builder | p5.det-candidate |
 | 7 | 1 | BLOCKED | infra | `p7.docker-smoke` — Clean clone → docker compose up → run visible | validator | p1.docker-runtime, p6.scenario1 |
 | 7 | 1 | BLOCKED | test | `p7.e2e` — E2E 1-4 including the silence case (E2E 4) | validator | p6.scenario1, p6.scenario2, p6.scenario3, env.docker |
-| 7 | 1 | IN-PROGRESS | doc | `p7.readme` — README leading with G2 + prior art, §2 verbatim, limits section | builder | p5.det-candidate |
 | 7 | 1 | BLOCKED | test | `p7.regression` — Critical unit test list all present and green | validator | p5.det-candidate, p5.repeated-failed, p4.payload-safety, p2.merge-rules |
 | 7 | 2 | BLOCKED | infra | `p7.ci-full` — CI green on clean checkout including E2E + docker build validation | builder | p7.e2e |
 
@@ -110,10 +112,9 @@ Every status below is probed from the repository. Do not hand-edit this file.
 ### Phase 1
 
 ```text
-WAVE 1  —  3 agents in parallel
+WAVE 1  —  2 agents in parallel
     human     env.docker              Docker daemon available
               note: BACKLOG.md records Docker + WSL2 as not installed. Blocks every runtime probe below.
-    builder   p1.debt.handoff-files   Carried debt — file-based handoffs (§10)
     builder   p1.debt.precommit       Carried debt — pre-commit hook running gates:full
 
   WAVE 2  —  2 agents in parallel
@@ -162,18 +163,23 @@ WAVE 1  —  1 agent
 WAVE 1  —  1 agent
     builder   p3.scaffold             Playground package consuming the public SDK entry only
 
-  WAVE 2  —  2 agents in parallel
+  WAVE 2  —  3 agents in parallel
     builder   p3.mock-provider        MockProvider — seeded, offline, configurable delay/failure/context
     builder   p3.seeded-clock         SeededClock + SeededIdGenerator wired into the SDK
+    builder   p3.strategy-evaluator   Deterministic sequential-vs-parallel evaluator (§29); unknown forces sequential
+              note: Pure function, no LLM, no SDK dependency. The verdict must be testable without telemetry, which is why this does not need p3.mock-agent.
 
   WAVE 3  —  1 agent
     builder   p3.mock-agent           MockAgent — Plan/Execute/Validate 5-step workflow
 
-  WAVE 4  —  1 agent
+  WAVE 4  —  2 agents in parallel
     builder   p3.cli                  pnpm playground:happy-path
+    builder   p3.strategy-telemetry   Emit the verdict as an execution_strategy Decision with bounded awarenessContext
+              note: Needs p4.sdk-decisions to persist end-to-end. Emitting through the SDK is Phase 3; the Decision entity lands in Phase 4.
 
   LANE COLLISIONS — same wave, same directory. Isolate or serialise these:
-    wave 2  lane playground  p3.mock-provider + p3.seeded-clock
+    wave 2  lane playground  p3.mock-provider + p3.seeded-clock + p3.strategy-evaluator
+    wave 4  lane playground  p3.cli + p3.strategy-telemetry
 ```
 
 ### Phase 4
@@ -200,15 +206,18 @@ WAVE 1  —  3 agents in parallel
 
 ```text
 WAVE 1  —  1 agent
-    builder   p5.engine-pkg           platform/analysis-engine package; Phase 0 pure functions graduate
-              note: Depends on NOTHING in phases 2-4. The spike already proved it. Can be built in parallel with Phase 2 the moment the workspace exists.
+    builder   p5.engine-pkg           platform/analysis-engine package + graduated types. NO aggregation, NO gate logic.
+              note: 5a wave 1. Graduates spike/types.ts only. aggregate.ts and gates.ts graduate in p5.det-candidate and p5.repeated-failed, AFTER p5.negative-fixtures has landed the expectation table - MVP_PLAN_V3 Phase 5 objective forbids the positive path landing first. Types are engine-local plain TypeScript; this packet does NOT create or import platform/shared/schema. The .dependency-cruiser.cjs rule `analysis-engine-is-pure` was landed by the coordinator before dispatch and proven to fire - see .artifacts/evidence/5a/boundary-rule-proof.md; pnpm-workspace.yaml already globs platform/* and tsconfig.base.json has no paths block, so there is no remaining out-of-lane scaffolding. Report BLOCKED if the depcruise rule is missing. This packet MUST land at least one real test: `pnpm lanes handoff` refuses DONE on a test command that discovered zero tests, so a package with no tests cannot be reported. The right one is a contract smoke test over the public entry, not a placeholder. THREE AMENDMENTS - spike/types.ts does NOT graduate verbatim, and each rename is a defect fix rather than a preference. (1) `attestedSuccessRate` becomes `dominantOptionAttestedSuccessRate`: §19 evaluates G4 on the dominant option, spike/aggregate.ts:100 computes it group-wide, and the two disagree on D1, D3 and D6 - D3 is 43/47 over the YES rows and 46/50 group-wide. Graduating the old name lets wave 3 keep the wrong denominator and still match on the fixtures that happen not to discriminate. Retarget the null-never-zero doc comment to the renamed field. (2) `distinctContextCount` becomes `distinctContextKeyCount`, the name §18 and §19 both use; free now, expensive after three packets cite it. (3) `label` drops off `GateResult` - derivable from GateId, bound by no grid column, and rendering belongs to 5b. Keep `comparison: string` as human-readable failure evidence, never an assertion target. Everything else graduates unchanged, including GroupKey with no contextKey member and the comment explaining why. isolatedModules is on and relative specifiers are extensionless, so `from './types.ts'` will not compile and every type re-export needs `export type`. THE GATE-CONTRACT SPLIT: src/gate-contract.ts holds GateId, GateStatus, Verdict, GateResult, GateEvaluation and GATE_IDS - permanently, and never a function. Wave 3 creates a NEW src/gates.ts for the gate functions. `platform/analysis-engine/src/gates.ts` must NOT exist when this packet reports DONE; that is the whole point of the split, because it makes `no gate logic in wave 1` checkable by existence instead of by reading a diff. The third validate command checks it, and it is an acceptance criterion in its own right. Rejected alternatives - wave 1 creating src/gates.ts with only the types, and gate types living in src/types.ts - both lose that check. THE GateEvaluation DOC COMMENTS ARE THE CONTRACT, not decoration: `failedGates` holds exactly the ids whose status is FAIL and a NOT_APPLICABLE gate NEVER appears in it; `verdict` is CANDIDATE iff every status is PASS, and NOT_APPLICABLE is not PASS. spike/gates.ts:116 computes failedGates as `status !== 'PASS'`, which puts a NOT_APPLICABLE G4 into D11's failedGates while the grid says D11 fails G5 only. Do NOT fix spike/ - it is outside allowed_paths, it is disposable, and it is deleted at the end of Phase 5. Land the comments instead, so wave 3 cannot graduate that line blind.
 
   WAVE 2  —  1 agent
-    builder   p5.negative-fixtures    Negative fixture suite D4-D9 + R1-R3, each naming its gate
+    builder   p5.negative-fixtures    Fixture suite D1-D11 + R1-R5, the gate expectation grid as data, and the comparator that reads it
+              note: 5a wave 2. Reuse spike/fixtures/decisions.json INPUT data verbatim for D1-D9; write every EXPECTED value from the `Gate expectation grid` in MVP_PLAN_V3 Phase 5, which is the ONLY legal source. Never read an expectation off `pnpm spike` output or off src/ - an expectation sourced from the implementation cannot fail when the implementation is wrong. D10, D11 and R1-R4 are new: build them from scratch, inputs included. D10 must fail G1 AND G2 together - it is the only fixture that can catch failedGates=[firstFailure]. D11 must have every outcome UNKNOWN, so G5 fails while G4 is N-A and dominantOptionAttestedSuccessRate is null, never 0. R4 must EMIT: R1-R3 all expect silence, so without R4 the analyzer passes with `return []`. R5 must EMIT too: same target, three failures, an UNRELATED tool's SUCCESS interleaved - it binds the scope of `consecutive` to the (runId, toolName, inputFingerprint) subsequence, which R1-R4 leave ambiguous. This packet LANDS GREEN and contains no analyzer assertions - see `The fixture wave lands green` in MVP_PLAN_V3 Phase 5 for why a red suite cannot be reported under lane-handoff. Deliver fixtures/inputs/**, fixtures/expectations.ts (the grid as typed data), and test/grid/** holding assertAgainstGrid() plus meta-tests proving that comparator catches a missing second failedGate, a dominantOptionAttestedSuccessRate of 0 where null is required, and an N-A counted as a pass. A comparator nobody mutation-checked is the green that lies.
 
   WAVE 3  —  2 agents in parallel
     builder   p5.det-candidate        Deterministic candidate analyzer — §18 aggregation, §19 gates, §21 output
+              note: 5a wave 3, first of two. Graduates spike/aggregate.ts and spike/gates.ts. Assert NOTHING here: feed each D fixture through assertAgainstGrid() from test/grid/**, which p5.negative-fixtures owns and this packet may not edit. fixtures/** and test/grid/** are outside allowed_paths on purpose - an analyzer packet that could relax its own expectations is the failure this split exists to prevent. Hash fixtures/expectations.ts and test/grid/** before and after this packet and compare; `pnpm lanes check` validates paths, not that a later packet weakened an earlier one's assertions. Also lands the threshold-binding spec that ADR docs/decisions/0004 substitutes for Tester at the gate: shift each of the five thresholds one unit in each direction and assert that every verdict that should flip does, and every verdict that should not stay put. A threshold no fixture binds is a threshold that can move silently. LANE COLLISION with p5.repeated-failed on src/** and test/analyzer/** - serialise. TWO KNOWN SPIKE BUGS ride along if spike/gates.ts and spike/aggregate.ts are copied verbatim, and both are already contradicted by the doc comments p5.engine-pkg landed in src/gate-contract.ts. spike/gates.ts:116 computes failedGates as `status !== 'PASS'`, which puts a NOT_APPLICABLE G4 into D11's failedGates when the grid says D11 fails G5 only - failedGates holds FAIL and nothing else. spike/aggregate.ts:100 computes the attested success rate group-wide when §19 evaluates G4 on the dominant option, which disagrees with the grid on D1, D3 and D6; the field is named dominantOptionAttestedSuccessRate for exactly that reason. D11 catches the first and D3 the second, through assertAgainstGrid(). Gate functions go in a NEW src/gates.ts; src/gate-contract.ts holds the vocabulary and never a function.
     builder   p5.repeated-failed      Repeated failed action analyzer — §20.2 conditions only
+              note: 5a wave 3, second of two. §20.2 conditions only - same toolName, same sanitized inputFingerprint, result FAILED or an Error, at least three CONSECUTIVE attempts, no success between them. Generic loop detection is out of scope and the recommendation text says `repeated failed action`, never `loop detection`. R1-R3 all expect silence, so `return []` passes three of the five fixtures. R4 proves the analyzer exists; R5 proves the streak is scoped to the (runId, toolName, inputFingerprint) subsequence rather than to the run's whole timeline - under the timeline reading an unrelated tool's success suppresses a real repeated failure, i.e. the finding depends on scheduling noise. A run where R4 or R5 does not emit is a FAILED handoff, not a DONE with a caveat. Assert nothing directly; feed fixtures through assertAgainstGrid() from test/grid/**, which this packet may not edit. LANE COLLISION with p5.det-candidate on src/** and test/analyzer/** - serialise, and re-hash fixtures/expectations.ts and test/grid/** afterwards.
 
   WAVE 4  —  2 agents in parallel
     builder   p5.rec-persistence      Recommendation entity, fingerprint dedupe, OPEN/DISMISSED lifecycle (§21)
@@ -243,10 +252,9 @@ WAVE 1  —  4 agents in parallel
 ### Phase 7
 
 ```text
-WAVE 1  —  4 agents in parallel
+WAVE 1  —  3 agents in parallel
     validator p7.docker-smoke         Clean clone → docker compose up → run visible
     validator p7.e2e                  E2E 1-4 including the silence case (E2E 4)
-    builder   p7.readme               README leading with G2 + prior art, §2 verbatim, limits section
     validator p7.regression           Critical unit test list all present and green
 
   WAVE 2  —  1 agent
