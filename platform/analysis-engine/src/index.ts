@@ -1,10 +1,11 @@
 /**
  * Public entry point for `@lengentic/analysis-engine`.
  *
- * Wave 1 landed the graduated vocabulary. Wave 3 (`p5.det-candidate`) adds the first
- * runtime behaviour: §18 aggregation and §19 gate evaluation, both pure functions over
- * `DecisionRecord[]`. `platform/analysis-engine/src/candidate.ts` (§21 rendering) and the
- * §20.2 repeated-failed-action analyzer are `p5.repeated-failed`'s and 5b's, respectively.
+ * Wave 1 landed the graduated vocabulary. Wave 3 added the first two runtime behaviours:
+ * `p5.det-candidate` — §18 aggregation and §19 gate evaluation, both pure functions over
+ * `DecisionRecord[]` — and `p5.repeated-failed` — the §20.2 repeated-failed-action analyzer,
+ * a pure function over `ToolCallRecord[]`. `platform/analysis-engine/src/candidate.ts` (§21
+ * rendering) is 5b's.
  */
 export type {
   Outcome,
@@ -30,3 +31,4 @@ export {
   serializeGroupKey,
 } from './aggregate';
 export { evaluateGates } from './gates';
+export { detectRepeatedFailedActions } from './repeated-failed-action';
