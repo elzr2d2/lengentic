@@ -648,7 +648,11 @@ export function unitsFor(ids: string[]): Unit[] {
 
 function git(args: string[]): { ok: boolean; out: string } {
   const r = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
-  return { ok: r.status === 0, out: (r.stdout ?? '').trim() };
+  // trimEnd, never trim. `git status --porcelain` is fixed-width: an unstaged modification
+  // reports as " M path", and a leading `trim()` eats that space, shifts every column by one
+  // and truncates the path — `platform/...` came back as `latform/...` and `pnpm lanes check`
+  // BLOCKed a lane that was inside its surface. No caller depends on leading whitespace.
+  return { ok: r.status === 0, out: (r.stdout ?? '').trimEnd() };
 }
 
 export function repoState(): RepoState {
