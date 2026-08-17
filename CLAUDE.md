@@ -46,7 +46,30 @@ may be citing v2.
 
 Work on one phase at a time.
 
-Never automatically begin the next MVP phase.
+Once the human approves a session objective, the main session advances through already-approved
+phases on evidence. Routine steps — task execution, agent handoffs, implementation, tests,
+fixes, reviews, commits, and the transition into an already-approved phase — do not need
+permission. Decide from `CLAUDE.md`, `CONTEXT.md`, `MVP_PLAN_V3.md`, `docs/decisions/`, and
+prior evidence; document the assumption; continue. Prefer the reversible option under
+uncertainty.
+
+A phase boundary is a **validation gate, not an approval gate**. GREEN advances. RED enters
+bounded recovery. Only the six triggers below reach the human.
+
+**Escalation triggers — stop and ask, no exceptions:**
+
+1. The action is destructive or hard to reverse.
+2. It materially changes approved product scope or architecture.
+3. A high-impact decision where no preference can be safely inferred from project rules, ADRs,
+   prior decisions, or the approved plan.
+4. Credentials, external cost, production systems, security, privacy, or legal/compliance are
+   involved.
+5. A required gate fails and two materially different, evidence-driven recovery attempts have
+   both failed.
+6. Requirements genuinely conflict and choosing one would invalidate another.
+
+Triggers are checked **before** each dispatch and each phase advance, not only after a failure.
+"Shall I continue?" is not one of them. The `autopilot` skill is this rule made procedural.
 
 Do not redesign the approved MVP while implementing it.
 
