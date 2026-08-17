@@ -55,6 +55,13 @@ jobs:
         if: '!cancelled()'
         run: pnpm check:lanes
 
+      # The retriever's own scenarios. Same reason as above for being outside `pnpm gates`.
+      # It also catches document rot: a renumbered plan section or a renamed glossary term
+      # breaks `pnpm kb show §19` here rather than in the middle of a session.
+      - name: Knowledge-base scenarios
+        if: '!cancelled()'
+        run: pnpm check:kb
+
       # MVP_PLAN.md §17. Slow — a full install/build/test in a temp checkout with
       # playground/ removed — which is why it lives here and in `pnpm gates:full` rather
       # than in `pnpm gates` (corrections doc §9).

@@ -17,6 +17,23 @@ blocks nothing — read one when a shape surprises you, write one only when all 
 exclusion tests in its README fail. `docs/research/` holds external facts that expire —
 check `review-by` before citing, and never cite a stale note as-is.
 
+## Retrieval
+
+`MVP_PLAN_V3.md` is ~24k tokens and `BACKLOG.md` another ~16k. Reading either one whole to
+answer one question spends most of a context window on text nobody asked for.
+
+`pnpm kb search <words>` ranks every section of every document and returns `file:line`
+citations. `pnpm kb show §19` prints that one section verbatim. `pnpm kb term contextKey`
+returns the `CONTEXT.md` definition plus every place the word is really used. `pnpm kb map`
+says what a full read would cost before you commit to one.
+
+Search before Read whenever the target is prose. Read the whole file when you will edit it.
+Code stays grep's job — the index is `.md` only.
+
+Retrieval confers no authority. `MVP_PLAN.md` (v2) and `docs/superpowers/specs/**` are tagged
+`[HISTORICAL]` and excluded unless `--all`; a note past its `review-by` is tagged `[STALE]`
+and demoted. A tagged hit is a pointer to what someone wrote once, never a citation.
+
 ## Plan discipline
 
 Follow `MVP_PLAN_V3.md`. It is the single executable plan.
@@ -134,6 +151,7 @@ pnpm check:boundaries   # dependency-cruiser
 pnpm check:isolation    # builds the platform with playground/ deleted
 pnpm spike              # Phase 0 thesis spike (disposable, deleted end of Phase 5)
 pnpm check:integrity    # QA-integrity scan: false green, focused tests, hidden skips
+pnpm --filter @lengentic/api test <substring>   # one test file, by path substring (vitest)
 pnpm oracle waves       # dependency fan-out; which packets can run in parallel now
 pnpm oracle packet <id> # the sliced brief for one work packet
 pnpm lanes wave <n>     # sequential-vs-parallel decision for the next wave of a phase
@@ -141,10 +159,15 @@ pnpm lanes check <id>   # pre-commit lane gate: did the lane stay inside its pat
 pnpm lanes handoff <f>  # is this handoff real: schema, commit, ownership, evidence
 pnpm lanes integrate    # pre-integration gate + ordered integration plan
 pnpm check:lanes        # the dispatch rules' own scenarios (CI; not in `pnpm gates`)
+pnpm kb search <words>  # rank every document section; returns file:line citations
+pnpm kb show <target>   # one section verbatim — §19 | phase 5 | FILE.md#heading | heading
+pnpm kb term <name>     # CONTEXT.md definition + where the word is really used
+pnpm kb stale           # notes past review-by; generated files behind their source
+pnpm check:kb           # the retriever's own scenarios (CI; not in `pnpm gates`)
 ```
 
-`check:lanes` is out of `pnpm gates` on purpose: it reads `.claude/`, and `pnpm gates` must
-keep working with the engineering harness deleted.
+`check:lanes` and `check:kb` are out of `pnpm gates` on purpose: they read `.claude/` and the
+documents, and `pnpm gates` must keep working with the engineering harness deleted.
 
 ## Agents
 

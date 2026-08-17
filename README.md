@@ -207,8 +207,9 @@ it with `z.infer`. Prisma types are database-internal and never cross a module b
 
 Engineering-harness commands — `pnpm oracle`, `pnpm lanes`, `pnpm check:lanes` — read
 `.claude/` and are documented in [`docs/PARALLEL_EXECUTION.md`](docs/PARALLEL_EXECUTION.md).
-They are deliberately outside `pnpm gates`, which must keep working with the harness
-deleted.
+`pnpm kb` searches the documents themselves: `pnpm kb search <words>` ranks every markdown
+section and returns `file:line`, `pnpm kb show §19` prints one section verbatim. All of them
+are deliberately outside `pnpm gates`, which must keep working with the harness deleted.
 
 ## Documentation
 
