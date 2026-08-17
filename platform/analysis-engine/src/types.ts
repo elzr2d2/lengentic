@@ -64,8 +64,11 @@ export interface OptionCount {
 }
 
 /**
- * A decision that did NOT select the dominant option. Reported individually and never
- * summarized away — this is the evidence *against* the recommendation (§2, §18).
+ * A dominant-option FAILURE or a minority-option SUCCESS (§20.1) — the evidence *against*
+ * the recommendation, never summarized away (§2, §18). A minority-option FAILURE is
+ * evidence *for* the dominant option and is not a counterexample, even though it is a
+ * minority row; see `DecisionAggregate.minorityContextConcentration`, whose population is
+ * every minority row regardless of outcome and which is computed independently.
  */
 export interface Counterexample {
   readonly decisionId: string;
