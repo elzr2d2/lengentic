@@ -1847,7 +1847,8 @@ Definition of Done items with no fixture that can fail:
   that fails twice, `failedGates = [firstFailure]` is indistinguishable from the correct
   implementation. **`D10`** is the discriminator: 12 samples across 2 contexts fails `G1` and
   `G2` together, and a short-circuiting implementation reports one of them.
-- _"`attestedSuccessRate` is `null`, never `0`, when no outcomes are attested."_ Every
+- _"`dominantOptionAttestedSuccessRate` is `null`, never `0`, when no outcomes are
+  attested."_ Every
   `D1`–`D9` dominant option has a non-empty attested denominator, so the null path is never
   taken. **`D11`** takes it: every outcome is `UNKNOWN`, so `G5` fails on 0% coverage while
   `G4` reports `N-A` — never `FAIL`, never `0.0%`. This is §18's "G5 is evaluated first in
@@ -1915,11 +1916,12 @@ test/grid/**                assertAgainstGrid() + its own meta-tests
 
 `assertAgainstGrid(actual, expected)` is the whole assertion — sample counts, distinct
 contexts, dominant option, all five gate cells, `failedGates` as a **set**, verdict,
-counterexample count, and `attestedSuccessRate === null` where the grid says `N-A`. Package 2
+counterexample count, and `dominantOptionAttestedSuccessRate === null` where the grid says
+`N-A`. Package 2
 proves it works without any analyzer, against hand-built objects: one conforming object that
 must pass, and a deliberately wrong object per assertion — a `failedGates` list missing its
-second entry, an `attestedSuccessRate` of `0` where `null` is required, an `N-A` counted as a
-pass — each of which must throw. A comparator nobody mutation-checked is the green that lies
+second entry, a `dominantOptionAttestedSuccessRate` of `0` where `null` is required, an `N-A`
+counted as a pass — each of which must throw. A comparator nobody mutation-checked is the green that lies
 this whole phase is about.
 
 Its meta-tests also assert the table itself is complete: every fixture present, every gate
@@ -1982,7 +1984,8 @@ Everything above still holds, plus:
 - [ ] Re-analysis with the same fingerprint updates, never duplicates.
 - [ ] A `DISMISSED` recommendation stays dismissed across re-analysis.
 - [ ] `POST /v1/analysis/run` triggers analysis; nothing runs inline with ingestion.
-- [ ] `attestedSuccessRate` renders `N/A`, never `0.0%`, when no outcomes are attested.
+- [ ] `dominantOptionAttestedSuccessRate` renders `N/A`, never `0.0%`, when no outcomes are
+      attested.
 - [ ] `spike/` is deleted.
 
 **Human approval gate.**
