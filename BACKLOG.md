@@ -1254,13 +1254,29 @@ written before the positive path.
 **Trigger:** after the 5a gate. It is not in any 5a Definition of Done, and building it now
 would expand the phase.
 
+**Built ahead of the trigger** — human instruction, 2026-08-17, overriding the trigger above:
+"it's not related to 5a development but I need it to make the development faster." Landed as
+`scripts/decide.ts` + `scripts/decide/selftest.ts` (`pnpm decide`, `pnpm check:decide`), 26
+scenarios, confidence-floor mutation-checked (`.artifacts/evidence/decide/floor-mutation.md`).
+Scope narrowed to sidestep the gitignored-evidence block rather than answer it: five of the
+six stores are tracked files, cited `file:line` against themselves; `cites-evidence` edges into
+`.artifacts/evidence/**` are not built, for the reason stated above. Telemetry
+(`.artifacts/telemetry/lanes.jsonl`) is read as a live, best-effort local signal, gitignored
+and all — its absence is a clean tree, not a parse failure. `pnpm decide build` regenerates
+on every invocation rather than committing an index, which was the open question in the plan's
+§9.2 and is now answered by construction. `pnpm gates` could not be fully re-verified green at
+land time — `platform/dashboard`'s `next build` reported "Another next build process is already
+running", pre-existing and unrelated to this change (nothing imports `scripts/decide.ts`);
+lint, typecheck, test, `check:boundaries` and `check:integrity` all ran green. Full plan:
+`.artifacts/plans/pnpm-decide-plan.md`.
+
 ### The four-gate ladder is adopted now, without the tool
 
 **Source:** same instruction. The procedure half of the proposal needs no code.
 
 Before any question reaches the human: Gate 0 — a script decides it, so run it and cite the
 output. Gate 1 — already decided, so apply it and cite `file:line`. Gate 2 — blocks a
-deliverable, so escalate *framed*: cost asymmetry, named rejected alternatives, a
+deliverable, so escalate _framed_: cost asymmetry, named rejected alternatives, a
 recommendation, and the Detection that would show it wrong. Gate 3 — novel, costly and blocking
 nothing, so council or Architect, then an ADR. Otherwise state the assumption and act.
 
