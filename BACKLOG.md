@@ -1147,6 +1147,24 @@ nothing checks for it. **Wanted:** a selftest scenario in `pnpm check:lanes` or 
 blockers complete. **Trigger:** before the first Phase 2 parallel wave, which is the first time
 a wrong wave shape costs more than one dispatch.
 
+**Addressed 2026-08-17** by `pnpm check:probes` (`scripts/lanes.ts probes`), on a narrower and
+more checkable rule than the one wanted above: **a probe may only look inside the surface its
+own node owns.** No history simulation is needed — the two broken probes named
+`platform/analysis-engine`, which is not inside `src/**` or `test/analyzer/**`, and that is
+statically visible.
+
+It found eight more nodes with the same defect on its first run. Every Phase 3 node grepped the
+whole of `playground` while owning one directory inside it, so the first sibling to land would
+have marked the rest done — Phase 3 would have collapsed to one packet exactly as Phase 5
+collapsed to none. All eight are narrowed. Red-then-green proof, including the wave shape the
+lie produced: `.artifacts/evidence/5a/oracle-lint-proof.md`.
+
+Runs in CI beside `check:lanes` and `check:kb`, and out of `pnpm gates` for the same reason.
+What is **not** covered: a `grep` probe whose pattern is satisfied by an earlier deliverable
+inside the node's _own_ surface. `p5.engine-pkg` owns `platform/analysis-engine/**`, so a
+future node sharing that surface could still be probed loosely. The `WARN` on grep-only nodes
+is the hint; 35 nodes currently carry it.
+
 ### `D10` fails two count gates, never a count gate and a ratio gate
 
 **Source:** the adversarial fixture-semantics review, 2026-08-17.
@@ -1180,3 +1198,26 @@ plan of record cites as provenance. **Wanted:** either a tracked `docs/evidence/
 provenance, or a `.gitignore` exception for `.artifacts/evidence/**`. **Trigger:** the 5a gate,
 where a human is asked to accept ADR 0004 as paid on the strength of a file that is not in the
 repository.
+
+## Discovered building the negative fixture suite (2026-08-17, 5a wave 2)
+
+### No `R` fixture binds the "or records an Error" half of §20.2
+
+**Source:** the wave-2 Builder, which could not file it — `BACKLOG.md` is outside its lane.
+
+§20.2 emits when the result is `FAILED` **or** records an Error. Every one of `R1`–`R5`
+expresses failure through `outcome` alone; none has an `outcome: SUCCESS` row carrying a
+non-null `errorType`. A wave-3 implementation that reads `outcome` and ignores errors passes
+all five, and half the condition graduates unexercised.
+
+This is the same shape as the `D10`/`D11` findings — a Definition of Done sentence with no
+fixture that can falsify it — but it differs in one way that decides the disposition: the 5a
+Definition of Done asks that `R4` and `R5` both emit, and it does **not** assert the error
+branch. Absorbing it would mean reopening `fixtures/**` after the wave that owns it has merged
+and been hashed, which is the one thing the wave split exists to prevent.
+
+So it is deferred, and the cost is named instead of hidden: `p5.repeated-failed` is briefed to
+implement both halves, and nothing in 5a can prove it did. **Trigger:** 5b, where the analyzer
+goes behind `POST /v1/analysis/run` and the fixture corpus is revisited anyway — or
+`p6.scenario2`, if that scenario produces a tool call that errors without a `FAILED` outcome,
+whichever comes first.

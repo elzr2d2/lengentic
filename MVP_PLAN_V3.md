@@ -2149,7 +2149,12 @@ this whole phase is about.
 
 Its meta-tests also assert the table itself is complete: every fixture present, every gate
 cell populated, every `SUPPRESSED` row naming at least one gate, every `CANDIDATE` row naming
-none, `R4` the only `R` row expecting an emission.
+none, and `R4` and `R5` the only `R` rows expecting an emission.
+
+That last clause said "`R4` the only `R` row" until 2026-08-17, which contradicted the `R`
+table and the whole reason `R5` exists. The wave-2 Builder found it, followed the table, and
+reported the conflict instead of silently picking one — which is the correct move and is
+recorded here so the next reader does not re-derive it.
 
 ### What packages 3 and 4 land
 

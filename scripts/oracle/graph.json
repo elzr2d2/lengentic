@@ -704,6 +704,7 @@
         {
           "kind": "grep",
           "dir": "playground",
+          "file": "index.ts",
           "pattern": "telemetry-sdk"
         }
       ],
@@ -724,7 +725,7 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "playground",
+          "dir": "playground/providers",
           "pattern": "MockProvider"
         }
       ],
@@ -745,7 +746,7 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "playground",
+          "dir": "playground/determinism",
           "pattern": "SeededClock|SeededIdGenerator"
         }
       ],
@@ -766,7 +767,7 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "playground",
+          "dir": "playground/agents",
           "pattern": "MockAgent"
         }
       ],
@@ -788,7 +789,7 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "playground",
+          "dir": "playground/strategy",
           "pattern": "evaluatorVersion"
         }
       ],
@@ -810,7 +811,7 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "playground",
+          "dir": "playground/workflows",
           "pattern": "execution_strategy"
         }
       ],
@@ -1093,7 +1094,7 @@
           "path": "platform/analysis-engine/test/analyzer/repeated-failed-action.spec.ts"
         }
       ],
-      "note": "5a wave 3, second of two. §20.2 conditions only - same toolName, same sanitized inputFingerprint, result FAILED or an Error, at least three CONSECUTIVE attempts, no success between them. Generic loop detection is out of scope and the recommendation text says `repeated failed action`, never `loop detection`. R1-R3 all expect silence, so `return []` passes three of the five fixtures. R4 proves the analyzer exists; R5 proves the streak is scoped to the (runId, toolName, inputFingerprint) subsequence rather than to the run's whole timeline - under the timeline reading an unrelated tool's success suppresses a real repeated failure, i.e. the finding depends on scheduling noise. A run where R4 or R5 does not emit is a FAILED handoff, not a DONE with a caveat. Assert nothing directly; feed fixtures through assertAgainstGrid() from test/grid/**, which this packet may not edit. LANE COLLISION with p5.det-candidate on src/** and test/analyzer/** - serialise, and re-hash fixtures/expectations.ts and test/grid/** afterwards with `pnpm hash:5a`. The hash also covers test/analyzer/threshold-binding.spec.ts, which p5.det-candidate landed and this packet shares a path with: allowed_paths cannot protect it and gutting it would silently unpay ADR 0004. FILE NAMING IS A CONTRACT, because the oracle probes these paths: src/repeated-failed-action.ts and test/analyzer/repeated-failed-action.spec.ts. The previous probe on this packet grepped for `inputFingerprint`, which src/tool-call.ts has satisfied since wave 1, so the oracle reported this packet DONE before it had started.",
+      "note": "5a wave 3, second of two. §20.2 conditions only - same toolName, same sanitized inputFingerprint, result FAILED or an Error, at least three CONSECUTIVE attempts, no success between them. Generic loop detection is out of scope and the recommendation text says `repeated failed action`, never `loop detection`. R1-R3 all expect silence, so `return []` passes three of the five fixtures. R4 proves the analyzer exists; R5 proves the streak is scoped to the (runId, toolName, inputFingerprint) subsequence rather than to the run's whole timeline - under the timeline reading an unrelated tool's success suppresses a real repeated failure, i.e. the finding depends on scheduling noise. A run where R4 or R5 does not emit is a FAILED handoff, not a DONE with a caveat. Assert nothing directly; feed fixtures through assertAgainstGrid() from test/grid/**, which this packet may not edit. LANE COLLISION with p5.det-candidate on src/** and test/analyzer/** - serialise, and re-hash fixtures/expectations.ts and test/grid/** afterwards with `pnpm hash:5a`. The hash also covers test/analyzer/threshold-binding.spec.ts, which p5.det-candidate landed and this packet shares a path with: allowed_paths cannot protect it and gutting it would silently unpay ADR 0004. FILE NAMING IS A CONTRACT, because the oracle probes these paths: src/repeated-failed-action.ts and test/analyzer/repeated-failed-action.spec.ts. The previous probe on this packet grepped for `inputFingerprint`, which src/tool-call.ts has satisfied since wave 1, so the oracle reported this packet DONE before it had started. ONE CONDITION HAS NO FIXTURE BEHIND IT, and you are told so rather than left to discover it. §20.2 fires when the result is FAILED **or** records an Error; every one of R1-R5 expresses failure through `outcome` alone, so an implementation that reads `outcome` and ignores errorType passes all five fixtures with half the condition unimplemented. The wave-2 Builder found this and it is deferred to 5b - see BACKLOG.md `No R fixture binds the \"or records an Error\" half of §20.2` - because absorbing it means reopening fixtures/** after the wave that owns it has merged and been hashed. Implement BOTH halves anyway. The suite cannot catch you; the 5b gate will.",
       "own": {
         "allowed": ["platform/analysis-engine/src/**", "platform/analysis-engine/test/analyzer/**"]
       },
@@ -1253,9 +1254,8 @@
       "needs": ["p6.scenario3", "p3.seeded-clock"],
       "probes": [
         {
-          "kind": "grep",
-          "dir": "playground",
-          "pattern": "seed"
+          "kind": "manual",
+          "evidence": ".artifacts/evidence/6/seed-repro.md"
         }
       ],
       "own": {

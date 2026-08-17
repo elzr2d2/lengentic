@@ -26,6 +26,7 @@
     "kb": "tsx scripts/kb.ts",
     "hash:5a": "tsx scripts/hash-5a.ts",
     "check:lanes": "tsx scripts/lanes/selftest.ts",
+    "check:probes": "tsx scripts/lanes.ts probes",
     "check:kb": "tsx scripts/kb/selftest.ts",
     "gates": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm check:boundaries && pnpm check:integrity",
     "gates:full": "pnpm gates && pnpm check:isolation",
