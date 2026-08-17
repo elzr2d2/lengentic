@@ -270,10 +270,14 @@ engine, no database, no HTTP, no SDK, no UI. `5b` is waves 4–6 and stays after
 - **Wave 2 `p5.negative-fixtures` — landed green** at `a863346`. 136 tests, four files. Gutting
   the comparators turns 34 red; corrupting one expectation cell turns 4 red. Evidence:
   `.artifacts/evidence/5a/negative-fixtures-mutation.md`.
-- **Wave 3 is next and has not started:** `p5.det-candidate`, then `p5.repeated-failed`.
-  Serial — they collide on `src/**` and `test/analyzer/**`. Run
-  `pnpm hash:5a before-<packet>` and `--compare` around each; the threshold-binding spec sits
-  in a path both of them own, so `allowed_paths` cannot protect it.
+- **Wave 3 — landed.** `p5.det-candidate` at `6042a72`, then `p5.repeated-failed` at `af624cc`,
+  run serially because they collide on `src/**` and `test/analyzer/**`. Both handoffs report
+  `DONE` with an empty `unverified` bucket; hash pairs and mutation proofs are in
+  `.artifacts/evidence/5a/`.
+- **`pnpm lanes wave 5a` now reports `no outstanding work in phase 5a`.** The one 5a
+  deliverable left is `p5.spike-deleted`, and deleting `spike/` is destructive — it is the only
+  on-disk record of the seven rows where the spike disagrees with the grid by design. That is
+  escalation trigger 1, not a routine step.
 
 **The most transferable thing 5a has learned: two independent blind computations agreed, cell
 for cell, on a `counterexamples` column that was wrong.** Agreement proved they had not copied

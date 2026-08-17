@@ -34,6 +34,18 @@ An autopilot that re-runs finished work burns the context window it needs later.
 | 2     | `pnpm oracle status` / `pnpm lanes wave <phase>` | what is genuinely done and what is unblocked                              |
 | 3     | `.artifacts/handoffs/*.json`                     | per-lane `DONE` / `BLOCKED` with its evidence                             |
 
+**A non-zero exit from `pnpm lanes wave` is not automatically RED.** It exits `1` for two
+opposite reasons, and the exit code alone cannot tell them apart:
+
+| Output                                 | Means                        | Do                                                    |
+| -------------------------------------- | ---------------------------- | ----------------------------------------------------- |
+| `no outstanding work in phase <phase>` | the phase is **finished**    | check GREEN (§3), then advance. Never enter recovery. |
+| anything else                          | the command genuinely failed | RED. Go to §4.                                        |
+
+Read the message, never the exit code, before treating this command as a gate input. Sending a
+finished phase into §4 spends two Diagnostician/Builder attempts and escalates on trigger 5 to
+report that nothing was wrong.
+
 Rows 2 and 3 are authoritative on completion. The checkpoint is authoritative on **recovery
 history only** — it is the one fact with no other home. Where the checkpoint and `oracle`
 disagree about what is done, `oracle` wins and the checkpoint is corrected.
