@@ -59,6 +59,13 @@ the count as "3 (1 attested)", or exclude `UNKNOWN` dissents from the concentrat
 calculation. Deliberately **not** decided in Phase 0 — it changes what the report claims,
 and the fixtures should drive that decision rather than an aesthetic preference.
 
+**Premise void 2026-08-17.** This entry assumed the Phase 0 reading, where a counterexample was
+any minority-selected row and could therefore be `UNKNOWN`. §20.1's reading — landed in the
+grid on 2026-08-17, see `.artifacts/evidence/5a/fixture-semantics-review.md` — counts only
+attested rows, so an unattested dissent is not a counterexample at all and there is nothing to
+weight. `D2` now carries four, all attested. What survives is the _concentration_ question:
+`minorityContextConcentration` is still a group-by over minority rows, `UNKNOWN` ones included.
+
 ### Concentration output is noisy for wide minorities
 
 **Source:** observed in fixture `D9`.
@@ -893,9 +900,17 @@ of Done item that already existed — `D10` for "names every failing gate", `D11
 "`attestedSuccessRate` is null, never 0". The four below are not required by any Definition of
 Done item and are deferred.
 
-### No fixture sits on a gate threshold
+### No fixture sits on a gate threshold — ABSORBED INTO 5a, 2026-08-17
 
 **Source:** both grid computations, independently.
+
+**Status: no longer deferred.** A council review found that ADR 0004's threshold-binding spec
+cannot fail against a corpus that never sits on a threshold, so the spec would have paid for
+skipping Tester with a green that could not go red. The fifteen `B1`–`B5` groups in
+`MVP_PLAN_V3.md` Phase 5, **Threshold boundary rows**, close this entry: `29/30/31` samples,
+`4/5/6` contexts, and `89.9/90.0/90.1%` on all three ratio gates. Provenance:
+`.artifacts/evidence/5a/threshold-boundary-rows.md`. The original entry is kept below because
+its reasoning is what the absorption rests on.
 
 Sample counts across the whole corpus are 12, 24, 26, 40, 45, 50, 50, 50, 60 — never 30.
 Distinct-context counts are 2, 8, 8, 9, 10, 10, 11, 12, 15 — never 5. No ratio equals 0.90 or
@@ -940,6 +955,12 @@ largest unkeyed row's `count` is at least `contexts.length`. It stops being imma
 future fixture whose dominant row is smaller than the context list — which the threshold
 fixtures above would be. **Trigger:** whichever lands first, the boundary fixtures or the
 format note.
+
+**The trigger has fired (2026-08-17).** The boundary groups land in `p5.negative-fixtures`.
+Their own cursor is pinned in the plan — round-robin over the pool, in order, from the pool's
+first entry — and every boundary group has more decisions than pool entries, so their
+`distinctContextKeyCount` is invariant again. What still has no written rule is the cursor over
+the run-length-encoded `D1`–`D9` rows that the same packet graduates. Settle it there.
 
 ### Two fixture `rationale` strings quote a blended success rate
 
@@ -1093,3 +1114,69 @@ reads this exact block.
   code that had been committed and never executed — see _Discovered during the first Docker
   execution_ below. Note for every future phase that adds a container surface: the first run
   is a review, not a smoke test.
+
+## Discovered at the 5a pre-dispatch step (2026-08-17)
+
+### The lane-ownership hook blocks scratchpad writes
+
+**Source:** boundary grid computation A, unprompted, mid-task.
+
+`.claude/hooks/check-lane-ownership.mjs` rejected a write to the session scratchpad — a path
+outside the repository entirely — as being outside lane `p5.engine-pkg`'s surface. The agent
+worked around it through Bash and disclosed the incident.
+
+Any agent that uses the scratchpad while a lane file is present hits this, and the workaround
+is "use a different tool", which is exactly the shape that gets a hook switched off. A path
+that resolves outside the repository is not the lane's business either way. **Trigger:** the
+Phase 1 debt wave, alongside the pre-commit hook work, since both touch `.claude/hooks/`.
+
+### An oracle probe can report a packet DONE before it starts
+
+**Source:** the 5a pre-dispatch review, confirmed against `pnpm oracle waves` output.
+
+`p5.det-candidate` probed `grep minorityContextConcentration` and `p5.repeated-failed` probed
+`grep inputFingerprint`, both over `platform/analysis-engine`. Wave 1 graduated the types, so
+`src/types.ts` and `src/tool-call.ts` satisfied both patterns the moment wave 1 merged. Both
+wave-3 packets read `DONE` in `pnpm oracle waves` while neither had been written, and
+`pnpm lanes wave 5` batched two 5b packets in their place.
+
+Fixed for those two by probing paths only a wave-3 packet can create. The class of defect is
+not fixed: a probe whose pattern an _earlier_ packet also satisfies is a false green, and
+nothing checks for it. **Wanted:** a selftest scenario in `pnpm check:lanes` or a lint over
+`graph.json` that flags any `grep` probe whose pattern already matches at the time its own
+blockers complete. **Trigger:** before the first Phase 2 parallel wave, which is the first time
+a wrong wave shape costs more than one dispatch.
+
+### `D10` fails two count gates, never a count gate and a ratio gate
+
+**Source:** the adversarial fixture-semantics review, 2026-08-17.
+
+`D10` exists to catch `failedGates = [firstFailure]`, and it does: 12 samples over 2 contexts
+fails `G1` and `G2` together. Both are integer-threshold gates. An implementation that
+evaluates every count gate but short-circuits inside the ratio gates `G3`/`G4`/`G5` passes
+`D10` unharmed, because `D10` has no failing ratio gate.
+
+Wanted: a row that fails one of each — 12 samples, 8 contexts, 60% dominance fails `G1` and
+`G3` — as a strictly stronger discriminator at the same cost. Deferred because the Definition
+of Done asks that every failing gate be named and `D10` already makes that falsifiable;
+swapping the shape now would rewrite a grid row that two independent computations agreed on.
+**Trigger:** 5b, when the analyzer goes behind `POST /v1/analysis/run` and the fixture corpus
+is revisited anyway.
+
+### Cited evidence lives in a git-ignored directory
+
+**Source:** the 5a pre-dispatch commit, 2026-08-17.
+
+`MVP_PLAN_V3.md` cites `.artifacts/evidence/5a/gate-expectation-grid.md`,
+`.artifacts/evidence/5a/threshold-boundary-rows.md` and
+`.artifacts/evidence/5a/fixture-semantics-review.md` as the provenance of the only legal source
+of expected values, and `docs/decisions/0004` is paid for by
+`.artifacts/evidence/5a/threshold-binding-mutation.md`. `.gitignore:15` excludes `.artifacts/`
+entirely, so a clean clone has the citations and none of the evidence.
+
+The convention is deliberate — `CLAUDE.md` says to store detail in `.artifacts/` and return
+paths — and it is right for run logs and scratch. It is wrong for the handful of documents the
+plan of record cites as provenance. **Wanted:** either a tracked `docs/evidence/` for cited
+provenance, or a `.gitignore` exception for `.artifacts/evidence/**`. **Trigger:** the 5a gate,
+where a human is asked to accept ADR 0004 as paid on the strength of a file that is not in the
+repository.

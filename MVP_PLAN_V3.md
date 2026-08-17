@@ -961,17 +961,21 @@ never `0%`. Rendering an unknown rate as `0.0%` is exactly the lie §2 forbids.
 
 ## `minorityContextConcentration`
 
-A group-by over the minority rows. Converts the counterexample block from a list into a
+A group-by over the minority rows. Converts the minority block from a list into a
 recommendation about _where the escape hatch goes_.
 
+Minority rows are a **different population** from §20.1's counterexamples: a minority row that
+failed is evidence _for_ the dominant option, and a dominant-option failure is a counterexample
+that is not a minority row at all. Do not compute one from the other.
+
 ```text
-3 counterexamples, all in post_refactor_large_diff
+3 minority rows, all in post_refactor_large_diff
 ```
 
 names the escape-hatch condition directly. Compare:
 
 ```text
-3 counterexamples across 3 different contexts
+3 minority rows across 3 different contexts
 ```
 
 which says the boundary is not context-shaped and the branch is doing something `contextKey`
@@ -1044,12 +1048,30 @@ problem and its false-positive rate is what kills a recommendations product.
 Emit only when **all** conditions hold:
 
 ```text
+Same runId
 Same toolName
 Same sanitized inputFingerprint
 Result is FAILED or records an Error
-At least three CONSECUTIVE attempts
+At least three CONSECUTIVE attempts, consecutive WITHIN that subsequence
 No successful attempt between them
 ```
+
+Three notes on that list, all added 2026-08-17 after an adversarial reading found the original
+five underdetermined.
+
+**`Same runId` was missing.** Read without it, three failures of one tool with one fingerprint
+spread across three unrelated runs satisfy every condition and emit. That is a false positive
+of exactly the class this section's opening paragraph says kills a recommendations product.
+Phase 5's `R5` rationale already scopes the streak to `(runId, toolName, inputFingerprint)`;
+the condition list simply never said so.
+
+**"Consecutive" means consecutive within the `(runId, toolName, inputFingerprint)`
+subsequence**, not in the run's whole timeline. `R5` in Phase 5 is the fixture that binds it.
+
+**Under that reading the last condition can never fire on its own**, because all three attempts
+in the window are already FAILED. It is kept as a statement of intent for anyone who reaches
+for the timeline reading, and no fixture is owed for it. Saying so here is cheaper than a
+wave-3 Builder trying to reconcile a condition that cannot fail.
 
 Must emit:
 
@@ -1156,13 +1178,23 @@ Consider a deterministic default of YES for this decision, with an
 explicit escape hatch for the conditions below. This would remove a
 model call from the hot path while preserving the branch.
 
-Counterexamples (1):
+Counterexamples (3):
   - run 8f2a…
     contextKey: post_refactor_large_diff
     selected:   NO
     outcome:    SUCCESS
 
-  Concentration: 1 of 1 counterexample in post_refactor_large_diff
+  - run c41d…
+    contextKey: post_refactor_large_diff
+    selected:   YES
+    outcome:    FAILURE
+
+  - run 5b90…
+    contextKey: hotfix_single_file
+    selected:   YES
+    outcome:    FAILURE
+
+  Concentration: 1 of 1 minority row in post_refactor_large_diff
 
 Note:
 LenGentic observes chosen options only. It cannot determine what would
@@ -1345,10 +1377,15 @@ graduates into Phase 5 unexercised.
 suppressor per gate, which is a different and weaker property than the 5a Definition of Done
 requires — see **Gate expectation grid** in Phase 5 for what each of them closes.
 
+**This table is a Phase 0 record, not a source of expected values.** Its counts were minority
+rows, which §20.1's counterexamples are not; the Phase 5 grid is the only legal source and it
+was corrected on 2026-08-17. The two columns are relabelled here so nobody sources a
+counterexample count from a table that never held one.
+
 | ID   | Shape                                                                    | Expected                                 |
 | ---- | ------------------------------------------------------------------------ | ---------------------------------------- |
-| `D1` | 50 samples, 12 contexts, YES 49 / NO 1, coverage 94%, success 96%        | **CANDIDATE**, 1 counterexample          |
-| `D2` | 40 samples, 9 contexts, SKIP 37 / RUN 3, coverage 90%, success 92%       | **CANDIDATE**, 3 counterexamples         |
+| `D1` | 50 samples, 12 contexts, YES 49 / NO 1, coverage 94%, success 96%        | **CANDIDATE**, 1 minority row            |
+| `D2` | 40 samples, 9 contexts, SKIP 37 / RUN 3, coverage 90%, success 92%       | **CANDIDATE**, 3 minority rows           |
 | `D3` | 50 samples, 10 contexts, YES 47 / NO 3; all 3 NO succeeded, 4 YES failed | **CANDIDATE**, minority branch prominent |
 | `D4` | 50 samples, **2 contexts**, YES 48 / NO 2 (96%)                          | **SUPPRESSED — G2**                      |
 | `D5` | **12 samples**, 8 contexts, YES 12 / NO 0 (100%)                         | **SUPPRESSED — G1**                      |
@@ -1766,8 +1803,8 @@ mode that kills a recommendations product.
 | #   | Package                    | Owner   | Acceptance                                                                   |
 | --- | -------------------------- | ------- | ---------------------------------------------------------------------------- |
 | 1   | Package + types only       | Builder | `platform/analysis-engine` exists; `spike/types.ts` graduates. **No logic.** |
-| 2   | Negative fixture suite     | Builder | Gate expectation grid transcribed as data; `D10` fails two gates at once     |
-| 3   | Deterministic candidate    | Builder | §18 aggregation, §19 gates, §21 output shape                                 |
+| 2   | Negative fixture suite     | Builder | Both grids transcribed as data; `D10` fails two gates at once                |
+| 3   | Deterministic candidate    | Builder | §18 aggregation, §19 gates, §21 output; threshold-binding spec that can fail |
 | 4   | Repeated failed action     | Builder | §20.2 conditions only; `R1`–`R5` pass, and `R4` and `R5` both emit           |
 | 5   | Persistence + trigger + UI | Builder | Fingerprint dedupe, `POST /v1/analysis/run`, Dashboard rendering             |
 
@@ -1781,10 +1818,10 @@ packages 3 and 4, against fixtures that are already red.
 
 **Fixture provenance.** `spike/fixtures/decisions.json` supplies the `D1`–`D9` _input_ data
 verbatim; Phase 0 already reconciled it with the tables in this document. Every _expected_
-result is written fresh from the `D1`–`D9` table in Phase 0 and the `D4`–`D9` / `R1`–`R3`
-table below — never from what `pnpm spike` printed. A fixture whose expectation was read off
-the implementation cannot fail when the implementation is wrong. `R1`–`R3` are new here and
-are built from scratch. `spike/` therefore survives 5a as an independent cross-check and is
+result is written fresh from the **Gate expectation grid** and the **Threshold boundary rows**
+below — never from what `pnpm spike` printed. A fixture whose expectation was read off the
+implementation cannot fail when the implementation is wrong. `D10`, `D11`, `R1`–`R5` and
+`B1`–`B5` are new here and are built from scratch, inputs included. `spike/` therefore survives 5a as an independent cross-check and is
 deleted in 5b, per `p5.spike-deleted`.
 
 ## Negative fixture suite — required
@@ -1803,6 +1840,7 @@ R1  Batch iteration            10 identical SUCCESSFUL actions         → silen
 R2  Below threshold            2 consecutive failures, threshold 3     → silent
 R3  Changing inputs            4 failures, different target each time  → silent (progress)
 R4  Genuine repeated failure   3 consecutive failures, same target     → EMIT
+R5  Interleaved success        F(A) F(A) S(B) F(A), one run            → EMIT
 ```
 
 Each negative fixture asserts both that no recommendation is emitted **and** which gate
@@ -1820,21 +1858,49 @@ Evidence: `.artifacts/evidence/5a/gate-expectation-grid.md`.
 
 | Fixture      | samples | contexts | dominant | dominance | coverage | dominant success | G1   | G2   | G3   | G4   | G5   | Verdict    | failedGates | counterexamples |
 | ------------ | ------- | -------- | -------- | --------- | -------- | ---------------- | ---- | ---- | ---- | ---- | ---- | ---------- | ----------- | --------------- |
-| `D1`         | 50      | 12       | YES      | 98.00%    | 94.00%   | 95.65%           | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 1               |
-| `D2`         | 40      | 9        | SKIP     | 92.50%    | 90.00%   | 91.43%           | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 3               |
-| `D3`         | 50      | 10       | YES      | 94.00%    | 100.00%  | 91.49%           | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 3               |
-| `D4`         | 50      | 2        | YES      | 96.00%    | 96.00%   | 95.65%           | PASS | FAIL | PASS | PASS | PASS | SUPPRESSED | G2          | 2               |
+| `D1`         | 50      | 12       | YES      | 98.00%    | 94.00%   | 95.65%           | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 3               |
+| `D2`         | 40      | 9        | SKIP     | 92.50%    | 90.00%   | 91.43%           | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 4               |
+| `D3`         | 50      | 10       | YES      | 94.00%    | 100.00%  | 91.49%           | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 7               |
+| `D4`         | 50      | 2        | YES      | 96.00%    | 96.00%   | 95.65%           | PASS | FAIL | PASS | PASS | PASS | SUPPRESSED | G2          | 4               |
 | `D5`         | 12      | 8        | YES      | 100.00%   | 100.00%  | 100.00%          | FAIL | PASS | PASS | PASS | PASS | SUPPRESSED | G1          | 0               |
-| `D6`         | 60      | 15       | YES      | 96.67%    | 93.33%   | 61.11%           | PASS | PASS | PASS | FAIL | PASS | SUPPRESSED | G4          | 2               |
+| `D6`         | 60      | 15       | YES      | 96.67%    | 93.33%   | 61.11%           | PASS | PASS | PASS | FAIL | PASS | SUPPRESSED | G4          | 22              |
 | `D7`         | 50      | 10       | YES      | 96.00%    | 60.00%   | 96.55%           | PASS | PASS | PASS | PASS | FAIL | SUPPRESSED | G5          | 2               |
 | `D8` a1b2c3d | 26      | 8        | YES      | 96.15%    | 100.00%  | 100.00%          | FAIL | PASS | PASS | PASS | PASS | SUPPRESSED | G1          | 1               |
 | `D8` e4f5a6b | 24      | 8        | YES      | 95.83%    | 100.00%  | 100.00%          | FAIL | PASS | PASS | PASS | PASS | SUPPRESSED | G1          | 1               |
-| `D9`         | 45      | 11       | YES      | 60.00%    | 95.56%   | 96.15%           | PASS | PASS | FAIL | PASS | PASS | SUPPRESSED | G3          | 18              |
+| `D9`         | 45      | 11       | YES      | 60.00%    | 95.56%   | 96.15%           | PASS | PASS | FAIL | PASS | PASS | SUPPRESSED | G3          | 16              |
 | `D10`        | 12      | 2        | YES      | 100.00%   | 100.00%  | 100.00%          | FAIL | FAIL | PASS | PASS | PASS | SUPPRESSED | G1, G2      | 0               |
-| `D11`        | 40      | 8        | YES      | 95.00%    | 0.00%    | _undefined_      | PASS | PASS | PASS | N-A  | FAIL | SUPPRESSED | G5          | 2               |
+| `D11`        | 40      | 8        | YES      | 95.00%    | 0.00%    | _undefined_      | PASS | PASS | PASS | N-A  | FAIL | SUPPRESSED | G5          | 0               |
 
 `D5` additionally excludes 20 stale-run rows and 5 null-`contextKey` rows before any of the
 above is computed. Those 25 never reach `sampleCount`.
+
+### The `counterexamples` column was corrected on 2026-08-17
+
+The column originally counted **minority-selected rows**. §20.1 defines a counterexample as a
+dominant-option `FAILURE` **or** a minority-option `SUCCESS`, which is a different population,
+and an adversarial semantics review found the two disagree on seven of the twelve rows.
+Corrected: `D1` 1→3, `D2` 3→4, `D3` 3→7, `D4` 2→4, `D6` 2→22, `D9` 18→16, `D11` 2→0. The other
+five agreed by arithmetic coincidence. Evidence:
+`.artifacts/evidence/5a/fixture-semantics-review.md`.
+
+Both blind computations agreed on the old column, which is what the review was commissioned to
+test: **cell-for-cell agreement proves independent derivation, not correctness.** Both agents
+were handed §20.1's definition and both reported the minority-row count, because that is what
+`spike/aggregate.ts:133` computes and what the fixture prose describes.
+
+`D6` is why the direction of the error matters. It is the _"dominant and frequently wrong"_
+fixture: 21 attested dominant-option failures. Under the old column the recommendation carried
+two counterexamples and hid twenty-one — a product whose thesis is "hypotheses with
+counterevidence attached", discarding the strongest counterevidence it holds. `D11` is why the
+error is not a transcription slip: nothing there is attested, so §20.1's count is provably 0
+whatever inputs the builder writes, and the old column said 2.
+
+`spike/` encodes the old reading. It therefore **disagrees with this grid on seven rows by
+design** — `spike/` is an independent cross-check, never an oracle, and the disagreement is
+expected rather than a defect to reconcile.
+
+`minorityContextConcentration` keeps §18's definition — a group-by over the **minority rows** —
+which is a third population again, and is not the counterexample list.
 
 ### Why `D10` and `D11` exist
 
@@ -1858,6 +1924,15 @@ Definition of Done items with no fixture that can fail:
 report as `N-A` rather than in `failedGates`. Reporting an unmeasured rate as a failure
 invents a finding out of missing data; reporting it as a pass is the lie §2 forbids.
 
+That leaves an obvious hole — a `SUPPRESSED` group whose only non-`PASS` cell is `N-A` would
+name no failing gate at all, and the comparator's own meta-test asserts every `SUPPRESSED` row
+names at least one. **It cannot happen, and the reason is arithmetic rather than luck.** `G4`
+is `N-A` only when the dominant option's attested count is zero, so every attested row belongs
+to a minority option and `outcomeCoverage <= 1 − dominancePercentage`. Whenever `G3` passes at
+the 90% default that caps coverage at 10%, far below `G5`'s 80%, so `G5` fails. An exhaustive
+search over every integer shape up to `n = 60` found no counterexample. §18's _"G5 is evaluated
+first in that case"_ is a consequence, not a convention.
+
 ### `R` fixtures — no gates apply
 
 `G1`–`G5` are the deterministic-candidate analyzer's gates. §20.2 is a conditions analyzer:
@@ -1870,7 +1945,7 @@ grid for `R1`–`R4`, and writing one would imply a suppression mechanism that d
 | `R2`    | 2 consecutive failures, same target, threshold 3               | silent — below threshold            |
 | `R3`    | 4 failures, a different `inputFingerprint` each time           | silent — progress, not a loop       |
 | `R4`    | 3 consecutive failures, same `toolName` and `inputFingerprint` | **EMIT** — one recommendation       |
-| `R5`    | as `R4`, with an unrelated tool's SUCCESS interleaved          | **EMIT** — the streak is per-target |
+| `R5`    | `F(A) F(A) S(B) F(A)` in one run — see below                   | **EMIT** — the streak is per-target |
 
 **`R4` is required, not optional.** `R1`, `R2` and `R3` all expect silence, so an
 implementation of §20.2 that is literally `return []` passes all three and the analyzer
@@ -1888,6 +1963,136 @@ unrelated concurrent tool succeeding between two attempts suppresses a genuine r
 failure, which makes the finding depend on interleaving — on scheduling noise rather than on
 agent behaviour. A product that goes quiet because something else happened to succeed nearby
 is worse than one that stays quiet on principle.
+
+**`R5`'s timeline is pinned, because the position of the success is the whole mechanism.**
+"An unrelated success interleaved" has three readings and only one of them discriminates:
+
+```text
+F(A) F(A) S(B) F(A)   subsequence EMIT | timeline silent   discriminates
+F(A) F(A) F(A) S(B)   subsequence EMIT | timeline EMIT     binds nothing
+S(B) F(A) F(A) F(A)   subsequence EMIT | timeline EMIT     binds nothing
+```
+
+`R5` is the first arrangement, in a **single run**: two failures against target `A`, one
+success from an unrelated tool `B`, then a third failure against `A`. Written either of the
+other two ways the fixture is green under both readings, the Definition of Done's claim that a
+whole-timeline implementation fails `R5` becomes false, and the wave-3 packet settles the
+question silently after all.
+
+## Threshold boundary rows
+
+`docs/decisions/0004-no-tester-at-the-5a-gate.md` pays for skipping Tester with a
+threshold-binding spec: shift each threshold one unit and assert that every verdict that
+should flip does. Against `D1`–`D11` that spec **cannot fail**. Sample counts are 12, 24, 26,
+40, 45, 50, 50, 50 and 60 and never 30; distinct-context counts are 2, 8, 8, 9, 10, 10, 11, 12
+and 15 and never 5; no ratio is 0.90 or 0.80. Every fixture sits far from every threshold, so a
+one-unit shift moves no verdict at all and the spec is green by construction. ADR 0004 would be
+paid with a coin that has no value.
+
+Fifteen boundary groups close that. They are ordinary fixtures with ordinary expected values,
+and this table is their **only** legal source, exactly as the grid above is for `D1`–`D11`.
+
+`p5.negative-fixtures` builds both the inputs and the expected values, in `fixtures/**`.
+`p5.det-candidate` writes the spec in `test/analyzer/threshold-binding.spec.ts` and may not
+edit either. The packet that has to make the spec pass therefore cannot author what the spec
+asserts — the same ordering guarantee the `D` rows already have, applied to the one deliverable
+that pays for the missing Tester.
+
+### Inputs
+
+Every group shares `workflowName` `boundary-wf`, `workflowVersion` `v1`, `decisionType`
+`boundary_decision` and `contextKeyVersion` `ckv1`. No group has a `STALE` run or a null
+`contextKey`, so `eligible` is every listed decision. `contextKey`s are assigned round-robin
+over the group's pool, in order, from the pool's first entry.
+
+```text
+B1-lo    29 decisions   pool c1..c8   all YES   all SUCCESS
+B1-at    30 decisions   pool c1..c8   all YES   all SUCCESS
+B1-hi    31 decisions   pool c1..c8   all YES   all SUCCESS
+
+B2-lo    40 decisions   pool c1..c4   all YES   all SUCCESS
+B2-at    40 decisions   pool c1..c5   all YES   all SUCCESS
+B2-hi    40 decisions   pool c1..c6   all YES   all SUCCESS
+
+B3-lo  1000 decisions   pool c1..c8   899 YES / 101 NO   YES rows SUCCESS, NO rows FAILURE
+B3-at  1000 decisions   pool c1..c8   900 YES / 100 NO   same outcome rule
+B3-hi  1000 decisions   pool c1..c8   901 YES /  99 NO   same outcome rule
+
+B4-lo  1000 decisions   pool c1..c8   all YES   899 SUCCESS / 101 FAILURE
+B4-at  1000 decisions   pool c1..c8   all YES   900 SUCCESS / 100 FAILURE
+B4-hi  1000 decisions   pool c1..c8   all YES   901 SUCCESS /  99 FAILURE
+
+B5-lo  1000 decisions   pool c1..c8   all YES   799 SUCCESS / 201 UNKNOWN
+B5-at  1000 decisions   pool c1..c8   all YES   800 SUCCESS / 200 UNKNOWN
+B5-hi  1000 decisions   pool c1..c8   all YES   801 SUCCESS / 199 UNKNOWN
+```
+
+### Expected values
+
+Computed twice, independently, by two agents denied sight of `spike/**`,
+`platform/analysis-engine/src/**` and this document, from the denominators of §18 and the
+thresholds of §19 alone. Both grids agree cell for cell, including after the `B3` amendment
+both of them independently asked for. Evidence:
+`.artifacts/evidence/5a/threshold-boundary-rows.md`.
+
+`counterexamples` here is §20.1's definition and nothing else — dominant-option `FAILURE`
+rows plus minority-option `SUCCESS` rows.
+
+| Group   | samples | contexts | dominant | dominance | coverage | dominant success | G1   | G2   | G3   | G4   | G5   | Verdict    | failedGates | counterexamples |
+| ------- | ------- | -------- | -------- | --------- | -------- | ---------------- | ---- | ---- | ---- | ---- | ---- | ---------- | ----------- | --------------- |
+| `B1-lo` | 29      | 8        | YES      | 100.00%   | 100.00%  | 100.00%          | FAIL | PASS | PASS | PASS | PASS | SUPPRESSED | G1          | 0               |
+| `B1-at` | 30      | 8        | YES      | 100.00%   | 100.00%  | 100.00%          | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 0               |
+| `B1-hi` | 31      | 8        | YES      | 100.00%   | 100.00%  | 100.00%          | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 0               |
+| `B2-lo` | 40      | 4        | YES      | 100.00%   | 100.00%  | 100.00%          | PASS | FAIL | PASS | PASS | PASS | SUPPRESSED | G2          | 0               |
+| `B2-at` | 40      | 5        | YES      | 100.00%   | 100.00%  | 100.00%          | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 0               |
+| `B2-hi` | 40      | 6        | YES      | 100.00%   | 100.00%  | 100.00%          | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 0               |
+| `B3-lo` | 1000    | 8        | YES      | 89.90%    | 100.00%  | 100.00%          | PASS | PASS | FAIL | PASS | PASS | SUPPRESSED | G3          | 0               |
+| `B3-at` | 1000    | 8        | YES      | 90.00%    | 100.00%  | 100.00%          | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 0               |
+| `B3-hi` | 1000    | 8        | YES      | 90.10%    | 100.00%  | 100.00%          | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 0               |
+| `B4-lo` | 1000    | 8        | YES      | 100.00%   | 100.00%  | 89.90%           | PASS | PASS | PASS | FAIL | PASS | SUPPRESSED | G4          | 101             |
+| `B4-at` | 1000    | 8        | YES      | 100.00%   | 100.00%  | 90.00%           | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 100             |
+| `B4-hi` | 1000    | 8        | YES      | 100.00%   | 100.00%  | 90.10%           | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 99              |
+| `B5-lo` | 1000    | 8        | YES      | 100.00%   | 79.90%   | 100.00%          | PASS | PASS | PASS | PASS | FAIL | SUPPRESSED | G5          | 0               |
+| `B5-at` | 1000    | 8        | YES      | 100.00%   | 80.00%   | 100.00%          | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 0               |
+| `B5-hi` | 1000    | 8        | YES      | 100.00%   | 80.10%   | 100.00%          | PASS | PASS | PASS | PASS | PASS | CANDIDATE  | —           | 0               |
+
+`B4-lo` is the only `SUPPRESSED` row in the set with a non-zero counterexample count. It is
+therefore the only fixture in the whole phase that catches an implementation which skips
+counterexample collection once a verdict is suppressed. `B3-lo` also discriminates G4's
+denominator: the dominant option's own rate is 100.00% and PASSES, while the blend across both
+options is 89.90% and would FAIL.
+
+### The shift rule
+
+The spec moves **one** threshold at a time, by one unit, in both directions, holding the other
+four at their defaults. One unit is `1` for `minSampleCount` and `minDistinctContexts`, and
+`0.001` for `dominanceThreshold`, `successThreshold` and `coverageThreshold`. The expected
+result of every shift is mechanical rather than tabulated:
+
+- Raising a threshold past a group's measured value flips that gate `PASS` → `FAIL`, adds the
+  gate id to `failedGates`, and turns `CANDIDATE` into `SUPPRESSED`.
+- Lowering a threshold to or below a group's measured value flips `FAIL` → `PASS`, removes the
+  id from `failedGates`, and turns `SUPPRESSED` into `CANDIDATE` when no other gate fails.
+- Every group on the other side of the move is unchanged in every column.
+
+So `minSampleCount = 31` suppresses `B1-at` on G1 and leaves `B1-hi` alone; `minSampleCount =
+29` makes `B1-lo` a CANDIDATE. `minDistinctContexts = 6` suppresses `B2-at`; `4` releases
+`B2-lo`. `dominanceThreshold = 0.901` suppresses `B3-at`; `0.899` releases `B3-lo`. The same
+pattern binds `successThreshold` against `B4` and `coverageThreshold` against `B5`. **A
+threshold that can move a unit in either direction without changing a single verdict is a
+threshold no fixture binds, and the spec fails on it.**
+
+Gates compare **ratios**, never percentages scaled by 100. `0.9 * 100` is `90.00000000000001`,
+which turns `B3-at` — a row whose whole job is to sit exactly on the threshold and PASS — into
+a silent failure that looks like a fixture bug.
+
+### The spec must be able to fail
+
+Landing the spec is not the acceptance criterion; the criterion is that it **can fail**.
+`p5.det-candidate` flips `>=` to `>` in each of the five gate comparisons in turn, confirms the
+spec goes red on each of the five, restores the operator, and records all five results in
+`.artifacts/evidence/5a/threshold-binding-mutation.md`. Five reds is what pays for ADR 0004. A
+spec that survives a flipped operator has not paid for it, and Tester runs at the gate.
 
 ## The fixture wave lands green, and still lands before the positive path
 
@@ -1909,15 +2114,33 @@ express.
 Three things, all green, none of which the analyzer packets may edit:
 
 ```text
-fixtures/inputs/**          D1-D11 and R1-R4 input data
-fixtures/expectations.ts    the grid above, transcribed as a typed table
+fixtures/inputs/**          D1-D11, R1-R5 and B1-B5 input data
+fixtures/expectations.ts    both grids above, transcribed as a typed table
 test/grid/**                assertAgainstGrid() + its own meta-tests
 ```
 
+**Green means the meta-tests pass, and nothing more.** Package 2 imports nothing from `src/**`
+— the analyzer does not exist yet — and makes no assertion about analyzer behaviour. Packages
+3 and 4 import the analyzer, the fixtures and the comparator; an import is a read, and reads
+are always legal across lanes. After package 2 merges, nobody edits `fixtures/**` or
+`test/grid/**` again.
+
 `assertAgainstGrid(actual, expected)` is the whole assertion — sample counts, distinct
-contexts, dominant option, all five gate cells, `failedGates` as a **set**, verdict,
-counterexample count, and `dominantOptionAttestedSuccessRate === null` where the grid says
-`N-A`. Package 2
+contexts, dominant option, **`dominancePercentage`, `outcomeCoverage` and
+`dominantOptionAttestedSuccessRate` as numbers**, all five gate cells, `failedGates` as a
+**set**, verdict, counterexample count, and `dominantOptionAttestedSuccessRate === null` where
+the grid says `N-A`.
+
+The three numeric columns are not decoration. `spike/aggregate.ts:100` computes the success
+rate **blended across all options**, which §19 forbids in as many words, and no fixture in the
+corpus flips G4 between the blended and the dominant-specific rate — `D6` is 61.11% against
+60.71%, `D9` is 96.15% against 93.02%, and both land the same side of the threshold. A
+comparator that checks only the gate cells lets `spike/`'s blended rate graduate in wave 3 with
+sixteen green fixtures behind it. The number is what catches it. (`B3-lo`, in the boundary
+rows, is the one group where the two readings land on _opposite_ sides: 100.00% dominant-only
+against 89.90% blended.)
+
+Package 2
 proves it works without any analyzer, against hand-built objects: one conforming object that
 must pass, and a deliberately wrong object per assertion — a `failedGates` list missing its
 second entry, a `dominantOptionAttestedSuccessRate` of `0` where `null` is required, an `N-A`
@@ -1939,9 +2162,22 @@ They supply `actual`. They do not own a single `expect` call about analyzer beha
 
 `fixtures/**` and `test/grid/**` are outside their `allowed_paths`, so an analyzer packet
 **physically cannot** relax an expectation to make its own code pass. `pnpm lanes check`
-enforces that on paths. Hash `fixtures/expectations.ts` and `test/grid/**` before and after
-each analyzer packet and compare as well — paths are what the tool validates, and a hash is
-what catches an edit that stayed inside a path it was allowed to touch.
+enforces that on paths.
+
+Paths are not enough. `test/analyzer/**` belongs to **both** wave-3 packets, so the
+threshold-binding spec that package 3 lands sits inside a path package 4 is allowed to write,
+and `pnpm lanes check` would pass while package 4 gutted it. The coordinator runs, around each
+analyzer packet:
+
+```bash
+pnpm hash:5a before-<packet>
+# ... dispatch, integrate ...
+pnpm hash:5a after-<packet> --compare before-<packet>
+```
+
+It hashes `fixtures/**`, `test/grid/**` and `test/analyzer/threshold-binding.spec.ts`, writes
+`.artifacts/evidence/5a/hashes-<label>.txt`, and exits non-zero naming every added, removed or
+changed file. A step with no command and no artifact is a step that gets skipped.
 
 The ordering guarantee survives intact: the numbers are committed, reviewed and merged before
 any line of `src/**` exists.
@@ -1973,6 +2209,12 @@ no `pnpm test:integration` — nothing in 5a touches a database.
 - [ ] `dominantOptionAttestedSuccessRate` is `null`, never `0`, when the dominant
       option has no attested outcomes — `D11` is the fixture that takes that path.
 - [ ] Each expected value traces to a table in this document, not to `pnpm spike` output.
+- [ ] All fifteen `B` boundary groups pass, and every threshold is injected rather than read
+      from a module-level constant.
+- [ ] The threshold-binding spec exists **and can fail**: flipping `>=` to `>` in each of the
+      five gate comparisons turns it red, five times out of five, recorded in
+      `.artifacts/evidence/5a/threshold-binding-mutation.md`. Without those five reds ADR 0004
+      is unpaid and Tester runs at the gate.
 
 **Human approval gate. Phase 2 begins only after it.**
 

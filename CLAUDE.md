@@ -164,6 +164,8 @@ pnpm kb show <target>   # one section verbatim — §19 | phase 5 | FILE.md#head
 pnpm kb term <name>     # CONTEXT.md definition + where the word is really used
 pnpm kb stale           # notes past review-by; generated files behind their source
 pnpm check:kb           # the retriever's own scenarios (CI; not in `pnpm gates`)
+pnpm hash:5a <label>    # hash the 5a files an analyzer packet must not change
+                        #   …--compare <earlier-label> fails naming every drifted path
 ```
 
 `check:lanes` and `check:kb` are out of `pnpm gates` on purpose: they read `.claude/` and the
