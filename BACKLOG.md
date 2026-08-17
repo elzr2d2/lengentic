@@ -1221,3 +1221,50 @@ implement both halves, and nothing in 5a can prove it did. **Trigger:** 5b, wher
 goes behind `POST /v1/analysis/run` and the fixture corpus is revisited anyway — or
 `p6.scenario2`, if that scenario produces a tool call that errors without a `FAILED` outcome,
 whichever comes first.
+
+## Discovered while auditing how decisions are recorded (2026-08-17)
+
+### `pnpm decide` — one generated index over the six decision stores
+
+**Source:** human instruction, 2026-08-17 — "stop asking trivial functional questions; build a
+decision workflow from our decision graph." Research and prior art:
+`.artifacts/reports/decision-system-research-2026-08-17.md`. Full plan:
+`.artifacts/plans/pnpm-decide-plan.md`.
+
+Decisions live in six places — `docs/decisions/`, `scripts/oracle/graph.json` `decisions[]`,
+`BACKLOG.md`, `CONTEXT.md`, `MVP_PLAN_V3.md`, and `.artifacts/telemetry/lanes.jsonl` — and
+nothing joins them. ADR 0004 overturns a `BACKLOG.md` entry in prose with no edge recording it.
+`OD-3` is `"answered": true` and does not say what was answered. Nothing answers "has this
+already been decided?" before a question is asked, which is how a settled question reaches a
+human as a fresh one.
+
+**Ruled out, so it is not re-litigated.** No vector database and no RAG. The corpus is ~100
+records under 50k tokens changing a few times a week; below roughly 500 documents retrieval is
+overhead, and an embedding is not a mechanical check. No new store, no service, no MCP server,
+no write path — the tool is generated and read-only.
+
+**Named risk.** A loose match that answers "already decided" silences a question that should
+have been asked. That is `check:probes` one layer up. `NOVEL` is the default below the
+confidence floor, hits carry `file:line` and never a paraphrase, and the negative fixtures are
+written before the positive path.
+
+**Blocked on** the gitignored-evidence question already filed above — an index that cites
+`.artifacts/evidence/**` would ship citations to files no clone contains.
+
+**Trigger:** after the 5a gate. It is not in any 5a Definition of Done, and building it now
+would expand the phase.
+
+### The four-gate ladder is adopted now, without the tool
+
+**Source:** same instruction. The procedure half of the proposal needs no code.
+
+Before any question reaches the human: Gate 0 — a script decides it, so run it and cite the
+output. Gate 1 — already decided, so apply it and cite `file:line`. Gate 2 — blocks a
+deliverable, so escalate *framed*: cost asymmetry, named rejected alternatives, a
+recommendation, and the Detection that would show it wrong. Gate 3 — novel, costly and blocking
+nothing, so council or Architect, then an ADR. Otherwise state the assumption and act.
+
+Recorded here because it is a working agreement, not a deliverable, and because the failure it
+prevents already happened: the wave-3 dispatch was put to a human as "A or B?" when
+`pnpm lanes wave 5`, the council verdict and ADR 0002 had each already answered it. **Trigger:**
+none — in force from 2026-08-17. It becomes `pnpm decide`'s specification when that lands.
