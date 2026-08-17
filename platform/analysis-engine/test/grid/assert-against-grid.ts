@@ -45,7 +45,11 @@ const asPercent = (ratio: number): string => `${(ratio * 100).toFixed(2)}%`;
  *
  * Compares: `sampleCount`, `distinctContextKeyCount`, `dominantOption`, the three numeric
  * columns `dominancePercentage` / `outcomeCoverage` / `dominantOptionAttestedSuccessRate`,
- * all five gate cells, `failedGates` AS A SET, `verdict`, and the counterexample count.
+ * all five gate cells, `failedGates` AS A SET, `verdict`, the counterexample count, the
+ * MEMBERSHIP of every counterexample entry (dominant-option FAILURE or minority-option
+ * SUCCESS, nothing else — §20.1), and `minorityContextConcentration` (§18's population —
+ * every minority-SELECTED row, outcome irrelevant, recovered from `dominancePercentage` and
+ * `sampleCount` since the grid carries no column for it).
  *
  * The three numeric columns are not decoration. `spike/aggregate.ts:100` computes the
  * success rate BLENDED across all options, which §19 forbids in as many words, and no `D`
@@ -53,6 +57,12 @@ const asPercent = (ratio: number): string => `${(ratio * 100).toFixed(2)}%`;
  * checked only the gate cells would let the blended rate graduate behind a green corpus.
  * `B3-lo` is the group where the two readings land on opposite sides: 100.00% dominant-only
  * against 89.90% blended.
+ *
+ * The counterexample COUNT alone cannot catch an inverted population — replacing every
+ * dominant-option FAILURE with a dominant-option SUCCESS at the same cardinality passes a
+ * count-only check silently (`D6`: 22 either way). Membership is checked separately, against
+ * the group's own `dominantOption`, which this function already cross-checks against the
+ * grid above.
  */
 export function assertAgainstGrid(actual: AnalyzedGroup, expected: GridRow): void {
   const problems: string[] = [];
@@ -114,6 +124,8 @@ export function assertAgainstGrid(actual: AnalyzedGroup, expected: GridRow): voi
         `got ${aggregate.counterexamples.length}`,
     );
   }
+  problems.push(...counterexampleMembershipProblems(aggregate));
+  problems.push(...minorityContextConcentrationProblems(aggregate, expected));
 
   if (problems.length > 0) {
     throw new Error(
@@ -152,6 +164,119 @@ function successRateProblems(aggregate: DecisionAggregate, expected: GridRow): s
     ];
   }
   return [];
+}
+
+/**
+ * §20.1: a counterexample is a dominant-option FAILURE or a minority-option SUCCESS, and
+ * nothing else — never a minority-option FAILURE (evidence FOR the dominant option, not
+ * against it), never a dominant-option SUCCESS.
+ *
+ * Checked against the group's OWN `dominantOption`, which the caller already cross-checked
+ * against the grid's `dominantOption` column above. This is a membership check on the
+ * ACTUAL output, not a re-derivation of the expected list from raw decision records — it
+ * does not reach for `fixtures/inputs/**` or reimplement §20.1's extraction, it only checks
+ * the invariant the population must satisfy.
+ *
+ * This is the check the cardinality-only comparison could not do: inverting the population
+ * (dominant-option SUCCESS instead of FAILURE, same count) is invisible to a count check and
+ * visible here on every entry.
+ */
+function counterexampleMembershipProblems(aggregate: DecisionAggregate): string[] {
+  const dominantOption = aggregate.dominantOption;
+  const outside = aggregate.counterexamples.filter((ce) => {
+    const dominantFailure = ce.selectedOption === dominantOption && ce.outcome === 'FAILURE';
+    const minoritySuccess = ce.selectedOption !== dominantOption && ce.outcome === 'SUCCESS';
+    return !dominantFailure && !minoritySuccess;
+  });
+  if (outside.length === 0) return [];
+  const sample = outside[0]!;
+  return [
+    `counterexamples: ${outside.length} of ${aggregate.counterexamples.length} entr` +
+      `${outside.length === 1 ? 'y is' : 'ies are'} outside §20.1's population (dominant-` +
+      `option FAILURE or minority-option SUCCESS) — e.g. decisionId ${sample.decisionId} ` +
+      `selected ${sample.selectedOption} (dominant is ${String(dominantOption)}) with ` +
+      `outcome ${sample.outcome}`,
+  ];
+}
+
+/**
+ * `minorityContextConcentration` (§18): a group-by over EVERY minority-selected row,
+ * outcome irrelevant — a different population from `counterexamples` (§20.1), which is
+ * outcome-selective and dominant-inclusive. "Do not compute one from the other"
+ * (MVP_PLAN_V3.md:969, restated at :1902).
+ *
+ * The grid carries no column for this field, so the expected minority total is recovered
+ * from columns it DOES carry: every eligible row selects either the dominant option or a
+ * minority option, so `minorityTotal = sampleCount - round(dominancePercentage *
+ * sampleCount)`. That is an accounting identity over already-verified grid values (both
+ * already compared above), not a second implementation of §18 — critically, it never looks
+ * at outcome, which is exactly the dimension `counterexamples` differs on.
+ *
+ * `B4-lo` is the sharpest discriminator in the corpus: dominance is 100% (zero minority
+ * selections) while its counterexampleCount is 101 (dominant-option failures). A
+ * `minorityContextConcentration` that is secretly `counterexamples` grouped by context would
+ * report 101 here where the correct answer is empty. `B3-lo` is the mirror case: 101 minority
+ * rows and zero counterexamples.
+ */
+function minorityContextConcentrationProblems(
+  aggregate: DecisionAggregate,
+  expected: GridRow,
+): string[] {
+  const problems: string[] = [];
+  const dominantCount = Math.round(expected.dominancePercentage * expected.sampleCount);
+  const expectedMinorityTotal = expected.sampleCount - dominantCount;
+  const actual = aggregate.minorityContextConcentration;
+  const actualTotal = actual.reduce((sum, entry) => sum + entry.count, 0);
+
+  if (expectedMinorityTotal === 0) {
+    if (actual.length > 0) {
+      problems.push(
+        `minorityContextConcentration: expected empty — dominance is 100%, no minority ` +
+          `selections exist — got ${actualTotal} across ${actual.length} context(s)`,
+      );
+    }
+    return problems;
+  }
+
+  if (actual.length === 0) {
+    problems.push(
+      `minorityContextConcentration: expected ${expectedMinorityTotal} minority row(s) ` +
+        `grouped by context (sampleCount ${expected.sampleCount} minus dominant ` +
+        `${dominantCount}), got none — is it computed at all?`,
+    );
+    return problems;
+  }
+
+  if (actualTotal !== expectedMinorityTotal) {
+    problems.push(
+      `minorityContextConcentration: counts sum to ${actualTotal}, expected ` +
+        `${expectedMinorityTotal} (sampleCount ${expected.sampleCount} minus dominant ` +
+        `${dominantCount}) — the counterexample population instead of every minority row?`,
+    );
+  }
+
+  const seen = new Set<string>();
+  for (const entry of actual) {
+    if (seen.has(entry.contextKey)) {
+      problems.push(`minorityContextConcentration: duplicate contextKey "${entry.contextKey}"`);
+    }
+    seen.add(entry.contextKey);
+    if (entry.count <= 0) {
+      problems.push(
+        `minorityContextConcentration: contextKey "${entry.contextKey}" has non-positive ` +
+          `count ${entry.count}`,
+      );
+    }
+    if (actualTotal > 0 && !sameRatio(entry.share, entry.count / actualTotal)) {
+      problems.push(
+        `minorityContextConcentration: contextKey "${entry.contextKey}" share ` +
+          `${asPercent(entry.share)} does not match its count/total ` +
+          `${asPercent(entry.count / actualTotal)}`,
+      );
+    }
+  }
+
+  return problems;
 }
 
 /**

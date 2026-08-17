@@ -214,6 +214,65 @@ const MUTATIONS: readonly Mutation[] = [
       withAggregate(group, { counterexamples: group.aggregate.counterexamples.slice(0, 1) }),
     message: /counterexamples: expected 22, got 1/,
   },
+  {
+    // RED-1, reproduced exactly: replacing every dominant-option FAILURE with a
+    // dominant-option SUCCESS at the SAME cardinality is invisible to a count-only check.
+    // This is the mutation `counterexamples: expected 22, got 22` would have passed before
+    // membership was checked.
+    name: 'counterexample population inverted — dominant SUCCESS instead of dominant FAILURE, same count (D6)',
+    row: D6,
+    mutate: (group) =>
+      withAggregate(group, {
+        counterexamples: group.aggregate.counterexamples.map((ce, index) => ({
+          ...ce,
+          decisionId: `inverted_${index}`,
+          outcome: 'SUCCESS' as const,
+        })),
+      }),
+    message: /counterexamples: 22 of 22 entries are outside §20\.1's population/,
+  },
+  {
+    // A minority-option FAILURE is evidence FOR the dominant option, not against it, and
+    // must never leak into `counterexamples` even though it is a minority row.
+    name: 'a minority-option FAILURE leaking into counterexamples',
+    row: D1,
+    mutate: (group) =>
+      withAggregate(group, {
+        counterexamples: [
+          ...group.aggregate.counterexamples,
+          {
+            decisionId: 'leaked_minority_failure',
+            runId: 'hand_built_run_leak',
+            contextKey: 'c1',
+            selectedOption: 'NO',
+            outcome: 'FAILURE',
+          },
+        ],
+      }),
+    message: /counterexamples: 1 of 4 entry is outside §20\.1's population/,
+  },
+  {
+    // RED-2: `minorityContextConcentration` is bound by no test today. Emptying it must fail
+    // wherever a minority actually exists — B3-lo has zero counterexamples but 101 minority
+    // rows, so this mutation is invisible to every other assertion in this function.
+    name: 'minorityContextConcentration emptied where a minority exists (B3-lo)',
+    row: B3lo,
+    mutate: (group) => withAggregate(group, { minorityContextConcentration: [] }),
+    message: /minorityContextConcentration: expected 101 minority row\(s\)/,
+  },
+  {
+    // Proves the field is genuinely §18's population and not an alias for `counterexamples`
+    // grouped by context: B4-lo has 101 counterexamples but ZERO minority selections
+    // (dominance is 100%), so a concentration built from the counterexample list would
+    // wrongly sum to 101 here where the correct answer is empty.
+    name: 'minorityContextConcentration secretly built from counterexamples instead of every minority row (B4-lo)',
+    row: B4lo,
+    mutate: (group) =>
+      withAggregate(group, {
+        minorityContextConcentration: [{ contextKey: 'c1', count: 101, share: 1 }],
+      }),
+    message: /minorityContextConcentration: expected empty — dominance is 100%/,
+  },
 ];
 
 describe('assertAgainstGrid — accepts a conforming group', () => {

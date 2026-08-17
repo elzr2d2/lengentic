@@ -10,24 +10,48 @@
  * green that lies this whole phase is about.
  *
  * Fields the grid does not have a column for (`key`, `optionDistribution`, `attestedCount`,
- * `minorityContextConcentration`, `excluded`) are filled with plausible values and are not
- * compared by anything.
+ * `excluded`) are filled with plausible values and are not compared by anything.
+ *
+ * `counterexamples` and `minorityContextConcentration` DO have grid-derived expectations as
+ * of the counterexample-membership packet, even though neither has its own grid column:
+ * `assertAgainstGrid()` checks counterexample MEMBERSHIP (every entry must be a
+ * dominant-option FAILURE or a minority-option SUCCESS) and recovers the expected
+ * `minorityContextConcentration` total from `dominancePercentage` / `sampleCount`. Both
+ * builders below produce genuinely conforming data so the "accepts a conforming group" loop
+ * in `assert-against-grid.spec.ts` still proves what it claims to.
  */
-import type { Counterexample, DecisionAggregate } from '../../src/types';
+import type { ContextConcentration, Counterexample, DecisionAggregate } from '../../src/types';
 import type { GateEvaluation } from '../../src/gate-contract';
 import type { RepeatedFailedAction } from '../../src/tool-call';
 import type { GridRow, RepeatedFailureRow } from '../../fixtures/expectations';
 import { GRID_GATE_ORDER } from '../../fixtures/expectations';
 import type { AnalyzedGroup } from './assert-against-grid';
 
-const counterexamples = (count: number): readonly Counterexample[] =>
+/** All dominant-option FAILUREs — one lawful corner of §20.1's population, sufficient to
+ *  conform. (Mutation tests in `assert-against-grid.spec.ts` cover the minority-SUCCESS
+ *  corner and the population inversion separately.) */
+const counterexamples = (count: number, dominantOption: string): readonly Counterexample[] =>
   Array.from({ length: count }, (_unused, index) => ({
     decisionId: `hand_built_ce_${index}`,
     runId: `hand_built_run_${index}`,
     contextKey: 'c1',
-    selectedOption: 'NO',
+    selectedOption: dominantOption,
     outcome: 'FAILURE' as const,
   }));
+
+/**
+ * §18's population: every minority-SELECTED row, outcome irrelevant — recovered from the
+ * row's own `dominancePercentage` / `sampleCount` (see `minorityContextConcentrationProblems`
+ * in `assert-against-grid.ts` for why that recovery is legitimate). One context is enough to
+ * conform; `assert-against-grid.spec.ts` covers the multi-context and "secretly built from
+ * counterexamples" mutations separately.
+ */
+const minorityConcentrationFor = (row: GridRow): readonly ContextConcentration[] => {
+  const dominantCount = Math.round(row.dominancePercentage * row.sampleCount);
+  const minorityTotal = row.sampleCount - dominantCount;
+  if (minorityTotal <= 0) return [];
+  return [{ contextKey: 'c_minority', count: minorityTotal, share: 1 }];
+};
 
 /** An `AnalyzedGroup` that matches `row` in every column the comparator reads. */
 export function conforming(row: GridRow): AnalyzedGroup {
@@ -53,8 +77,8 @@ export function conforming(row: GridRow): AnalyzedGroup {
       attestedCount: Math.round(row.outcomeCoverage * row.sampleCount),
       outcomeCoverage: row.outcomeCoverage,
       dominantOptionAttestedSuccessRate: row.dominantOptionAttestedSuccessRate,
-      counterexamples: counterexamples(row.counterexampleCount),
-      minorityContextConcentration: [],
+      counterexamples: counterexamples(row.counterexampleCount, row.dominantOption),
+      minorityContextConcentration: minorityConcentrationFor(row),
       excluded: { staleRun: 0, missingContextKey: 0 },
     },
     evaluation: {
