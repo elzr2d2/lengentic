@@ -10,6 +10,7 @@
     "pnpm": ">=10"
   },
   "scripts": {
+    "prepare": "node .husky/prepare.mjs",
     "dev": "pnpm -r --parallel dev",
     "build": "pnpm -r build",
     "test": "pnpm --filter @lengentic/database build && pnpm -r test",
