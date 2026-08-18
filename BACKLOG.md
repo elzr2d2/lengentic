@@ -1476,3 +1476,43 @@ response enum the same object, and the next writer stores `STALE`.
 Closes when `p2.runs-api` ships the read model with a test that asserts a run whose `lastEventAt`
 is older than `STALE_RUN_THRESHOLD_MS` reports `STALE` while its stored `status` is still
 `RUNNING` — both halves asserted, because either alone passes on a wrong implementation.
+
+### `entityId === runId` consistency check for run events — dropped at S4, re-add only with a citation
+
+**Source:** Recovery of `p2.shared-schema` at `c39f4d2`,
+`.artifacts/evidence/2/wire-contract-recovery.md:169`. **Trigger:** `p2.ingest-endpoint`, or any
+future §12 amendment.
+
+`parse.ts` used to reject a run event whose `entityId !== runId`. The rule appears nowhere in
+§12/§13, so S4's remedy was "cite or drop" and it was dropped — the wire contract currently does
+not enforce it. It is a defensible inference; per ADR 0006's own reasoning, re-adding it later
+narrows what the wire accepts, so if it comes back it needs a plan citation (or an ADR) and its
+own rejection code — not `INVALID_PAYLOAD`, which §12 reserves for Zod payload failures.
+
+### Self-parent (`parentStepId === entityId`) cycle detection — dropped at S4; already a read-time candidate
+
+**Source:** Recovery of `p2.shared-schema` at `c39f4d2`,
+`.artifacts/evidence/2/wire-contract-recovery.md:171`; same idea as the architect brief's own
+backlog item (`.artifacts/plans/2-wave1-architect-brief.md:764-771`, "`parentStepId` cycle
+detection at read time"). **Trigger:** `p2.runs-api` (read-time), or a §13 amendment (wire-time).
+
+`parse.ts` used to reject a `step.started` whose `parentStepId === entityId`. No §12/§13 citation
+exists, so it was dropped from the wire contract. The architect brief already flags cycle
+detection as a read-time concern — one detector at read time covers self-parent as the trivial
+case and true cycles as the general one, which ingestion-time checking never could. Do not
+re-add it at the wire without a plan citation.
+
+### `REQUEST_ERROR_CODES` is half a contract — the endpoint must confirm the names and land the response shape
+
+**Source:** Reviewer finding SC-A on `c39f4d2` (per-node contract review, 2026-08-18).
+**Trigger:** `p2.ingest-endpoint`.
+
+`platform/shared/schema/ingest.ts:43-47` exports three request-level code names
+(`BODY_TOO_LARGE`, `INVALID_JSON`, `INVALID_BATCH`). `MVP_PLAN_V3.md:530-533` names those
+rejections in prose only — the strings are invented, and nothing binds them to a response:
+`IngestResponseSchema` has no request-level error arm, so `p2.ingest-endpoint` still invents
+the HTTP-400 body shape. On the record: the same commit dropped two rules for lacking a
+citation (S4) while adding these three uncited names — both moves were directed by review, so
+this is a naming decision the endpoint packet must **confirm, not inherit**. Closes when the
+endpoint lands the 400-body schema in `platform/shared/schema/**` (it is wire contract) using
+these names or replacing them in the same commit, with a test binding code to body.

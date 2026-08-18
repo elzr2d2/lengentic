@@ -6,11 +6,11 @@ Every status below is probed from the repository. Do not hand-edit this file.
 ## Phase progress
 
 ```text
-  Phase 1  [################....] 11/14  ready:2  maxParallel:2
-  Phase 2  [....................]  0/10  ready:1  maxParallel:3
+  Phase 1  [####################] 14/14  ready:0  maxParallel:0
+  Phase 2  [##..................]  1/10  ready:3  maxParallel:3
   Phase 3  [....................]  0/7   ready:0  maxParallel:3
   Phase 4  [....................]  0/6   ready:0  maxParallel:3
-  Phase 5  [#####...............]  2/8   ready:2  maxParallel:2
+  Phase 5  [##########..........]  4/8   ready:1  maxParallel:2
   Phase 6  [....................]  0/4   ready:0  maxParallel:4
   Phase 7  [####................]  1/5   ready:0  maxParallel:3
 ```
@@ -24,31 +24,21 @@ Every status below is probed from the repository. Do not hand-edit this file.
 ## Root causes, ranked by leverage
 
 ```text
-  36 deliverables are blocked. They trace to 5 root causes.
+  31 deliverables are blocked. They trace to 3 root causes.
 
-  DISPATCH  p2.shared-schema         unblocks 34
-    platform/shared/schema — Zod wire contract (§12)
-    note: CRITICAL PATH ROOT. The SDK and the API both import it. Nothing in Phase 2 parallelises until this exists.
-    gates: p2.dashboard-runs, p2.idempotency, p2.ingest-endpoint, p2.integration-tests, p2.merge-rules, p2.prisma-run-step, p2.runs-api, p2.sdk-core, p2.sdk-injection, p3.cli, p3.mock-agent, p3.mock-provider, p3.scaffold, p3.seeded-clock, p3.strategy-evaluator, p3.strategy-telemetry, p4.attestation, p4.entities, p4.payload-safety, p4.run-explorer, p4.run-summary, p4.sdk-decisions, p5.analysis-endpoint, p5.rec-persistence, p5.recs-ui, p6.real-provider, p6.scenario1, p6.scenario2, p6.scenario3, p6.seed-repro, p7.ci-full, p7.docker-smoke, p7.e2e, p7.regression
+  DISPATCH  p2.sdk-core              unblocks 20
+    Telemetry SDK v1 — async, batched, bounded, silent, flushable, retrying (§16)
+    note: Depends on the contract, NOT on the API. Fully parallel with the whole api/persistence lane.
+    gates: p2.sdk-injection, p3.cli, p3.mock-agent, p3.mock-provider, p3.scaffold, p3.seeded-clock, p3.strategy-evaluator, p3.strategy-telemetry, p4.attestation, p4.payload-safety, p4.sdk-decisions, p6.real-provider, p6.scenario1, p6.scenario2, p6.scenario3, p6.seed-repro, p7.ci-full, p7.docker-smoke, p7.e2e, p7.regression
 
-  DISPATCH  p5.det-candidate         unblocks 11
-    Deterministic candidate analyzer — §18 aggregation, §19 gates, §21 output
-    note: 5a wave 3, first of two. Graduates spike/aggregate.ts and spike/gates.ts. Assert NOTHING here: feed each D fixture through assertAgainstGrid() from test/grid/**, which p5.negative-fixtures owns and this packet may not edit. fixtures/** and test/grid/** are outside allowed_paths on purpose - an analyzer packet that could relax its own expectations is the failure this split exists to prevent. Hash fixtures/expectations.ts and test/grid/** before and after this packet and compare; `pnpm lanes check` validates paths, not that a later packet weakened an earlier one's assertions. Also lands the threshold-binding spec that ADR docs/decisions/0004 substitutes for Tester at the gate: shift each of the five thresholds one unit in each direction and assert that every verdict that should flip does, and every verdict that should not stay put. A threshold no fixture binds is a threshold that can move silently. LANE COLLISION with p5.repeated-failed on src/** and test/analyzer/** - serialise. TWO KNOWN SPIKE BUGS ride along if spike/gates.ts and spike/aggregate.ts are copied verbatim, and both are already contradicted by the doc comments p5.engine-pkg landed in src/gate-contract.ts. spike/gates.ts:116 computes failedGates as `status !== 'PASS'`, which puts a NOT_APPLICABLE G4 into D11's failedGates when the grid says D11 fails G5 only - failedGates holds FAIL and nothing else. spike/aggregate.ts:100 computes the attested success rate group-wide when §19 evaluates G4 on the dominant option, which disagrees with the grid on D1, D3 and D6; the field is named dominantOptionAttestedSuccessRate for exactly that reason. D11 catches the first and D3 the second, through assertAgainstGrid(). Gate functions go in a NEW src/gates.ts; src/gate-contract.ts holds the vocabulary and never a function. PRE-DISPATCH AMENDMENT (council review 2026-08-17) - THE THRESHOLD-BINDING SPEC AS DESCRIBED ABOVE CANNOT FAIL. Every D fixture sits far from every threshold: sample counts are 12, 24, 26, 40, 45, 50, 50, 50, 60 and never 30, distinct contexts are 2, 8, 8, 9, 10, 10, 11, 12, 15 and never 5, and no ratio is 0.90 or 0.80. Shifting a threshold one unit therefore flips nothing, and ADR 0004 would be paid with a spec that is green by construction. Four corrections bind this packet. (1) THRESHOLDS ARE INJECTABLE: every gate function and the analyzer entry take an AnalyzerConfig parameter defaulting to DEFAULT_CONFIG from src/config.ts, which p5.engine-pkg already landed frozen. No module-level threshold constant may appear anywhere in src/**. (2) THE SPEC USES THE BOUNDARY GROUPS, not the D fixtures: the fifteen B1-B5 groups of the `Threshold boundary rows` table in MVP_PLAN_V3 Phase 5, whose inputs and expected values p5.negative-fixtures lands in fixtures/** and this packet may not edit. (3) THE SHIFT ASSERTIONS follow the generic rule stated with that table - shift one threshold one unit in one direction, and every group on the far side of the move flips while every other group stays put. Both directions, all five thresholds. (4) THE ACCEPTANCE CRITERION IS THAT THE SPEC CAN FAIL, not that it landed. Mutation-check it: flip `>=` to `>` in each of the five gate comparisons in turn, confirm the spec goes red on each of the five, restore, and record all five results in .artifacts/evidence/5a/threshold-binding-mutation.md. A spec that stays green under a flipped operator has not paid for ADR 0004 and Tester runs at the gate. FILE NAMING IS A CONTRACT, because the oracle probes these paths: src/gates.ts, src/aggregate.ts, test/analyzer/threshold-binding.spec.ts. The previous probe on this packet grepped for `minorityContextConcentration`, which src/types.ts has satisfied since wave 1, so the oracle reported this packet DONE before it had started.
-    gates: p5.analysis-endpoint, p5.rec-persistence, p5.recs-ui, p5.spike-deleted, p6.scenario1, p6.scenario3, p6.seed-repro, p7.ci-full, p7.docker-smoke, p7.e2e, p7.regression
+  DISPATCH  p2.prisma-run-step       unblocks 18
+    Run + Step Prisma models and migration
+    gates: p2.dashboard-runs, p2.idempotency, p2.ingest-endpoint, p2.integration-tests, p2.runs-api, p4.attestation, p4.entities, p4.run-explorer, p4.run-summary, p5.analysis-endpoint, p5.rec-persistence, p5.recs-ui, p6.scenario1, p6.scenario3, p6.seed-repro, p7.ci-full, p7.docker-smoke, p7.e2e
 
-  DISPATCH  p5.repeated-failed       unblocks  8
-    Repeated failed action analyzer — §20.2 conditions only
-    note: 5a wave 3, second of two. §20.2 conditions only - same toolName, same sanitized inputFingerprint, result FAILED or an Error, at least three CONSECUTIVE attempts, no success between them. Generic loop detection is out of scope and the recommendation text says `repeated failed action`, never `loop detection`. R1-R3 all expect silence, so `return []` passes three of the five fixtures. R4 proves the analyzer exists; R5 proves the streak is scoped to the (runId, toolName, inputFingerprint) subsequence rather than to the run's whole timeline - under the timeline reading an unrelated tool's success suppresses a real repeated failure, i.e. the finding depends on scheduling noise. A run where R4 or R5 does not emit is a FAILED handoff, not a DONE with a caveat. Assert nothing directly; feed fixtures through assertAgainstGrid() from test/grid/**, which this packet may not edit. LANE COLLISION with p5.det-candidate on src/** and test/analyzer/** - serialise, and re-hash fixtures/expectations.ts and test/grid/** afterwards with `pnpm hash:5a`. The hash also covers test/analyzer/threshold-binding.spec.ts, which p5.det-candidate landed and this packet shares a path with: allowed_paths cannot protect it and gutting it would silently unpay ADR 0004. FILE NAMING IS A CONTRACT, because the oracle probes these paths: src/repeated-failed-action.ts and test/analyzer/repeated-failed-action.spec.ts. The previous probe on this packet grepped for `inputFingerprint`, which src/tool-call.ts has satisfied since wave 1, so the oracle reported this packet DONE before it had started. ONE CONDITION HAS NO FIXTURE BEHIND IT, and you are told so rather than left to discover it. §20.2 fires when the result is FAILED **or** records an Error; every one of R1-R5 expresses failure through `outcome` alone, so an implementation that reads `outcome` and ignores errorType passes all five fixtures with half the condition unimplemented. The wave-2 Builder found this and it is deferred to 5b - see BACKLOG.md `No R fixture binds the "or records an Error" half of §20.2` - because absorbing it means reopening fixtures/** after the wave that owns it has merged and been hashed. Implement BOTH halves anyway. The suite cannot catch you; the 5b gate will.
-    gates: p5.analysis-endpoint, p5.recs-ui, p6.scenario1, p6.scenario2, p7.ci-full, p7.docker-smoke, p7.e2e, p7.regression
-
-  DISPATCH  p1.debt.precommit        unblocks  1
-    Carried debt — pre-commit hook running gates:full
-    gates: p1.debt.secrets
-
-  DISPATCH  p1.docker-runtime        unblocks  1
-    docker compose up healthy; API reaches PostgreSQL
-    note: The only unchecked Phase 1 DoD items. Blocked on env.docker, not on code.
-    gates: p7.docker-smoke
+  DISPATCH  p2.merge-rules           unblocks  4
+    Merge rules — out-of-order, precedence, terminal conflict (§12)
+    note: Pure function. Unit-testable with no container — parallel-safe and cheap.
+    gates: p2.idempotency, p2.ingest-endpoint, p2.integration-tests, p7.regression
 
 ```
 
@@ -63,23 +53,23 @@ Every status below is probed from the repository. Do not hand-edit this file.
 | 1 | — | DONE | platform | `p1.dashboard` — Next.js dashboard boots and reaches API | builder | — |
 | 1 | — | DONE | platform | `p1.database-pkg` — Prisma package + client generation | builder | — |
 | 1 | — | DONE | harness | `p1.debt.handoff-files` — Carried debt — file-based handoffs (§10) | builder | — |
+| 1 | — | DONE | infra | `p1.debt.precommit` — Carried debt — pre-commit hook running gates:full | builder | — |
+| 1 | — | DONE | infra | `p1.debt.secrets` — Carried debt — secret detection before commit | builder | — |
 | 1 | — | DONE | infra | `p1.docker-files` — docker-compose + Dockerfiles authored | builder | — |
+| 1 | — | DONE | infra | `p1.docker-runtime` — docker compose up healthy; API reaches PostgreSQL | validator | — |
 | 1 | — | DONE | harness | `p1.harness` — Engineering harness — 4 agents, handoff schema, hooks, skills | builder | — |
 | 1 | — | DONE | infra | `p1.isolation` — check:isolation (2 arms) | builder | — |
 | 1 | — | DONE | infra | `p1.workspace` — pnpm workspace + root gate scripts | builder | — |
-| 1 | 1 | READY | infra | `p1.debt.precommit` — Carried debt — pre-commit hook running gates:full | builder | — |
-| 1 | 1 | READY | infra | `p1.docker-runtime` — docker compose up healthy; API reaches PostgreSQL | validator | — |
-| 1 | 2 | BLOCKED | infra | `p1.debt.secrets` — Carried debt — secret detection before commit | builder | p1.debt.precommit |
-| 2 | 1 | READY | contract | `p2.shared-schema` — platform/shared/schema — Zod wire contract (§12) | builder | — |
-| 2 | 2 | BLOCKED | pure | `p2.merge-rules` — Merge rules — out-of-order, precedence, terminal conflict (§12) | builder | p2.shared-schema |
-| 2 | 2 | BLOCKED | persistence | `p2.prisma-run-step` — Run + Step Prisma models and migration | builder | p2.shared-schema |
-| 2 | 2 | BLOCKED | sdk | `p2.sdk-core` — Telemetry SDK v1 — async, batched, bounded, silent, flushable, retrying (§16) | builder | p2.shared-schema |
-| 2 | 3 | BLOCKED | api | `p2.ingest-endpoint` — POST /v1/telemetry/events — limits, per-event results (§12) | builder | p2.shared-schema, p2.prisma-run-step, p2.merge-rules |
-| 2 | 3 | BLOCKED | api | `p2.runs-api` — GET /v1/runs + run detail, STALE derivation | builder | p2.prisma-run-step |
-| 2 | 3 | BLOCKED | sdk | `p2.sdk-injection` — Clock + IdGenerator injection points in the SDK (§17) | builder | p2.sdk-core |
-| 2 | 4 | BLOCKED | ui | `p2.dashboard-runs` — Dashboard: runs list + run detail with nested/orphaned steps | builder | p2.runs-api |
-| 2 | 4 | BLOCKED | persistence | `p2.idempotency` — Idempotent upsert on eventId; DUPLICATE is a success | builder | p2.ingest-endpoint |
-| 2 | 5 | BLOCKED | test | `p2.integration-tests` — Ingestion / idempotency / ordering / stale integration tests | validator | p2.ingest-endpoint, p2.idempotency |
+| 2 | — | DONE | contract | `p2.shared-schema` — platform/shared/schema — Zod wire contract (§12) | builder | — |
+| 2 | 1 | READY | pure | `p2.merge-rules` — Merge rules — out-of-order, precedence, terminal conflict (§12) | builder | — |
+| 2 | 1 | READY | persistence | `p2.prisma-run-step` — Run + Step Prisma models and migration | builder | — |
+| 2 | 1 | READY | sdk | `p2.sdk-core` — Telemetry SDK v1 — async, batched, bounded, silent, flushable, retrying (§16) | builder | — |
+| 2 | 2 | BLOCKED | api | `p2.ingest-endpoint` — POST /v1/telemetry/events — limits, per-event results (§12) | builder | p2.prisma-run-step, p2.merge-rules |
+| 2 | 2 | BLOCKED | api | `p2.runs-api` — GET /v1/runs + run detail, STALE derivation | builder | p2.prisma-run-step |
+| 2 | 2 | BLOCKED | sdk | `p2.sdk-injection` — Clock + IdGenerator injection points in the SDK (§17) | builder | p2.sdk-core |
+| 2 | 3 | BLOCKED | ui | `p2.dashboard-runs` — Dashboard: runs list + run detail with nested/orphaned steps | builder | p2.runs-api |
+| 2 | 3 | BLOCKED | persistence | `p2.idempotency` — Idempotent upsert on eventId; DUPLICATE is a success | builder | p2.ingest-endpoint |
+| 2 | 4 | BLOCKED | test | `p2.integration-tests` — Ingestion / idempotency / ordering / stale integration tests | validator | p2.ingest-endpoint, p2.idempotency |
 | 3 | 1 | BLOCKED | playground | `p3.scaffold` — Playground package consuming the public SDK entry only | builder | p2.sdk-core |
 | 3 | 2 | BLOCKED | playground | `p3.mock-provider` — MockProvider — seeded, offline, configurable delay/failure/context | builder | p3.scaffold |
 | 3 | 2 | BLOCKED | playground | `p3.seeded-clock` — SeededClock + SeededIdGenerator wired into the SDK | builder | p2.sdk-injection, p3.scaffold |
@@ -89,75 +79,56 @@ Every status below is probed from the repository. Do not hand-edit this file.
 | 3 | 4 | BLOCKED | playground | `p3.strategy-telemetry` — Emit the verdict as an execution_strategy Decision with bounded awarenessContext | builder | p3.strategy-evaluator, p3.mock-agent |
 | 4 | 1 | BLOCKED | persistence | `p4.entities` — Decision, ModelCall, ToolCall, Error models + migrations (§13) | builder | p2.prisma-run-step |
 | 4 | 1 | BLOCKED | sdk | `p4.payload-safety` — Safe serialize → redact → cap → fingerprint, every JSON field (§15) | builder | p2.sdk-core |
-| 4 | 1 | BLOCKED | sdk | `p4.sdk-decisions` — recordDecision returns a handle exposing decisionId | builder | p2.sdk-core, p2.shared-schema |
+| 4 | 1 | BLOCKED | sdk | `p4.sdk-decisions` — recordDecision returns a handle exposing decisionId | builder | p2.sdk-core |
 | 4 | 2 | BLOCKED | api | `p4.attestation` — Cross-process attestOutcome — idempotent, accepts unknown decisionId (§14) | builder | p4.entities, p4.sdk-decisions |
 | 4 | 2 | BLOCKED | ui | `p4.run-explorer` — Run Explorer — timeline, hierarchy, decisions, calls, errors, ingestion health | builder | p4.entities, p2.dashboard-runs |
 | 4 | 2 | BLOCKED | api | `p4.run-summary` — Run Summary aggregation (§23) | builder | p4.entities |
+| 5 | — | DONE | engine | `p5.det-candidate` — Deterministic candidate analyzer — §18 aggregation, §19 gates (§21 output is 5b) | builder | — |
 | 5 | — | DONE | engine | `p5.engine-pkg` — platform/analysis-engine package + graduated types. NO aggregation, NO gate logic. | builder | — |
 | 5 | — | DONE | engine | `p5.negative-fixtures` — Fixture suite D1-D11 + R1-R5, the gate expectation grid as data, and the comparator that reads it | builder | — |
-| 5 | 1 | READY | engine | `p5.det-candidate` — Deterministic candidate analyzer — §18 aggregation, §19 gates, §21 output | builder | — |
-| 5 | 1 | READY | engine | `p5.repeated-failed` — Repeated failed action analyzer — §20.2 conditions only | builder | — |
-| 5 | 2 | BLOCKED | persistence | `p5.rec-persistence` — Recommendation entity, fingerprint dedupe, OPEN/DISMISSED lifecycle (§21) | builder | p5.det-candidate, p4.entities |
-| 5 | 2 | BLOCKED | engine | `p5.spike-deleted` — spike/ deleted | builder | p5.det-candidate |
-| 5 | 3 | BLOCKED | api | `p5.analysis-endpoint` — POST /v1/analysis/run — on demand, never inline with ingestion (§22) | builder | p5.rec-persistence, p5.repeated-failed |
-| 5 | 4 | BLOCKED | ui | `p5.recs-ui` — Dashboard: recommendations, gate table, counterexamples, Analyze action | builder | p5.analysis-endpoint, p4.run-explorer |
+| 5 | — | DONE | engine | `p5.repeated-failed` — Repeated failed action analyzer — §20.2 conditions only | builder | — |
+| 5 | 1 | BLOCKED | persistence | `p5.rec-persistence` — Recommendation entity, fingerprint dedupe, OPEN/DISMISSED lifecycle (§21) | builder | p4.entities |
+| 5 | 1 | READY | engine | `p5.spike-deleted` — spike/ deleted — 5b wave 4, NOT 5a | builder | — |
+| 5 | 2 | BLOCKED | api | `p5.analysis-endpoint` — POST /v1/analysis/run — on demand, never inline with ingestion (§22) | builder | p5.rec-persistence |
+| 5 | 3 | BLOCKED | ui | `p5.recs-ui` — Dashboard: recommendations, gate table, counterexamples, Analyze action | builder | p5.analysis-endpoint, p4.run-explorer |
 | 6 | 1 | BLOCKED | playground | `p6.real-provider` — One optional real provider (must not block MVP) | builder | p3.scaffold |
 | 6 | 1 | BLOCKED | playground | `p6.scenario1` — Scenario 1 — happy path, emits nothing | builder | p3.cli, p5.analysis-endpoint |
-| 6 | 1 | BLOCKED | playground | `p6.scenario2` — Scenario 2 — repeated failed action | builder | p3.mock-agent, p5.repeated-failed, p4.sdk-decisions |
-| 6 | 1 | BLOCKED | playground | `p6.scenario3` — Scenario 3 — repeated decision, >=30 runs / >=8 contexts, one process | builder | p3.mock-agent, p5.det-candidate, p4.sdk-decisions, p4.attestation |
+| 6 | 1 | BLOCKED | playground | `p6.scenario2` — Scenario 2 — repeated failed action | builder | p3.mock-agent, p4.sdk-decisions |
+| 6 | 1 | BLOCKED | playground | `p6.scenario3` — Scenario 3 — repeated decision, >=30 runs / >=8 contexts, one process | builder | p3.mock-agent, p4.sdk-decisions, p4.attestation |
 | 6 | 2 | BLOCKED | test | `p6.seed-repro` — Same seed → identical telemetry across full scenarios | validator | p6.scenario3, p3.seeded-clock |
-| 7 | — | DONE | doc | `p7.readme` — README leading with G2 + prior art, §2 verbatim, limits section | builder | p5.det-candidate |
-| 7 | 1 | BLOCKED | infra | `p7.docker-smoke` — Clean clone → docker compose up → run visible | validator | p1.docker-runtime, p6.scenario1 |
+| 7 | — | DONE | doc | `p7.readme` — README leading with G2 + prior art, §2 verbatim, limits section | builder | — |
+| 7 | 1 | BLOCKED | infra | `p7.docker-smoke` — Clean clone → docker compose up → run visible | validator | p6.scenario1 |
 | 7 | 1 | BLOCKED | test | `p7.e2e` — E2E 1-4 including the silence case (E2E 4) | validator | p6.scenario1, p6.scenario2, p6.scenario3 |
-| 7 | 1 | BLOCKED | test | `p7.regression` — Critical unit test list all present and green | validator | p5.det-candidate, p5.repeated-failed, p4.payload-safety, p2.merge-rules |
+| 7 | 1 | BLOCKED | test | `p7.regression` — Critical unit test list all present and green | validator | p4.payload-safety, p2.merge-rules |
 | 7 | 2 | BLOCKED | infra | `p7.ci-full` — CI green on clean checkout including E2E + docker build validation | builder | p7.e2e |
 
 ## Parallel waves per phase
 
-### Phase 1
-
-```text
-WAVE 1  —  2 agents in parallel
-    builder   p1.debt.precommit       Carried debt — pre-commit hook running gates:full
-    validator p1.docker-runtime       docker compose up healthy; API reaches PostgreSQL
-              note: The only unchecked Phase 1 DoD items. Blocked on env.docker, not on code.
-
-  WAVE 2  —  1 agent
-    builder   p1.debt.secrets         Carried debt — secret detection before commit
-
-  LANE COLLISIONS — same wave, same directory. Isolate or serialise these:
-    wave 1  lane infra  p1.debt.precommit + p1.docker-runtime
-```
-
 ### Phase 2
 
 ```text
-WAVE 1  —  1 agent
-    builder   p2.shared-schema        platform/shared/schema — Zod wire contract (§12)
-              note: CRITICAL PATH ROOT. The SDK and the API both import it. Nothing in Phase 2 parallelises until this exists.
-
-  WAVE 2  —  3 agents in parallel
+WAVE 1  —  3 agents in parallel
     builder   p2.merge-rules          Merge rules — out-of-order, precedence, terminal conflict (§12)
               note: Pure function. Unit-testable with no container — parallel-safe and cheap.
     builder   p2.prisma-run-step      Run + Step Prisma models and migration
     builder   p2.sdk-core             Telemetry SDK v1 — async, batched, bounded, silent, flushable, retrying (§16)
               note: Depends on the contract, NOT on the API. Fully parallel with the whole api/persistence lane.
 
-  WAVE 3  —  3 agents in parallel
+  WAVE 2  —  3 agents in parallel
     builder   p2.ingest-endpoint      POST /v1/telemetry/events — limits, per-event results (§12)
     builder   p2.runs-api             GET /v1/runs + run detail, STALE derivation
     builder   p2.sdk-injection        Clock + IdGenerator injection points in the SDK (§17)
               note: PLAN GAP: v3 assigns seeded Clock/IdGen to Phase 3 WP4, but the injection seams live in the SDK. Land the seams here or Phase 3 reopens Phase 2 code.
 
-  WAVE 4  —  2 agents in parallel
+  WAVE 3  —  2 agents in parallel
     builder   p2.dashboard-runs       Dashboard: runs list + run detail with nested/orphaned steps
     builder   p2.idempotency          Idempotent upsert on eventId; DUPLICATE is a success
 
-  WAVE 5  —  1 agent
+  WAVE 4  —  1 agent
     validator p2.integration-tests    Ingestion / idempotency / ordering / stale integration tests
 
   LANE COLLISIONS — same wave, same directory. Isolate or serialise these:
-    wave 3  lane api  p2.ingest-endpoint + p2.runs-api
+    wave 2  lane api  p2.ingest-endpoint + p2.runs-api
 ```
 
 ### Phase 3
@@ -209,23 +180,15 @@ WAVE 1  —  3 agents in parallel
 
 ```text
 WAVE 1  —  2 agents in parallel
-    builder   p5.det-candidate        Deterministic candidate analyzer — §18 aggregation, §19 gates, §21 output
-              note: 5a wave 3, first of two. Graduates spike/aggregate.ts and spike/gates.ts. Assert NOTHING here: feed each D fixture through assertAgainstGrid() from test/grid/**, which p5.negative-fixtures owns and this packet may not edit. fixtures/** and test/grid/** are outside allowed_paths on purpose - an analyzer packet that could relax its own expectations is the failure this split exists to prevent. Hash fixtures/expectations.ts and test/grid/** before and after this packet and compare; `pnpm lanes check` validates paths, not that a later packet weakened an earlier one's assertions. Also lands the threshold-binding spec that ADR docs/decisions/0004 substitutes for Tester at the gate: shift each of the five thresholds one unit in each direction and assert that every verdict that should flip does, and every verdict that should not stay put. A threshold no fixture binds is a threshold that can move silently. LANE COLLISION with p5.repeated-failed on src/** and test/analyzer/** - serialise. TWO KNOWN SPIKE BUGS ride along if spike/gates.ts and spike/aggregate.ts are copied verbatim, and both are already contradicted by the doc comments p5.engine-pkg landed in src/gate-contract.ts. spike/gates.ts:116 computes failedGates as `status !== 'PASS'`, which puts a NOT_APPLICABLE G4 into D11's failedGates when the grid says D11 fails G5 only - failedGates holds FAIL and nothing else. spike/aggregate.ts:100 computes the attested success rate group-wide when §19 evaluates G4 on the dominant option, which disagrees with the grid on D1, D3 and D6; the field is named dominantOptionAttestedSuccessRate for exactly that reason. D11 catches the first and D3 the second, through assertAgainstGrid(). Gate functions go in a NEW src/gates.ts; src/gate-contract.ts holds the vocabulary and never a function. PRE-DISPATCH AMENDMENT (council review 2026-08-17) - THE THRESHOLD-BINDING SPEC AS DESCRIBED ABOVE CANNOT FAIL. Every D fixture sits far from every threshold: sample counts are 12, 24, 26, 40, 45, 50, 50, 50, 60 and never 30, distinct contexts are 2, 8, 8, 9, 10, 10, 11, 12, 15 and never 5, and no ratio is 0.90 or 0.80. Shifting a threshold one unit therefore flips nothing, and ADR 0004 would be paid with a spec that is green by construction. Four corrections bind this packet. (1) THRESHOLDS ARE INJECTABLE: every gate function and the analyzer entry take an AnalyzerConfig parameter defaulting to DEFAULT_CONFIG from src/config.ts, which p5.engine-pkg already landed frozen. No module-level threshold constant may appear anywhere in src/**. (2) THE SPEC USES THE BOUNDARY GROUPS, not the D fixtures: the fifteen B1-B5 groups of the `Threshold boundary rows` table in MVP_PLAN_V3 Phase 5, whose inputs and expected values p5.negative-fixtures lands in fixtures/** and this packet may not edit. (3) THE SHIFT ASSERTIONS follow the generic rule stated with that table - shift one threshold one unit in one direction, and every group on the far side of the move flips while every other group stays put. Both directions, all five thresholds. (4) THE ACCEPTANCE CRITERION IS THAT THE SPEC CAN FAIL, not that it landed. Mutation-check it: flip `>=` to `>` in each of the five gate comparisons in turn, confirm the spec goes red on each of the five, restore, and record all five results in .artifacts/evidence/5a/threshold-binding-mutation.md. A spec that stays green under a flipped operator has not paid for ADR 0004 and Tester runs at the gate. FILE NAMING IS A CONTRACT, because the oracle probes these paths: src/gates.ts, src/aggregate.ts, test/analyzer/threshold-binding.spec.ts. The previous probe on this packet grepped for `minorityContextConcentration`, which src/types.ts has satisfied since wave 1, so the oracle reported this packet DONE before it had started.
-    builder   p5.repeated-failed      Repeated failed action analyzer — §20.2 conditions only
-              note: 5a wave 3, second of two. §20.2 conditions only - same toolName, same sanitized inputFingerprint, result FAILED or an Error, at least three CONSECUTIVE attempts, no success between them. Generic loop detection is out of scope and the recommendation text says `repeated failed action`, never `loop detection`. R1-R3 all expect silence, so `return []` passes three of the five fixtures. R4 proves the analyzer exists; R5 proves the streak is scoped to the (runId, toolName, inputFingerprint) subsequence rather than to the run's whole timeline - under the timeline reading an unrelated tool's success suppresses a real repeated failure, i.e. the finding depends on scheduling noise. A run where R4 or R5 does not emit is a FAILED handoff, not a DONE with a caveat. Assert nothing directly; feed fixtures through assertAgainstGrid() from test/grid/**, which this packet may not edit. LANE COLLISION with p5.det-candidate on src/** and test/analyzer/** - serialise, and re-hash fixtures/expectations.ts and test/grid/** afterwards with `pnpm hash:5a`. The hash also covers test/analyzer/threshold-binding.spec.ts, which p5.det-candidate landed and this packet shares a path with: allowed_paths cannot protect it and gutting it would silently unpay ADR 0004. FILE NAMING IS A CONTRACT, because the oracle probes these paths: src/repeated-failed-action.ts and test/analyzer/repeated-failed-action.spec.ts. The previous probe on this packet grepped for `inputFingerprint`, which src/tool-call.ts has satisfied since wave 1, so the oracle reported this packet DONE before it had started. ONE CONDITION HAS NO FIXTURE BEHIND IT, and you are told so rather than left to discover it. §20.2 fires when the result is FAILED **or** records an Error; every one of R1-R5 expresses failure through `outcome` alone, so an implementation that reads `outcome` and ignores errorType passes all five fixtures with half the condition unimplemented. The wave-2 Builder found this and it is deferred to 5b - see BACKLOG.md `No R fixture binds the "or records an Error" half of §20.2` - because absorbing it means reopening fixtures/** after the wave that owns it has merged and been hashed. Implement BOTH halves anyway. The suite cannot catch you; the 5b gate will.
-
-  WAVE 2  —  2 agents in parallel
     builder   p5.rec-persistence      Recommendation entity, fingerprint dedupe, OPEN/DISMISSED lifecycle (§21)
-    builder   p5.spike-deleted        spike/ deleted
+    builder   p5.spike-deleted        spike/ deleted — 5b wave 4, NOT 5a
+              note: MVP_PLAN_V3.md:2236 puts this in the 5b Definition of Done, and .artifacts/plans/remaining-roadmap.md:369-374 assigns it to wave 4: 'here, not earlier. Until this packet it is the independent cross-check on 5a's numbers.' The needs edge below is satisfied after wave 3, which makes the node look available at the 5a gate. It is not. Deleting spike/ destroys the only on-disk record of the seven rows where the spike disagrees with the grid by design.
 
-  WAVE 3  —  1 agent
+  WAVE 2  —  1 agent
     builder   p5.analysis-endpoint    POST /v1/analysis/run — on demand, never inline with ingestion (§22)
 
-  WAVE 4  —  1 agent
+  WAVE 3  —  1 agent
     builder   p5.recs-ui              Dashboard: recommendations, gate table, counterexamples, Analyze action
-
-  LANE COLLISIONS — same wave, same directory. Isolate or serialise these:
-    wave 1  lane engine  p5.det-candidate + p5.repeated-failed
 ```
 
 ### Phase 6

@@ -1120,7 +1120,7 @@ function positional(argv: string[]): string[] {
   return out;
 }
 
-function nextWave(phase: number): string[] {
+export function nextWave(phase: number): string[] {
   const byId = resolveGraph();
   const rows = [...byId.values()].filter(
     (n) => n.phase === phase && n.state !== 'DONE' && n.wave > 0,

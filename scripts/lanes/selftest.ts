@@ -9,9 +9,14 @@
  *
  * Scenario 1 uses fixtures rather than the live graph because no real batch is currently
  * eligible: everything in Phase 2 is downstream of `p2.shared-schema`, which is not built.
- * Scenario 15 runs the same evaluator against the live graph and asserts that — so the
- * approved case and the real-repository case are both covered, and neither is asserted by
- * pretending the repository is in a state it is not.
+ * Scenario 15 runs the same evaluator against the live graph — deriving the batch from
+ * `nextWave()` rather than a hardcoded id pair — so the approved case and the
+ * real-repository case are both covered, and neither is asserted by pretending the
+ * repository is in a state it is not. It is deliberately reason-agnostic: it does not pin
+ * which requirement fails or assume the mode is `sequential`, because the live wave's
+ * composition changes as packets land and its verdict changes with it. What it always
+ * checks: mode is `sequential` iff at least one hard requirement failed, and every blocker
+ * traces to a failed requirement.
  *
  *   pnpm check:lanes      (or)     pnpm lanes selftest
  */
@@ -28,6 +33,7 @@ import {
   evaluate,
   integrationPlan,
   matchPath,
+  nextWave,
   patternsOverlap,
   policy,
   repoState,
@@ -445,14 +451,30 @@ export async function run(): Promise<number> {
   // scenarios depend on, and the live graph they will actually run against.
 
   scenario(15, 'the live graph rejects its own next wave for a stated reason', () => {
-    const ids = ['p2.merge-rules', 'p2.sdk-core'];
+    const ids = nextWave(2);
+    if (ids.length < 2) {
+      // Degenerate case: fewer than R1's minimum. Don't pass vacuously — assert the
+      // evaluator itself catches it, the same way it would for any undersized batch.
+      const d = evaluate(unitsFor(ids), policy(), repoState());
+      return expect(
+        failedIds(d).includes('R1'),
+        `nextWave(2) returned ${ids.length} id(s) (below the R1 minimum of 2) but R1 did not fail`,
+      );
+    }
     const d = evaluate(unitsFor(ids), policy(), repoState());
     const failed = failedIds(d);
+    const blockerIds = d.blockers.map((b) => b.split(' ')[0] ?? '');
     return (
-      expect(d.mode === 'sequential', `expected sequential on the live graph, got ${d.mode}`) ??
+      // Reason-agnostic: does not pin a mode or a requirement id, because the live wave's
+      // composition — and therefore its verdict — changes as packets land. Once the wave is
+      // legitimately parallel this asserts parallel-with-no-failed-requirements instead.
       expect(
-        failed.includes('R6'),
-        `expected R6 (frozen contracts) to fail while p2.shared-schema is unbuilt; failed: ${failed.join(',')}`,
+        (d.mode === 'sequential') === failed.length > 0,
+        `mode must be sequential iff a hard requirement failed: mode=${d.mode}, failed=${failed.join(',') || 'none'}`,
+      ) ??
+      expect(
+        blockerIds.every((id) => failed.includes(id)),
+        `every blocker must trace to a failed requirement; blockers: ${d.blockers.join(' | ')}`,
       ) ??
       expect(
         d.blockers.length === failed.length,
