@@ -102,9 +102,15 @@ A decision nobody can catch being violated is a decision that will be violated.
 
 ## Still open
 
-Round 2 of the frontier is not settled and is listed in `.claude/autopilot.local.md`. The two
-that most affect this contract: **A-3**, the 32 KB-per-field client cap (§15) and the
-64 KB-per-event server cap (OD-2) do not compose — three client-legal fields make an illegal
-event; and **A-5**, the tie-break when two completion events share an `occurredAt`, where OD-3
-settles `status` but leaves `completedAt` and `output` undefined while the Definition of Done
-demands the resolution be "deterministic".
+Round 2 of the frontier is listed in `.claude/autopilot.local.md`. The two that most affect this
+contract have since been answered and are no longer open:
+
+- **A-3** — the 32 KB-per-field client cap (§15) and the 64 KB-per-event server cap (OD-2) do not
+  compose; three client-legal fields make an illegal event. Answered by the human 2026-08-18 in
+  `docs/decisions/0006-oversized-event-is-an-event-level-rejection.md`.
+- **A-5** — the tie-break when two completion events share an `occurredAt`, where OD-3 settles
+  `status` but leaves `completedAt` and `output` undefined while the Definition of Done demands the
+  resolution be "deterministic". Answered by the coordinator 2026-08-18 in
+  `docs/decisions/0007-equal-occurredat-ties-break-on-eventid.md`.
+
+A-6 through A-13 remain unasked.
