@@ -64,14 +64,14 @@ describe('mergeEvent — out-of-order start/completion (MVP_PLAN_V3.md §12)', (
 });
 
 describe('mergeEvent — field precedence (MVP_PLAN_V3.md §12)', () => {
-  it('start fields: first writer wins — a second start event never overwrites them', () => {
+  it('start fields: first writer wins by occurredAt — a LATER-occurring second start never overwrites an earlier one', () => {
     const afterFirstStart = mergeEvent(undefined, startEvent({ fields: { name: 'first' } }));
 
     const afterSecondStart = mergeEvent(
       afterFirstStart,
       startEvent({
         eventId: 'evt-start-2',
-        occurredAt: '2026-08-18T09:00:00.000Z', // earlier occurredAt — still loses, order is by processing
+        occurredAt: '2026-08-18T11:00:00.000Z', // later occurredAt — loses, regardless of processing order
         receivedAt: 4_000,
         fields: { name: 'second' },
       }),
@@ -79,6 +79,112 @@ describe('mergeEvent — field precedence (MVP_PLAN_V3.md §12)', () => {
 
     expect(afterSecondStart.startFields).toEqual({ name: 'first' });
     expect(afterSecondStart.startedAt).toBe('2026-08-18T10:00:00.000Z');
+  });
+
+  it('start fields: an EARLIER-occurring start wins even when processed second — arrival order must not matter (ADR 0007 mirror, ruling Q1)', () => {
+    const afterFirstArrival = mergeEvent(
+      undefined,
+      startEvent({
+        eventId: 'evt-start-late',
+        occurredAt: '2026-08-18T10:00:00.000Z',
+        fields: { name: 'later-arrival' },
+      }),
+    );
+
+    const afterEarlierArrivesSecond = mergeEvent(
+      afterFirstArrival,
+      startEvent({
+        eventId: 'evt-start-early',
+        occurredAt: '2026-08-18T09:00:00.000Z', // earlier occurredAt, arrives second — must still win
+        receivedAt: 4_000,
+        fields: { name: 'earlier-occurrence' },
+      }),
+    );
+
+    expect(afterEarlierArrivesSecond.startedAt).toBe('2026-08-18T09:00:00.000Z');
+    expect(afterEarlierArrivesSecond.startFields).toEqual({ name: 'earlier-occurrence' });
+  });
+
+  it("start fields: tester regression fixture [start@10:00, start@09:00] — startedAt ends at 09:00 with that event's fields", () => {
+    const afterTen = mergeEvent(
+      undefined,
+      startEvent({
+        eventId: 'evt-1000',
+        occurredAt: '2026-08-18T10:00:00.000Z',
+        fields: { name: 'ten' },
+      }),
+    );
+    const afterNine = mergeEvent(
+      afterTen,
+      startEvent({
+        eventId: 'evt-0900',
+        occurredAt: '2026-08-18T09:00:00.000Z',
+        fields: { name: 'nine' },
+      }),
+    );
+
+    expect(afterNine.startedAt).toBe('2026-08-18T09:00:00.000Z');
+    expect(afterNine.startFields).toEqual({ name: 'nine' });
+  });
+
+  it('start fields: reverse insertion order [start@09:00, start@10:00] — same result, startedAt is 09:00 (order-independence)', () => {
+    const afterNine = mergeEvent(
+      undefined,
+      startEvent({
+        eventId: 'evt-0900',
+        occurredAt: '2026-08-18T09:00:00.000Z',
+        fields: { name: 'nine' },
+      }),
+    );
+    const afterTen = mergeEvent(
+      afterNine,
+      startEvent({
+        eventId: 'evt-1000',
+        occurredAt: '2026-08-18T10:00:00.000Z',
+        fields: { name: 'ten' },
+      }),
+    );
+
+    expect(afterTen.startedAt).toBe('2026-08-18T09:00:00.000Z');
+    expect(afterTen.startFields).toEqual({ name: 'nine' });
+  });
+
+  it('start fields: equal occurredAt tie breaks on the lexicographically LESSER eventId, insertion order A-then-B (mirror of ADR 0007)', () => {
+    const eventA = startEvent({
+      eventId: 'evt-aaa',
+      occurredAt: '2026-08-18T10:00:00.000Z',
+      fields: { name: 'aaa' },
+    });
+    const eventB = startEvent({
+      eventId: 'evt-bbb',
+      occurredAt: '2026-08-18T10:00:00.000Z',
+      fields: { name: 'bbb' },
+    });
+
+    const afterA = mergeEvent(undefined, eventA);
+    const afterB = mergeEvent(afterA, eventB);
+
+    expect(afterB.startFields).toEqual({ name: 'aaa' });
+    expect(afterB.startEventId).toBe('evt-aaa');
+  });
+
+  it('start fields: equal occurredAt tie breaks on the lexicographically LESSER eventId, insertion order B-then-A', () => {
+    const eventA = startEvent({
+      eventId: 'evt-aaa',
+      occurredAt: '2026-08-18T10:00:00.000Z',
+      fields: { name: 'aaa' },
+    });
+    const eventB = startEvent({
+      eventId: 'evt-bbb',
+      occurredAt: '2026-08-18T10:00:00.000Z',
+      fields: { name: 'bbb' },
+    });
+
+    const afterB = mergeEvent(undefined, eventB);
+    const afterA = mergeEvent(afterB, eventA);
+
+    expect(afterA.startFields).toEqual({ name: 'aaa' });
+    expect(afterA.startEventId).toBe('evt-aaa');
   });
 
   it('completion fields: last writer wins by occurredAt, not arrival order', () => {
@@ -139,6 +245,33 @@ describe('mergeEvent — field precedence (MVP_PLAN_V3.md §12)', () => {
     // function of the event set, independent of arrival order (ADR 0007 Consequences).
     expect(afterA.completionFields).toEqual({ metadata: { from: 'bbb' } });
     expect(afterA.completionEventId).toBe('evt-bbb');
+  });
+
+  it('discriminates real instants from raw string order: an event whose ISO string sorts LOWER but names a LATER instant still wins (tester fixture)', () => {
+    // evt-aaa: 2026-08-18T09:00:00.000Z — instant 09:00 UTC.
+    // evt-zzz: 2026-08-18T11:30:00.000+03:00 — instant 08:30 UTC (11:30 minus the +03:00 offset).
+    // Raw string comparison says '...T09:00...Z' < '...T11:30...+03:00' (the '09' < '11'
+    // digits), so a naive lexicographic comparator would pick evt-zzz as "later" — the wrong
+    // answer. `compareOccurredAt` uses `Date.parse`, so it must pick evt-aaa (the genuinely
+    // later instant) regardless of which one is processed first.
+    const eventAaa = completionEvent({
+      eventId: 'evt-aaa',
+      occurredAt: '2026-08-18T09:00:00.000Z',
+      fields: { metadata: { from: 'aaa' } },
+    });
+    const eventZzz = completionEvent({
+      eventId: 'evt-zzz',
+      occurredAt: '2026-08-18T11:30:00.000+03:00',
+      fields: { metadata: { from: 'zzz' } },
+    });
+
+    const aaaThenZzz = mergeEvent(mergeEvent(undefined, eventAaa), eventZzz);
+    const zzzThenAaa = mergeEvent(mergeEvent(undefined, eventZzz), eventAaa);
+
+    expect(aaaThenZzz.completedAt).toBe('2026-08-18T09:00:00.000Z');
+    expect(aaaThenZzz.completionEventId).toBe('evt-aaa');
+    expect(zzzThenAaa.completedAt).toBe('2026-08-18T09:00:00.000Z');
+    expect(zzzThenAaa.completionEventId).toBe('evt-aaa');
   });
 });
 
@@ -229,7 +362,56 @@ describe('mergeEvent — late events on a terminal run', () => {
     expect(enriched.completionFields).toEqual({ metadata: { note: 'enrichment' } });
   });
 
-  it('MUST NOT reopen the run — a start event arriving after terminal status leaves status untouched', () => {
+  it('enrichment is a MERGE, not a replace: distinct top-level keys from an earlier completion survive a later one that does not repeat them (tester defect 2)', () => {
+    const terminal = mergeEvent(
+      undefined,
+      completionEvent({
+        eventId: 'evt-first',
+        occurredAt: '2026-08-18T10:10:00.000Z',
+        fields: { metadata: { errorMessage: 'boom', tokens: 42 } },
+      }),
+    );
+
+    const enriched = mergeEvent(
+      terminal,
+      completionEvent({
+        eventId: 'evt-second',
+        occurredAt: '2026-08-18T10:20:00.000Z',
+        fields: {},
+      }),
+    );
+
+    // The second event carries no `metadata` key at all — the first event's payload must
+    // not be silently dropped.
+    expect(enriched.completionFields).toEqual({ metadata: { errorMessage: 'boom', tokens: 42 } });
+  });
+
+  it('enrichment merge: a later completion with a DIFFERENT top-level key is added alongside the earlier one, neither is lost', () => {
+    const terminal = mergeEvent(
+      undefined,
+      completionEvent({
+        eventId: 'evt-first',
+        occurredAt: '2026-08-18T10:10:00.000Z',
+        fields: { metadata: { errorMessage: 'boom' } },
+      }),
+    );
+
+    const enriched = mergeEvent(
+      terminal,
+      completionEvent({
+        eventId: 'evt-second',
+        occurredAt: '2026-08-18T10:20:00.000Z',
+        fields: { output: { retries: 2 } },
+      }),
+    );
+
+    expect(enriched.completionFields).toEqual({
+      metadata: { errorMessage: 'boom' },
+      output: { retries: 2 },
+    });
+  });
+
+  it('MUST NOT reopen the run — a duplicate/late start after a FAILED terminal leaves status untouched (tester defect 1)', () => {
     const terminal = mergeEvent(undefined, completionEvent({ status: 'FAILED' }));
 
     const afterLateStart = mergeEvent(
@@ -238,6 +420,20 @@ describe('mergeEvent — late events on a terminal run', () => {
     );
 
     expect(afterLateStart.status).toBe('FAILED');
+  });
+
+  it('MUST NOT reopen the run — a duplicate/late start after a COMPLETED terminal leaves status untouched (tester defect 1)', () => {
+    const terminal = mergeEvent(undefined, completionEvent({ status: 'COMPLETED' }));
+
+    const afterLateStart = mergeEvent(
+      terminal,
+      startEvent({ eventId: 'evt-late-start', receivedAt: 9_000 }),
+    );
+
+    // Mutation-proof: flipping the start branch to spread `status` (or hardcode 'RUNNING')
+    // must turn this assertion red. Confirmed manually — see
+    // .artifacts/evidence/2/merge-rules-mutation.md.
+    expect(afterLateStart.status).toBe('COMPLETED');
   });
 
   it('lastEventAt is monotonic — never regresses even if an older event is processed later', () => {
@@ -249,6 +445,30 @@ describe('mergeEvent — late events on a terminal run', () => {
     );
 
     expect(afterOlderReceipt.lastEventAt).toBe(5_000);
+  });
+});
+
+describe('mergeEvent — purity / aliasing (tester defect 4)', () => {
+  it("start branch: mutating the caller's event.fields object after mergeEvent returns does not retroactively change the returned state", () => {
+    const original: MergeEvent = startEvent({ fields: { name: 'original' } });
+
+    const state = mergeEvent(undefined, original);
+    // Deliberately mutating the caller's own object to prove the module copied it rather
+    // than aliased it.
+    (original.fields as Record<string, unknown>).name = 'mutated-after-the-fact';
+
+    expect(state.startFields).toEqual({ name: 'original' });
+  });
+
+  it("completion branch: mutating the caller's event.fields object after mergeEvent returns does not retroactively change the returned state", () => {
+    const original: MergeEvent = completionEvent({ fields: { metadata: { note: 'original' } } });
+
+    const state = mergeEvent(undefined, original);
+    // Deliberately mutating the caller's own object to prove the module copied it rather
+    // than aliased it.
+    (original.fields as Record<string, unknown>).metadata = { note: 'mutated-after-the-fact' };
+
+    expect(state.completionFields).toEqual({ metadata: { note: 'original' } });
   });
 });
 

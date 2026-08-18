@@ -56,6 +56,9 @@ export interface EntityMergeState {
   /** The `eventId` that currently owns `completedAt`/`completionFields` — carried forward so a
    *  future tie (identical `occurredAt`) has something to compare against (ADR 0007). */
   readonly completionEventId: string | null;
+  /** The `eventId` that currently owns `startedAt`/`startFields` — mirrors `completionEventId`
+   *  so a future start-side tie (identical `occurredAt`) has something to compare against. */
+  readonly startEventId: string | null;
   /** Server clock, epoch ms. Monotonic — never regresses, even if an older event is processed later. */
   readonly lastEventAt: number;
 }
@@ -110,6 +113,31 @@ function shouldReplaceCompletion(
   return event.eventId > current.completionEventId;
 }
 
+/**
+ * Field precedence, start side (MVP_PLAN_V3.md §12): "first writer wins" means first BY
+ * `occurredAt` — the earliest-occurring start event keeps `startedAt`/`startFields`,
+ * regardless of which one this process happened to see first. Arrival-order dependence was
+ * considered and rejected (the same network-timing hazard `MVP_PLAN_V3.md:511-512` calls out
+ * for the completion side; ADR 0007's Consequences require the merge to stay "a pure function
+ * of the event set, independent of arrival order... replaying a batch cannot change an
+ * answer" — that guarantee has to hold for both sides of the merge, not only completion).
+ *
+ * The tie-break mirrors ADR 0007 rather than reusing it: that ADR picks the
+ * lexicographically GREATER `eventId` to stand in for "last" when two completions share an
+ * instant. Here the earliest write wins, so the mirror image is required: on an exact
+ * `occurredAt` tie, the lexicographically LESSER `eventId` stands in for "first".
+ */
+function shouldReplaceStart(current: EntityMergeState, event: MergeEvent): boolean {
+  if (current.startEventId === null || current.startedAt === null) {
+    return true;
+  }
+  const diff = compareOccurredAt(event.occurredAt, current.startedAt);
+  if (diff !== 0) {
+    return diff < 0;
+  }
+  return event.eventId < current.startEventId;
+}
+
 function emptyState(entityId: string): EntityMergeState {
   return {
     entityId,
@@ -119,6 +147,7 @@ function emptyState(entityId: string): EntityMergeState {
     completedAt: null,
     completionFields: null,
     completionEventId: null,
+    startEventId: null,
     lastEventAt: -Infinity,
   };
 }
@@ -130,12 +159,20 @@ function emptyState(entityId: string): EntityMergeState {
  *
  * - Out-of-order start/completion: an unseen entity that first sees a completion event is
  *   created already terminal; a later start event only ever fills start fields.
- * - Field precedence: start fields are first-writer-wins (by processing order); completion
- *   fields are last-writer-wins by `occurredAt`, tie-broken by `eventId` (ADR 0007).
+ * - Field precedence: start fields are first-writer-wins BY `occurredAt` (earliest instant
+ *   keeps them, never the arrival order this process happened to see them in); completion
+ *   fields are last-writer-wins by `occurredAt`. Both sides tie-break on `eventId` when
+ *   `occurredAt` is identical — completion picks the greater id, start the lesser, mirror
+ *   images of the same rule (ADR 0007:48: "Arrival order is never consulted, for any field,
+ *   at any time").
  * - Conflicting terminal states: delegated to `resolveTerminalStatus` — FAILED wins.
- * - Late events on a terminal run: never rejected, always update `lastEventAt`, and can
- *   still enrich `completedAt`/`completionFields`; `status` can never move back to RUNNING
- *   because no code path here ever assigns RUNNING except `emptyState`.
+ * - Late events on a terminal run: never rejected, always update `lastEventAt`, and may
+ *   enrich `completionFields` (a shallow merge — keys absent from the new event keep their
+ *   prior value, matching keys are overwritten). `status` can never move back to RUNNING
+ *   because no code path here ever assigns RUNNING except `emptyState` — the start branch
+ *   below carries `status` forward from `base` unconditionally and never reassigns it, so a
+ *   duplicate or late start event on an already-terminal entity cannot reopen it
+ *   (MVP_PLAN_V3.md:514-516, the section's only MUST).
  * - Orphans: `parentStepId` (when present) travels inside `fields` untouched — this
  *   function never inspects it, never looks up a parent, never rejects a missing one.
  */
@@ -147,16 +184,21 @@ export function mergeEvent(
   const lastEventAt = Math.max(base.lastEventAt, event.receivedAt);
 
   if (event.kind === 'start') {
-    if (base.startFields !== null) {
-      // First writer already won. A second start event is accepted (it is not an
-      // error — retries and duplicate starts happen) but changes nothing except that
-      // the entity has now been touched more recently.
-      return { ...base, lastEventAt };
-    }
+    const replaceStart = shouldReplaceStart(base, event);
+    // `status` is intentionally absent from this branch's own overrides — it flows through
+    // only via `...base`, unchanged, on every path. A start event (duplicate, late, or a
+    // genuinely earlier one that wins the tie-break below) can update startedAt/startFields
+    // but must NEVER be able to move status back toward RUNNING on an already-terminal
+    // entity. If a future edit adds a `status` override here, `merge-rules.spec.ts`'s reopen
+    // guard test goes red.
     return {
       ...base,
-      startedAt: event.occurredAt,
-      startFields: event.fields,
+      startedAt: replaceStart ? event.occurredAt : base.startedAt,
+      // Shallow-copied so a caller mutating its own `event.fields` object after this call
+      // returns can never retroactively change the state this function already returned —
+      // this module stays a pure function of its inputs at the moment it was called.
+      startFields: replaceStart ? { ...event.fields } : base.startFields,
+      startEventId: replaceStart ? event.eventId : base.startEventId,
       lastEventAt,
     };
   }
@@ -176,7 +218,15 @@ export function mergeEvent(
     ...base,
     status,
     completedAt: replaceCompletion ? completionEvent.occurredAt : base.completedAt,
-    completionFields: replaceCompletion ? completionEvent.fields : base.completionFields,
+    // Shallow MERGE, not replace: MVP_PLAN_V3.md:514-515 says a late event on a terminal run
+    // "may enrich the run" — plain reading is additive. Keys in the new event overwrite
+    // matching keys from before (still last-writer-wins per field); keys the new event does
+    // not carry are preserved rather than silently dropped. `{ ...base.completionFields,
+    // ...completionEvent.fields }` also produces a fresh object either way, which is what
+    // keeps this side immune to the same caller-mutates-its-event aliasing hazard as start.
+    completionFields: replaceCompletion
+      ? { ...base.completionFields, ...completionEvent.fields }
+      : base.completionFields,
     completionEventId: replaceCompletion ? completionEvent.eventId : base.completionEventId,
     lastEventAt,
   };
