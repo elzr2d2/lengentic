@@ -1400,3 +1400,50 @@ dependency (`package.json` and `pnpm-lock.yaml` are outside this packet's `allow
 external binary every developer and CI runner must install. Worth doing when telemetry payloads
 with credential-shaped fixtures start landing in Phase 2, which is the point OD-6 itself names as
 the reason this could not wait.
+
+## Discovered designing the cross-reference checker (2026-08-18)
+
+### Defect 1 — "validation gate" vs "human approval gate" — is meaning drift, and no string method reaches it
+
+**Source:** `docs/specs/2026-08-18-cross-reference-checker.md:59-74`, which classifies it out of
+scope and owes this entry (spec implementation step 8). Original observation: the 5a gate,
+2026-08-18.
+
+`CLAUDE.md` `## Plan discipline` calls a phase boundary a **validation gate**; the plan's phase
+prose reads in places as a **human approval gate**. Nine different phrasings across the two
+documents say versions of the same thing with different force. An agent that reads the wrong one
+either stops for permission it does not need, or advances past a boundary that wanted a human.
+
+It is filed here rather than built because **it defeats every method the checker has**. String
+matching cannot compare nine phrasings. Key comparison needs a key, and there is none — the two
+documents never name the same field. Generation cannot help either: neither side is derived from
+the other, so there is no single source to regenerate from. Any check written for it would pass
+whatever it was written against, which is the unbindable-checkbox failure the 5a recovery was
+for — `MVP_PLAN_V3.md:2213` was read by no test at all and still sat checked.
+
+Reopens when either document is rewritten such that one side becomes generated from the other, or
+when a third occurrence of the drift causes real wrong work. Until then the mitigation is the one
+already applied: the human answered it as trigger 6 at `34d9fc5`, and `CLAUDE.md` now states the
+answer once, in one place.
+
+### The product half — a decision graph inside LenGentic — is out of scope, and revival is trigger 2
+
+**Source:** human decision 2026-08-18, at the first question of the decision-graph design loop.
+Recorded in `docs/specs/2026-08-18-cross-reference-checker.md:15-23`.
+
+The original request had two halves. The dev-harness half became the cross-reference checker
+spec. The product half — a decision graph _inside_ the product, recording and linking the
+decisions LenGentic itself observes — was cut.
+
+The reason it was cut is that it is not new work: LenGentic already **is** a decision-observation
+system. §18 aggregates by group key, §19 gates, §20.1 collects counterexamples, §21 renders.
+Those sections are approved and unbuilt. Building a second decision-recording mechanism beside
+them, while the first one is still being implemented, is redesigning the approved MVP during
+implementation — forbidden by `CLAUDE.md` `## Plan discipline`.
+
+**Anyone reviving this reaches the human first.** It materially changes approved product scope,
+which is escalation trigger 2. It is not a packet a coordinator may dispatch on its own judgement,
+and the fact that it is written down here is not approval to build it.
+
+Reopens only after §18–§21 are built and shipped, and only if the shipped thing demonstrably
+fails to record something a user needed — which is evidence this entry does not have today.
