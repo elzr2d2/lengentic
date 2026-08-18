@@ -16,7 +16,13 @@ FROM base AS build
 
 # Manifests first, source second. Source changes are frequent and dependency changes are
 # not, so this ordering keeps the install layer cached across ordinary edits.
+#
+# `.husky/` is copied here too: the root `prepare` lifecycle script runs on `pnpm install`
+# and requires `.husky/prepare.mjs` to exist, even though there is no `.git` in the image for
+# it to wire up (the script no-ops in that case — see its own guard). Without the file present
+# at all, `pnpm install` dies on MODULE_NOT_FOUND before it installs anything.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
+COPY .husky ./.husky
 COPY platform/api/package.json ./platform/api/
 COPY platform/database/package.json ./platform/database/
 
