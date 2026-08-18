@@ -64,32 +64,44 @@ describe('parseTelemetryEvent — UNKNOWN_EVENT_TYPE', () => {
 });
 
 describe('parseTelemetryEvent — MISSING_REQUIRED_FIELD', () => {
-  it('rejects a missing eventId', () => {
+  it('rejects a missing eventId, naming eventId in the message', () => {
     const { eventId: _eventId, ...rest } = VALID_RUN_STARTED;
     const result = parseTelemetryEvent(rest);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe('MISSING_REQUIRED_FIELD');
+    if (!result.ok) {
+      expect(result.code).toBe('MISSING_REQUIRED_FIELD');
+      expect(result.message).toContain('eventId');
+    }
   });
 
-  it('rejects a missing entityId', () => {
+  it('rejects a missing entityId, naming entityId in the message', () => {
     const { entityId: _entityId, ...rest } = VALID_RUN_STARTED;
     const result = parseTelemetryEvent(rest);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe('MISSING_REQUIRED_FIELD');
+    if (!result.ok) {
+      expect(result.code).toBe('MISSING_REQUIRED_FIELD');
+      expect(result.message).toContain('entityId');
+    }
   });
 
-  it('rejects a missing runId', () => {
+  it('rejects a missing runId, naming runId in the message', () => {
     const { runId: _runId, ...rest } = VALID_RUN_STARTED;
     const result = parseTelemetryEvent(rest);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe('MISSING_REQUIRED_FIELD');
+    if (!result.ok) {
+      expect(result.code).toBe('MISSING_REQUIRED_FIELD');
+      expect(result.message).toContain('runId');
+    }
   });
 
-  it('rejects a missing occurredAt', () => {
+  it('rejects a missing occurredAt, naming occurredAt in the message', () => {
     const { occurredAt: _occurredAt, ...rest } = VALID_RUN_STARTED;
     const result = parseTelemetryEvent(rest);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe('MISSING_REQUIRED_FIELD');
+    if (!result.ok) {
+      expect(result.code).toBe('MISSING_REQUIRED_FIELD');
+      expect(result.message).toContain('occurredAt');
+    }
   });
 
   it('rejects occurredAt with no time component', () => {

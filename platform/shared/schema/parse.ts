@@ -1,8 +1,6 @@
 import { IdSchema } from './primitives';
 import { TelemetryEventEnvelopeSchema } from './envelope';
-import { RunStartedPayloadSchema, RunCompletedPayloadSchema } from './run-events';
-import { StepStartedPayloadSchema, StepCompletedPayloadSchema } from './step-events';
-import type { TelemetryEvent, TelemetryEventOf } from './registry';
+import { TELEMETRY_PAYLOAD_SCHEMAS, type TelemetryEvent, type TelemetryEventOf } from './registry';
 import { INGEST_ERROR_CODES, type IngestErrorCode } from './ingest';
 
 export type TelemetryEventParseResult =
@@ -37,6 +35,8 @@ function reject(
   return { ok: false, eventId, code, message };
 }
 
+const REQUIRED_FIELD_KEYS = new Set(['eventId', 'entityId', 'runId', 'occurredAt']);
+
 /**
  * Classifies a TelemetryEventEnvelopeSchema failure into the §12 bullet order:
  * schemaVersion, then type, then the remaining required fields. This is the only place
@@ -44,8 +44,6 @@ function reject(
  * TelemetryEventEnvelopeSchema already owns. See
  * .artifacts/evidence/2/wire-contract-recovery.md S1.
  */
-const REQUIRED_FIELD_KEYS = new Set(['eventId', 'entityId', 'runId', 'occurredAt']);
-
 function classifyEnvelopeFailure(
   input: Record<string, unknown>,
   issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }>,
@@ -62,20 +60,20 @@ function classifyEnvelopeFailure(
       message: `unknown event type: ${JSON.stringify(input['type'])}`,
     };
   }
-  if (
-    issues.some(
-      (issue) => typeof issue.path[0] === 'string' && REQUIRED_FIELD_KEYS.has(issue.path[0]),
-    )
-  ) {
+  const requiredFieldIssue = issues.find(
+    (issue) => typeof issue.path[0] === 'string' && REQUIRED_FIELD_KEYS.has(issue.path[0]),
+  );
+  if (requiredFieldIssue) {
     return {
       code: INGEST_ERROR_CODES.MISSING_REQUIRED_FIELD,
-      message: 'missing or invalid eventId, entityId, runId or occurredAt',
+      message: `missing or invalid required field: ${String(requiredFieldIssue.path[0])}`,
     };
   }
-  // Only `payload` remains among TelemetryEventEnvelopeSchema's keys — z.unknown() still
-  // requires the key to be present (a value of `undefined` is fine; an absent key is not),
-  // so a wholly-missing payload surfaces here rather than in the per-type payload check
-  // below (§12 bullet 4, "payload fails its Zod schema").
+  // Only `payload` remains among TelemetryEventEnvelopeSchema's keys — verified against
+  // zod 4.4.3: z.unknown() accepts an explicit `payload: undefined` (safeParse succeeds)
+  // but rejects an absent `payload` key (fails with expected: "nonoptional"), so a
+  // wholly-missing payload surfaces here rather than in the per-type payload check below
+  // (§12 bullet 4, "payload fails its Zod schema").
   return {
     code: INGEST_ERROR_CODES.INVALID_PAYLOAD,
     message: 'payload failed validation',
@@ -117,7 +115,7 @@ export function parseTelemetryEvent(input: unknown): TelemetryEventParseResult {
   // nor §13 authorises them (see .artifacts/evidence/2/wire-contract-recovery.md S4).
   switch (envelope.type) {
     case 'run.started': {
-      const payloadResult = RunStartedPayloadSchema.safeParse(envelope.payload);
+      const payloadResult = TELEMETRY_PAYLOAD_SCHEMAS[envelope.type].safeParse(envelope.payload);
       if (!payloadResult.success) {
         return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
       }
@@ -133,7 +131,7 @@ export function parseTelemetryEvent(input: unknown): TelemetryEventParseResult {
       return { ok: true, event };
     }
     case 'run.completed': {
-      const payloadResult = RunCompletedPayloadSchema.safeParse(envelope.payload);
+      const payloadResult = TELEMETRY_PAYLOAD_SCHEMAS[envelope.type].safeParse(envelope.payload);
       if (!payloadResult.success) {
         return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
       }
@@ -149,7 +147,7 @@ export function parseTelemetryEvent(input: unknown): TelemetryEventParseResult {
       return { ok: true, event };
     }
     case 'step.started': {
-      const payloadResult = StepStartedPayloadSchema.safeParse(envelope.payload);
+      const payloadResult = TELEMETRY_PAYLOAD_SCHEMAS[envelope.type].safeParse(envelope.payload);
       if (!payloadResult.success) {
         return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
       }
@@ -165,7 +163,7 @@ export function parseTelemetryEvent(input: unknown): TelemetryEventParseResult {
       return { ok: true, event };
     }
     case 'step.completed': {
-      const payloadResult = StepCompletedPayloadSchema.safeParse(envelope.payload);
+      const payloadResult = TELEMETRY_PAYLOAD_SCHEMAS[envelope.type].safeParse(envelope.payload);
       if (!payloadResult.success) {
         return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
       }

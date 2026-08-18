@@ -38,6 +38,7 @@ export type {
   IngestRequest,
   IngestResponse,
   IngestResult,
+  IngestResultError,
   IngestResultStatus,
 } from './schema/ingest';
 

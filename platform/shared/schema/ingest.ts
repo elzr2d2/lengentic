@@ -84,4 +84,5 @@ export const IngestResponseSchema = z.object({
 export type IngestRequest = z.infer<typeof IngestRequestSchema>;
 export type IngestResponse = z.infer<typeof IngestResponseSchema>;
 export type IngestResult = z.infer<typeof IngestResultSchema>;
+export type IngestResultError = z.infer<typeof IngestResultErrorSchema>;
 export type IngestResultStatus = z.infer<typeof IngestResultStatusSchema>;

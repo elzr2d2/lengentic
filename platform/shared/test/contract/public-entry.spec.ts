@@ -5,6 +5,7 @@ import {
   IdSchema,
   INGEST_ERROR_CODES,
   INGEST_LIMITS,
+  IngestResultErrorSchema,
   IngestResultStatusSchema,
   REQUEST_ERROR_CODES,
   TELEMETRY_EVENT_TYPES,
@@ -12,6 +13,7 @@ import {
   TELEMETRY_PAYLOAD_SCHEMAS,
   TELEMETRY_SCHEMA_VERSION,
 } from '../../index';
+import type { IngestResultError } from '../../index';
 
 // Expected values below are transcribed from MVP_PLAN_V3.md and
 // docs/decisions/0005-phase-2-wire-contract-gaps.md, never read off the package under
@@ -69,6 +71,15 @@ describe('public entry — literals from the plan', () => {
 
   it('IdSchema rejects the empty string — the IngestResult.eventId sentinel depends on this', () => {
     expect(IdSchema.safeParse('').success).toBe(false);
+  });
+
+  it('IngestResultError is exported beside IngestResultErrorSchema, per README.md:28-29', () => {
+    // Compile-time check: consumers must never need a direct zod import to name this
+    // shape. If IngestResultError stops being exported from the public entry, this file
+    // fails to typecheck.
+    const parsed = IngestResultErrorSchema.parse({ code: 'X', message: 'm' });
+    const typed: IngestResultError = parsed;
+    expect(typed).toEqual({ code: 'X', message: 'm' });
   });
 });
 
