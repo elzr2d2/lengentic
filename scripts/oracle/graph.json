@@ -469,7 +469,8 @@
       "changeClass": "contract",
       "validate": ["pnpm typecheck", "pnpm check:boundaries", "pnpm gates"],
       "own": {
-        "allowed": ["platform/shared/**"]
+        "allowed": ["platform/shared/**", "pnpm-lock.yaml"],
+        "$allowedComment": "pnpm-lock.yaml is here because this node CREATES a workspace package. platform/* is a workspace glob, so a new platform/shared/package.json adds an importers entry to the lockfile on the next pnpm install — unavoidable, and scripts/lanes.ts:742 counts it as a file outside ownership. It stays a sharedWriteSurface, so any batch touching it is still serialised by R9. This node is a solo wave, so nothing else can be writing it."
       },
       "phase": 2,
       "lane": "contract",
