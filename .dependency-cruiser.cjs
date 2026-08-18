@@ -85,6 +85,19 @@ module.exports = {
       to: { path: '^platform/(?!telemetry-sdk/|shared/)' },
     },
     {
+      name: 'shared-schema-is-the-wire-contract',
+      severity: 'error',
+      comment:
+        'platform/shared/schema is the only wire contract and both the SDK and the API import ' +
+        'it (CLAUDE.md ## Types). It must therefore depend on nothing inside the platform. A ' +
+        'Prisma import here would drag a database client into every SDK consumer through the ' +
+        'contract, defeating sdk-depends-on-shared-only by going around it, and would put ' +
+        'database-internal types on the wire — "Prisma types are database-internal and never ' +
+        'cross a module boundary".',
+      from: { path: '^platform/shared/' },
+      to: { path: '^(platform/(?!shared/)|playground/)' },
+    },
+    {
       name: 'analysis-engine-is-pure',
       severity: 'error',
       comment:

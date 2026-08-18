@@ -555,7 +555,7 @@
         {
           "kind": "grep",
           "dir": "platform/api/src",
-          "pattern": "v1/telemetry/events"
+          "pattern": "@Controller..telemetry/events.."
         }
       ]
     },
@@ -645,7 +645,7 @@
         {
           "kind": "grep",
           "dir": "platform/api/src",
-          "pattern": "v1/runs"
+          "pattern": "@Controller..runs.."
         }
       ]
     },
