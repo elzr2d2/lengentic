@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { mergeEvent, resolveTerminalStatus, type MergeEvent } from './merge-rules';
+import {
+  mergeEvent,
+  resolveTerminalStatus,
+  type EntityMergeState,
+  type MergeEvent,
+} from './merge-rules';
 
 // Builders keep each test's intent visible — only the fields that matter for that
 // assertion are ever spelled out at the call site.
@@ -469,6 +474,137 @@ describe('mergeEvent — purity / aliasing (tester defect 4)', () => {
     (original.fields as Record<string, unknown>).metadata = { note: 'mutated-after-the-fact' };
 
     expect(state.completionFields).toEqual({ metadata: { note: 'original' } });
+  });
+});
+
+describe('mergeEvent — per-key completion field provenance (ADR 0007 §3, tester defect: order-dependent completionFields)', () => {
+  it('T-A: FAILED@10:00{error} + COMPLETED@10:10{output}, both arrival orders — completionFields merges both keys, status stays FAILED', () => {
+    const failed = completionEvent({
+      eventId: 'evt-failed',
+      status: 'FAILED',
+      occurredAt: '2026-08-18T10:00:00.000Z',
+      fields: { error: 'boom' },
+    });
+    const completed = completionEvent({
+      eventId: 'evt-completed',
+      status: 'COMPLETED',
+      occurredAt: '2026-08-18T10:10:00.000Z',
+      fields: { output: 'done' },
+    });
+
+    const failedThenCompleted = mergeEvent(mergeEvent(undefined, failed), completed);
+    const completedThenFailed = mergeEvent(mergeEvent(undefined, completed), failed);
+
+    expect(failedThenCompleted.completionFields).toEqual({ error: 'boom', output: 'done' });
+    expect(failedThenCompleted.status).toBe('FAILED');
+    expect(completedThenFailed.completionFields).toEqual({ error: 'boom', output: 'done' });
+    expect(completedThenFailed.status).toBe('FAILED');
+
+    // T-F: the origins map is explicitly asserted, not merely written and never read.
+    expect(failedThenCompleted.completionFieldOrigins).toEqual({
+      error: { occurredAt: '2026-08-18T10:00:00.000Z', eventId: 'evt-failed' },
+      output: { occurredAt: '2026-08-18T10:10:00.000Z', eventId: 'evt-completed' },
+    });
+    expect(completedThenFailed.completionFieldOrigins).toEqual({
+      error: { occurredAt: '2026-08-18T10:00:00.000Z', eventId: 'evt-failed' },
+      output: { occurredAt: '2026-08-18T10:10:00.000Z', eventId: 'evt-completed' },
+    });
+  });
+
+  it('T-B: same key, different occurredAt, both orders — the later instant wins both times', () => {
+    const earlier = completionEvent({
+      eventId: 'evt-earlier',
+      occurredAt: '2026-08-18T10:00:00.000Z',
+      fields: { a: 'earlier' },
+    });
+    const later = completionEvent({
+      eventId: 'evt-later',
+      occurredAt: '2026-08-18T10:10:00.000Z',
+      fields: { a: 'later' },
+    });
+
+    const earlierThenLater = mergeEvent(mergeEvent(undefined, earlier), later);
+    const laterThenEarlier = mergeEvent(mergeEvent(undefined, later), earlier);
+
+    expect(earlierThenLater.completionFields).toEqual({ a: 'later' });
+    expect(laterThenEarlier.completionFields).toEqual({ a: 'later' });
+  });
+
+  it('T-C: same key, identical occurredAt, differing eventId, both orders — the greater eventId wins both times', () => {
+    const eventA = completionEvent({
+      eventId: 'evt-aaa',
+      occurredAt: '2026-08-18T10:00:00.000Z',
+      fields: { a: 'aaa' },
+    });
+    const eventB = completionEvent({
+      eventId: 'evt-bbb',
+      occurredAt: '2026-08-18T10:00:00.000Z',
+      fields: { a: 'bbb' },
+    });
+
+    const aThenB = mergeEvent(mergeEvent(undefined, eventA), eventB);
+    const bThenA = mergeEvent(mergeEvent(undefined, eventB), eventA);
+
+    expect(aThenB.completionFields).toEqual({ a: 'bbb' });
+    expect(bThenA.completionFields).toEqual({ a: 'bbb' });
+  });
+
+  it('T-D: three-event case holds over all six permutations — a "use completionEventId as proxy" design cannot pass this', () => {
+    const e1 = completionEvent({
+      eventId: 'evt-e1',
+      occurredAt: '2026-08-18T10:00:00.000Z',
+      fields: { a: 1 },
+    });
+    const e2 = completionEvent({
+      eventId: 'evt-e2',
+      occurredAt: '2026-08-18T10:10:00.000Z',
+      fields: { a: 2, b: 9 },
+    });
+    const e3 = completionEvent({
+      eventId: 'evt-e3',
+      occurredAt: '2026-08-18T10:20:00.000Z',
+      fields: {},
+    });
+
+    const permutations: MergeEvent[][] = [
+      [e1, e2, e3],
+      [e1, e3, e2],
+      [e2, e1, e3],
+      [e2, e3, e1],
+      [e3, e1, e2],
+      [e3, e2, e1],
+    ];
+
+    for (const permutation of permutations) {
+      const final = permutation.reduce<EntityMergeState | undefined>(
+        (state, event) => mergeEvent(state, event),
+        undefined,
+      );
+
+      expect(final?.completionFields).toEqual({ a: 2, b: 9 });
+      expect(final?.completedAt).toBe('2026-08-18T10:20:00.000Z');
+      expect(final?.completionEventId).toBe('evt-e3');
+    }
+  });
+});
+
+describe('mergeEvent — nested aliasing (tester defect: purity claim only held for top-level keys)', () => {
+  it('start branch: mutating a nested object inside the caller event fields after mergeEvent returns does not change the returned state', () => {
+    const original: MergeEvent = startEvent({ fields: { config: { retries: 1 } } });
+
+    const state = mergeEvent(undefined, original);
+    (original.fields as { config: { retries: number } }).config.retries = 999;
+
+    expect(state.startFields).toEqual({ config: { retries: 1 } });
+  });
+
+  it('completion branch: mutating a nested array inside the caller event fields after mergeEvent returns does not change the returned state', () => {
+    const original: MergeEvent = completionEvent({ fields: { tags: ['a', 'b'] } });
+
+    const state = mergeEvent(undefined, original);
+    (original.fields as { tags: string[] }).tags.push('mutated-after-the-fact');
+
+    expect(state.completionFields).toEqual({ tags: ['a', 'b'] });
   });
 });
 

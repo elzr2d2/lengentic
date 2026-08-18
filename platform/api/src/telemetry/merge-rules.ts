@@ -16,6 +16,11 @@
 // which sits outside this packet's `allowed_paths` (`platform/api/src/**`). The caller
 // (which already depends on `@lengentic/shared` to validate the wire event) is
 // responsible for narrowing `fields` back to a typed payload after merging.
+//
+// Purity: a caller mutating its own event object — at any depth, not only its top-level
+// keys — after calling `mergeEvent` cannot change state this function already returned.
+// Both `startFields` and `completionFields` are populated via `structuredClone`, not a
+// shallow spread, at the point each event's fields are read in.
 
 /** Stored status. Never `STALE` — that is derived at read time (ADR/`platform/shared/README.md`). */
 export type MergeEntityStatus = 'RUNNING' | 'COMPLETED' | 'FAILED';
@@ -45,6 +50,13 @@ export interface MergeEvent {
   readonly fields: Readonly<Record<string, unknown>>;
 }
 
+/** Which completion event last wrote one `completionFields` key. ADR 0007's order key,
+ *  recorded per key rather than per event. Internal bookkeeping — not a wire value. */
+export interface CompletionFieldOrigin {
+  readonly occurredAt: string;
+  readonly eventId: string;
+}
+
 /** The merged state of one Run or Step, independent of which entity kind it is. */
 export interface EntityMergeState {
   readonly entityId: string;
@@ -59,6 +71,9 @@ export interface EntityMergeState {
   /** The `eventId` that currently owns `startedAt`/`startFields` — mirrors `completionEventId`
    *  so a future start-side tie (identical `occurredAt`) has something to compare against. */
   readonly startEventId: string | null;
+  /** Per-key provenance for `completionFields`. Always an object; `{}` before any completion
+   *  event. Never null — `completionFields === null` already carries "never completed". */
+  readonly completionFieldOrigins: Readonly<Record<string, CompletionFieldOrigin>>;
   /** Server clock, epoch ms. Monotonic — never regresses, even if an older event is processed later. */
   readonly lastEventAt: number;
 }
@@ -95,6 +110,19 @@ function compareOccurredAt(a: string, b: string): number {
 }
 
 /**
+ * Total order over completion events (ADR 0007 §3): later `occurredAt` wins; an identical
+ * `occurredAt` breaks on the lexicographically greater `eventId`. Never arrival order.
+ * Shared by `shouldReplaceCompletion` (the `status`/`completedAt`/`completionEventId`
+ * winner) and the per-key `completionFields` fold in `mergeEvent`, so the two cannot drift
+ * apart into disagreeing about which event is "later".
+ */
+function compareCompletionOrder(a: CompletionFieldOrigin, b: CompletionFieldOrigin): number {
+  const diff = compareOccurredAt(a.occurredAt, b.occurredAt);
+  if (diff !== 0) return diff;
+  return a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0;
+}
+
+/**
  * Field precedence, completion side (MVP_PLAN_V3.md §12): last writer wins by
  * `occurredAt`, not arrival order. An identical `occurredAt` breaks on the
  * lexicographically greater `eventId` (docs/decisions/0007), never on arrival order.
@@ -106,11 +134,12 @@ function shouldReplaceCompletion(
   if (current.completionEventId === null || current.completedAt === null) {
     return true;
   }
-  const diff = compareOccurredAt(event.occurredAt, current.completedAt);
-  if (diff !== 0) {
-    return diff > 0;
-  }
-  return event.eventId > current.completionEventId;
+  return (
+    compareCompletionOrder(
+      { occurredAt: event.occurredAt, eventId: event.eventId },
+      { occurredAt: current.completedAt, eventId: current.completionEventId },
+    ) > 0
+  );
 }
 
 /**
@@ -148,6 +177,7 @@ function emptyState(entityId: string): EntityMergeState {
     completionFields: null,
     completionEventId: null,
     startEventId: null,
+    completionFieldOrigins: {},
     lastEventAt: -Infinity,
   };
 }
@@ -167,8 +197,14 @@ function emptyState(entityId: string): EntityMergeState {
  *   at any time").
  * - Conflicting terminal states: delegated to `resolveTerminalStatus` — FAILED wins.
  * - Late events on a terminal run: never rejected, always update `lastEventAt`, and may
- *   enrich `completionFields` (a shallow merge — keys absent from the new event keep their
- *   prior value, matching keys are overwritten). `status` can never move back to RUNNING
+ *   enrich `completionFields`. Each key of `completionFields` is resolved independently
+ *   against the total order in `compareCompletionOrder` (ADR 0007 §3: "arrival order is
+ *   never consulted, for any field, at any time") — a key keeps whichever completion event
+ *   wrote it last BY THAT ORDER, not by which event this process happened to see last, and
+ *   `completionFieldOrigins` records that per-key winner so a still-later event can be
+ *   compared against it. Keys absent from the incoming event keep their prior value; keys
+ *   present are only overwritten when the incoming event outranks the key's current origin.
+ *   `status` can never move back to RUNNING
  *   because no code path here ever assigns RUNNING except `emptyState` — the start branch
  *   below carries `status` forward from `base` unconditionally and never reassigns it, so a
  *   duplicate or late start event on an already-terminal entity cannot reopen it
@@ -194,10 +230,11 @@ export function mergeEvent(
     return {
       ...base,
       startedAt: replaceStart ? event.occurredAt : base.startedAt,
-      // Shallow-copied so a caller mutating its own `event.fields` object after this call
-      // returns can never retroactively change the state this function already returned —
-      // this module stays a pure function of its inputs at the moment it was called.
-      startFields: replaceStart ? { ...event.fields } : base.startFields,
+      // Deep-cloned so a caller mutating its own `event.fields` object — at ANY depth, not
+      // only its top-level keys — after this call returns can never retroactively change
+      // the state this function already returned: this module stays a pure function of its
+      // inputs at the moment it was called.
+      startFields: replaceStart ? structuredClone({ ...event.fields }) : base.startFields,
       startEventId: replaceStart ? event.eventId : base.startEventId,
       lastEventAt,
     };
@@ -214,19 +251,35 @@ export function mergeEvent(
   const status = resolveTerminalStatus(base.status, completionEvent.status);
   const replaceCompletion = shouldReplaceCompletion(base, completionEvent);
 
+  // Per-key MERGE over the total order (ADR 0007 §3), not a shallow accumulate and not
+  // gated on `replaceCompletion` — that flag governs only the separate `status` /
+  // `completedAt` / `completionEventId` winner rule above. Each key of `completionFields`
+  // keeps whichever completion event wrote it last BY `compareCompletionOrder`, tracked in
+  // `completionFieldOrigins`, so the outcome cannot depend on which event this process
+  // happened to process first (MVP_PLAN_V3.md:514-515's "may enrich" is additive, and
+  // ADR 0007 §3 extends that "last writer" rule to per-key rather than per-event). Deep
+  // clone at intake for the same aliasing-purity reason as the start branch.
+  const clonedFields: Record<string, unknown> = structuredClone({ ...completionEvent.fields });
+  const nextFields: Record<string, unknown> = { ...(base.completionFields ?? {}) };
+  const nextOrigins: Record<string, CompletionFieldOrigin> = { ...base.completionFieldOrigins };
+  const incoming: CompletionFieldOrigin = {
+    occurredAt: completionEvent.occurredAt,
+    eventId: completionEvent.eventId,
+  };
+  for (const [key, value] of Object.entries(clonedFields)) {
+    const origin = nextOrigins[key];
+    if (origin === undefined || compareCompletionOrder(incoming, origin) > 0) {
+      nextFields[key] = value;
+      nextOrigins[key] = incoming;
+    }
+  }
+
   return {
     ...base,
     status,
     completedAt: replaceCompletion ? completionEvent.occurredAt : base.completedAt,
-    // Shallow MERGE, not replace: MVP_PLAN_V3.md:514-515 says a late event on a terminal run
-    // "may enrich the run" — plain reading is additive. Keys in the new event overwrite
-    // matching keys from before (still last-writer-wins per field); keys the new event does
-    // not carry are preserved rather than silently dropped. `{ ...base.completionFields,
-    // ...completionEvent.fields }` also produces a fresh object either way, which is what
-    // keeps this side immune to the same caller-mutates-its-event aliasing hazard as start.
-    completionFields: replaceCompletion
-      ? { ...base.completionFields, ...completionEvent.fields }
-      : base.completionFields,
+    completionFields: nextFields,
+    completionFieldOrigins: nextOrigins,
     completionEventId: replaceCompletion ? completionEvent.eventId : base.completionEventId,
     lastEventAt,
   };
