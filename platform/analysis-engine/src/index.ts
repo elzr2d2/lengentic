@@ -1,8 +1,11 @@
 /**
  * Public entry point for `@lengentic/analysis-engine`.
  *
- * Wave 1 exports the graduated vocabulary only: two runtime exports (`GATE_IDS`,
- * `DEFAULT_CONFIG`), zero functions. Aggregation and gate evaluation land in wave 3.
+ * Wave 1 landed the graduated vocabulary. Wave 3 added the first two runtime behaviours:
+ * `p5.det-candidate` — §18 aggregation and §19 gate evaluation, both pure functions over
+ * `DecisionRecord[]` — and `p5.repeated-failed` — the §20.2 repeated-failed-action analyzer,
+ * a pure function over `ToolCallRecord[]`. `platform/analysis-engine/src/candidate.ts` (§21
+ * rendering) is 5b's.
  */
 export type {
   Outcome,
@@ -20,3 +23,12 @@ export type { GateId, GateStatus, Verdict, GateResult, GateEvaluation } from './
 export { GATE_IDS } from './gate-contract';
 export type { AnalyzerConfig } from './config';
 export { DEFAULT_CONFIG } from './config';
+export {
+  aggregateAll,
+  aggregateGroup,
+  groupKeyOf,
+  isEligible,
+  serializeGroupKey,
+} from './aggregate';
+export { evaluateGates } from './gates';
+export { detectRepeatedFailedActions } from './repeated-failed-action';

@@ -46,7 +46,30 @@ may be citing v2.
 
 Work on one phase at a time.
 
-Never automatically begin the next MVP phase.
+Once the human approves a session objective, the main session advances through already-approved
+phases on evidence. Routine steps — task execution, agent handoffs, implementation, tests,
+fixes, reviews, commits, and the transition into an already-approved phase — do not need
+permission. Decide from `CLAUDE.md`, `CONTEXT.md`, `MVP_PLAN_V3.md`, `docs/decisions/`, and
+prior evidence; document the assumption; continue. Prefer the reversible option under
+uncertainty.
+
+A phase boundary is a **validation gate, not an approval gate**. GREEN advances. RED enters
+bounded recovery. Only the six triggers below reach the human.
+
+**Escalation triggers — stop and ask, no exceptions:**
+
+1. The action is destructive or hard to reverse.
+2. It materially changes approved product scope or architecture.
+3. A high-impact decision where no preference can be safely inferred from project rules, ADRs,
+   prior decisions, or the approved plan.
+4. Credentials, external cost, production systems, security, privacy, or legal/compliance are
+   involved.
+5. A required gate fails and two materially different, evidence-driven recovery attempts have
+   both failed.
+6. Requirements genuinely conflict and choosing one would invalidate another.
+
+Triggers are checked **before** each dispatch and each phase advance, not only after a failure.
+"Shall I continue?" is not one of them. The `autopilot` skill is this rule made procedural.
 
 Do not redesign the approved MVP while implementing it.
 
@@ -164,10 +187,21 @@ pnpm kb show <target>   # one section verbatim — §19 | phase 5 | FILE.md#head
 pnpm kb term <name>     # CONTEXT.md definition + where the word is really used
 pnpm kb stale           # notes past review-by; generated files behind their source
 pnpm check:kb           # the retriever's own scenarios (CI; not in `pnpm gates`)
+pnpm check:probes       # probe hygiene: can a node report DONE on another node's work
+pnpm hash:5a <label>    # hash the 5a files an analyzer packet must not change
+                        #   …--compare <earlier-label> fails naming every drifted path
 ```
 
-`check:lanes` and `check:kb` are out of `pnpm gates` on purpose: they read `.claude/` and the
-documents, and `pnpm gates` must keep working with the engineering harness deleted.
+`check:lanes`, `check:kb` and `check:probes` are out of `pnpm gates` on purpose: they read
+`.claude/`, the documents and `scripts/oracle/graph.json`, and `pnpm gates` must keep working
+with the engineering harness deleted.
+
+**The oracle must not lie.** A probe records what is on disk and the oracle turns that into
+`DONE`, so a probe another node's deliverable can satisfy is a packet that reports finished
+before it starts — and it reads exactly like work that is done. One rule, enforced by
+`pnpm check:probes`: a probe may only look inside the surface its own node owns. It is not
+theoretical; it had already eaten both wave-3 analyzer packets and would have eaten most of
+Phase 3. Proof: `.artifacts/evidence/5a/oracle-lint-proof.md`.
 
 ## Agents
 
@@ -217,18 +251,64 @@ Phase numbers are identity, not sequence. See the amendment in `MVP_PLAN_V3.md` 
 the rationale and the two rejected alternatives. `5a` is Phase 5 waves 1–3 — the pure analysis
 engine, no database, no HTTP, no SDK, no UI. `5b` is waves 4–6 and stays after Phase 4.
 
-**5a is in progress.** Step 0 — the coordinator commit that must land before any dispatch —
-is done: the `analysis-engine-is-pure` boundary rule with a captured red-then-green proof, the
-gate expectation grid in `MVP_PLAN_V3.md` Phase 5, fixtures `D10`, `D11` and `R4`,
-`docs/decisions/0004`, and all four 5a packets re-briefed in `scripts/oracle/graph.json`.
-Waves 1–3 are next and have not started. The schedule is
-`.artifacts/plans/remaining-roadmap.md` §4.
+**5a is in progress on branch `phase-5a`, two of three waves landed.**
 
-Two step-0 findings bind every 5a packet. The gate expectation grid in `MVP_PLAN_V3.md` is the
-**only** legal source for an expected value — not `pnpm spike`, not `src/`. And wave 2 lands
-**green**: `pnpm lanes handoff` refuses `DONE` on any failing test, so expectations ship as
-data in `fixtures/**` plus a comparator in `test/grid/**`, and the analyzer packets own
-`src/**` and `test/analyzer/**` and cannot edit either.
+- **Wave 1 `p5.engine-pkg` — merged** (PRs #2 and #3, `aa9ae67`). The package, the graduated
+  types with the three renames, `src/gate-contract.ts` with no `src/gates.ts` beside it, and
+  `src/config.ts` holding frozen, injectable thresholds.
+- **Pre-dispatch commit `121b699`.** Not a formality: a council review and an adversarial
+  semantics review found four defects, each of which would have shipped a green that lies.
+  (1) The threshold-binding spec could not fail — every `D` fixture sits far from every
+  threshold, so `docs/decisions/0004` was unpaid by construction. Fifteen `B1`–`B5` boundary
+  groups now sit **on** the thresholds, and the acceptance criterion is five reds under a
+  flipped operator, not a landed file. (2) The grid's `counterexamples` column counted minority
+  rows rather than §20.1's dominant-option failures plus minority-option successes; seven of
+  twelve rows corrected, `D6` said 2 where the honest count is 22. (3) `R5`'s timeline is
+  pinned to `F(A) F(A) S(B) F(A)` — two of the three readings bound nothing — and `Same runId`
+  became a §20.2 condition. (4) Two oracle probes reported their packets `DONE` before they
+  started.
+- **Wave 2 `p5.negative-fixtures` — landed green** at `a863346`. 136 tests, four files. Gutting
+  the comparators turns 34 red; corrupting one expectation cell turns 4 red. Evidence:
+  `.artifacts/evidence/5a/negative-fixtures-mutation.md`.
+- **Wave 3 — landed.** `p5.det-candidate` at `6042a72`, then `p5.repeated-failed` at `af624cc`,
+  run serially because they collide on `src/**` and `test/analyzer/**`. Both handoffs report
+  `DONE` with an empty `unverified` bucket; hash pairs and mutation proofs are in
+  `.artifacts/evidence/5a/`.
+- **Recovery `8808bc9` — landed green.** The 5a gate was RED on first inspection with every
+  deterministic gate passing, and two Definition of Done checkboxes were bound by no test that
+  could fail. `MVP_PLAN_V3.md:2212` was checked by cardinality alone at
+  `test/grid/assert-against-grid.ts:111`, so replacing `D6`'s 22 counterexamples with 22
+  dominant-option **successes** — inverse population, identical count — passed silently.
+  `MVP_PLAN_V3.md:2213` was read by no test at all; `test/grid/hand-built.ts:13` said so in its
+  own header. Both now bound by membership, mutation proof in
+  `.artifacts/evidence/5a/counterexample-membership-mutation.md`.
+- **`pnpm lanes wave 5a` reports `no outstanding work in phase 5a`.** That message means the
+  phase is finished, not that a command failed — it exits `1` either way, so read the message.
+
+**`p5.spike-deleted` is not a 5a deliverable.** `MVP_PLAN_V3.md:2236` puts "`spike/` is deleted"
+in the **5b** Definition of Done, and `.artifacts/plans/remaining-roadmap.md:369-374` assigns it
+to wave 4 — "here, not earlier. Until this packet it is the independent cross-check on 5a's
+numbers." `scripts/oracle/graph.json` gives the node `needs: ["p5.det-candidate"]`, which is why
+it looks available after wave 3; the dependency is satisfied but the phase is not. Do not delete
+`spike/` at the 5a gate.
+
+**A phase whose gates are green can still be RED.** `pnpm gates:full` exited 0, both
+`check:isolation` arms passed, `check:boundaries` found 0 violations over 55 modules and the
+engine suite was 191/191 — while two DoD checkboxes were unbound. Gates are one of GREEN's four
+sources, never GREEN itself.
+
+**The most transferable thing 5a has learned: two independent blind computations agreed, cell
+for cell, on a `counterexamples` column that was wrong.** Agreement proved they had not copied
+each other. It did not prove they were right, and only an adversarial pass with a different
+question caught it — `.artifacts/evidence/5a/fixture-semantics-review.md`. Treat cross-agent
+agreement as evidence of independence, never of correctness.
+
+Three rules bind every remaining 5a packet. The grids in `MVP_PLAN_V3.md` Phase 5 are the
+**only** legal source for an expected value — not `pnpm spike`, not `src/`, and `spike/` now
+disagrees with the grid on seven rows by design. Wave 2 landed **green**, because
+`pnpm lanes handoff` refuses `DONE` on any failing test, so expectations ship as data in
+`fixtures/**` with a comparator in `test/grid/**`. And the analyzer packets own `src/**` and
+`test/analyzer/**` and cannot edit either.
 
 Phase 1's carried debt (file-based handoffs OD-5, pre-commit hook, secret detection) runs
 **after 5a and before Phase 2** — human decision, 2026-08-16.

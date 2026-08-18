@@ -38,6 +38,7 @@ import {
   loadActivation,
   resolveGraph,
   resolveRoles,
+  type ProbeSpec,
   type Resolved,
 } from './oracle.ts';
 
@@ -647,7 +648,11 @@ export function unitsFor(ids: string[]): Unit[] {
 
 function git(args: string[]): { ok: boolean; out: string } {
   const r = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
-  return { ok: r.status === 0, out: (r.stdout ?? '').trim() };
+  // trimEnd, never trim. `git status --porcelain` is fixed-width: an unstaged modification
+  // reports as " M path", and a leading `trim()` eats that space, shifts every column by one
+  // and truncates the path — `platform/...` came back as `latform/...` and `pnpm lanes check`
+  // BLOCKed a lane that was inside its surface. No caller depends on leading whitespace.
+  return { ok: r.status === 0, out: (r.stdout ?? '').trimEnd() };
 }
 
 export function repoState(): RepoState {
@@ -1354,6 +1359,25 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 'probes': {
+      const report = lintProbes();
+      for (const line of report.failures) console.error(`FAIL  ${line}`);
+      for (const line of report.warnings) console.log(`WARN  ${line}`);
+      if (report.failures.length > 0) {
+        console.error(
+          `\ncheck:probes failed — ${report.failures.length} probe(s) can be satisfied by work` +
+            ' their own node does not own.\nA probe that passes reads exactly like work that is' +
+            ' done. Narrow the probe to a path only this\nnode can create.',
+        );
+        process.exit(1);
+      }
+      console.log(
+        `\ncheck:probes passed — ${report.checked} probe target(s) across ${report.nodes} node(s).` +
+          ' WARN hits are prompts to look, not verdicts.',
+      );
+      break;
+    }
+
     case 'selftest': {
       const mod = (await import('./lanes/selftest.ts')) as { run: () => Promise<number> };
       process.exit(await mod.run());
@@ -1369,6 +1393,7 @@ async function main(): Promise<void> {
           '  handoff <file> [--task id]                        lane handoff validation\n' +
           '  integrate <id...>                                 pre-integration gate + plan\n' +
           '  worktrees <id...>                                 isolation commands (prints only)\n' +
+          '  probes                                            probe hygiene: can a node lie\n' +
           '  selftest                                          workflow scenarios',
       );
       process.exit(1);
@@ -1377,6 +1402,118 @@ async function main(): Promise<void> {
 
 function slug(id: string): string {
   return id.replace(/[^a-zA-Z0-9]+/g, '-');
+}
+
+// ── probe hygiene ─────────────────────────────────────────────────────────────────────
+//
+// A probe records what is on disk; the oracle turns that into DONE. So a probe that another
+// node's deliverable can satisfy is a node that reports DONE before it starts, and the
+// failure is silent — a probe that passes reads exactly like work that is done.
+//
+// It happened. `p5.det-candidate` probed `grep minorityContextConcentration` over the whole
+// of `platform/analysis-engine`, and `p5.repeated-failed` probed `inputFingerprint` over the
+// same directory. Wave 1 graduated the types, `src/types.ts` and `src/tool-call.ts` carried
+// both strings, and from the moment wave 1 merged the oracle dropped both analyzer packets
+// out of `waves` entirely and `pnpm lanes wave 5` batched two 5b packets in their place.
+//
+// One rule closes it: **a probe may only look inside the surface its own node owns.** The
+// broken probes named `platform/analysis-engine`, which is not inside `src/**` or
+// `test/analyzer/**`, so they were free to match another packet's output.
+
+interface ProbeTarget {
+  /** Repository-relative path the probe reads. */
+  path: string;
+  /** How it is described in a failure line. */
+  label: string;
+  /** Evidence files answer to `.artifacts/**`, not to the node's write surface. */
+  evidence?: boolean;
+}
+
+/**
+ * The paths a probe reads. `script` names a package script and `cmd` is its own evidence, so
+ * neither has a surface to check.
+ */
+function probeTargets(p: ProbeSpec): ProbeTarget[] {
+  switch (p.kind) {
+    case 'path':
+    case 'absent':
+      return [{ path: p.path, label: `${p.kind} ${p.path}` }];
+    case 'grep': {
+      // `runProbe` joins file onto dir, so dir is only a search root when file is present.
+      // Checking both would fail every `dir: "."` probe that names a real file.
+      const target = p.file ? `${p.dir}/${p.file}` : p.dir;
+      return [{ path: normalise(target), label: `grep ${target}` }];
+    }
+    case 'manual':
+      return [{ path: p.evidence, label: `manual ${p.evidence}`, evidence: true }];
+    default:
+      return [];
+  }
+}
+
+/**
+ * A directory target is inside `dir/**` even though the glob wants something after the
+ * slash, so try the trailing-slash form too. Without this every directory probe reads as a
+ * violation of its own surface.
+ */
+function insideSurface(target: string, patterns: string[]): boolean {
+  return anyMatch(target, patterns) !== null || anyMatch(`${target}/`, patterns) !== null;
+}
+
+export function lintProbes(): {
+  failures: string[];
+  warnings: string[];
+  checked: number;
+  nodes: number;
+} {
+  const failures: string[] = [];
+  const warnings: string[] = [];
+  let checked = 0;
+
+  const nodes = [...resolveGraph().values()];
+  for (const n of nodes) {
+    const allowed = n.own?.allowed ?? [];
+    let strong = false;
+
+    for (const p of n.probes) {
+      if (p.kind === 'path' || p.kind === 'absent') strong = true;
+
+      for (const t of probeTargets(p)) {
+        checked += 1;
+
+        if (t.evidence) {
+          if (!insideSurface(normalise(t.path), ['.artifacts/**'])) {
+            failures.push(
+              `${n.id}  ${t.label}  evidence must live under .artifacts/, so a human can find it`,
+            );
+          }
+          continue;
+        }
+
+        if (allowed.length === 0) {
+          warnings.push(
+            `${n.id}  ${t.label}  node declares no own.allowed, so its probe surface cannot be checked`,
+          );
+          continue;
+        }
+
+        if (!insideSurface(normalise(t.path), allowed)) {
+          failures.push(
+            `${n.id}  ${t.label}  is outside its own surface [${allowed.join(', ')}]` +
+              ' — another node can satisfy it',
+          );
+        }
+      }
+    }
+
+    // Grep alone is satisfied by any file containing a string. It is the weakest evidence the
+    // probe vocabulary can express, and it is the shape both broken probes had.
+    if (n.probes.length > 0 && !strong) {
+      warnings.push(`${n.id}  has no path or absent probe — grep alone is weak evidence`);
+    }
+  }
+
+  return { failures, warnings, checked, nodes: nodes.length };
 }
 
 function handoffPath(u: Unit): string {

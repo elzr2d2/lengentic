@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-type ProbeSpec =
+export type ProbeSpec =
   | { kind: 'path'; path: string }
   | { kind: 'absent'; path: string }
   | { kind: 'script'; name: string }

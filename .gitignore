@@ -13,3 +13,7 @@ Thumbs.db
 # Build and process output. MVP_PLAN_V3.md §5: never imported by runtime code, and its
 # absence must not break any build. Holds agent handoffs and oracle evidence files.
 .artifacts/
+
+# Session-local agent state. `.claude/` is engineering infrastructure; a checkpoint recording
+# one session's recovery attempts is not a fact about the repository.
+.claude/*.local.md

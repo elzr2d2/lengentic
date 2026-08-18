@@ -469,7 +469,8 @@
       "changeClass": "contract",
       "validate": ["pnpm typecheck", "pnpm check:boundaries", "pnpm gates"],
       "own": {
-        "allowed": ["platform/shared/**"]
+        "allowed": ["platform/shared/**", "pnpm-lock.yaml"],
+        "$allowedComment": "pnpm-lock.yaml is here because this node CREATES a workspace package. platform/* is a workspace glob, so a new platform/shared/package.json adds an importers entry to the lockfile on the next pnpm install — unavoidable, and scripts/lanes.ts:742 counts it as a file outside ownership. It stays a sharedWriteSurface, so any batch touching it is still serialised by R9. This node is a solo wave, so nothing else can be writing it."
       },
       "phase": 2,
       "lane": "contract",
@@ -554,7 +555,7 @@
         {
           "kind": "grep",
           "dir": "platform/api/src",
-          "pattern": "v1/telemetry/events"
+          "pattern": "@Controller..telemetry/events.."
         }
       ]
     },
@@ -644,7 +645,7 @@
         {
           "kind": "grep",
           "dir": "platform/api/src",
-          "pattern": "v1/runs"
+          "pattern": "@Controller..runs.."
         }
       ]
     },
@@ -704,6 +705,7 @@
         {
           "kind": "grep",
           "dir": "playground",
+          "file": "index.ts",
           "pattern": "telemetry-sdk"
         }
       ],
@@ -724,7 +726,7 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "playground",
+          "dir": "playground/providers",
           "pattern": "MockProvider"
         }
       ],
@@ -745,7 +747,7 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "playground",
+          "dir": "playground/determinism",
           "pattern": "SeededClock|SeededIdGenerator"
         }
       ],
@@ -766,7 +768,7 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "playground",
+          "dir": "playground/agents",
           "pattern": "MockAgent"
         }
       ],
@@ -788,7 +790,7 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "playground",
+          "dir": "playground/strategy",
           "pattern": "evaluatorVersion"
         }
       ],
@@ -810,7 +812,7 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "playground",
+          "dir": "playground/workflows",
           "pattern": "execution_strategy"
         }
       ],
@@ -1026,12 +1028,20 @@
       "needs": ["p5.engine-pkg"],
       "probes": [
         {
+          "kind": "path",
+          "path": "platform/analysis-engine/fixtures/expectations.ts"
+        },
+        {
+          "kind": "path",
+          "path": "platform/analysis-engine/test/grid"
+        },
+        {
           "kind": "grep",
-          "dir": "platform/analysis-engine",
-          "pattern": "D10|D11|R4"
+          "dir": "platform/analysis-engine/fixtures",
+          "pattern": "D10|D11|R5"
         }
       ],
-      "note": "5a wave 2. Reuse spike/fixtures/decisions.json INPUT data verbatim for D1-D9; write every EXPECTED value from the `Gate expectation grid` in MVP_PLAN_V3 Phase 5, which is the ONLY legal source. Never read an expectation off `pnpm spike` output or off src/ - an expectation sourced from the implementation cannot fail when the implementation is wrong. D10, D11 and R1-R4 are new: build them from scratch, inputs included. D10 must fail G1 AND G2 together - it is the only fixture that can catch failedGates=[firstFailure]. D11 must have every outcome UNKNOWN, so G5 fails while G4 is N-A and dominantOptionAttestedSuccessRate is null, never 0. R4 must EMIT: R1-R3 all expect silence, so without R4 the analyzer passes with `return []`. R5 must EMIT too: same target, three failures, an UNRELATED tool's SUCCESS interleaved - it binds the scope of `consecutive` to the (runId, toolName, inputFingerprint) subsequence, which R1-R4 leave ambiguous. This packet LANDS GREEN and contains no analyzer assertions - see `The fixture wave lands green` in MVP_PLAN_V3 Phase 5 for why a red suite cannot be reported under lane-handoff. Deliver fixtures/inputs/**, fixtures/expectations.ts (the grid as typed data), and test/grid/** holding assertAgainstGrid() plus meta-tests proving that comparator catches a missing second failedGate, a dominantOptionAttestedSuccessRate of 0 where null is required, and an N-A counted as a pass. A comparator nobody mutation-checked is the green that lies.",
+      "note": "5a wave 2. Reuse spike/fixtures/decisions.json INPUT data verbatim for D1-D9; write every EXPECTED value from the `Gate expectation grid` in MVP_PLAN_V3 Phase 5, which is the ONLY legal source. Never read an expectation off `pnpm spike` output or off src/ - an expectation sourced from the implementation cannot fail when the implementation is wrong. D10, D11, R1-R5 and the fifteen B1-B5 boundary groups are new: build them from scratch, inputs included. D10 must fail G1 AND G2 together - it is the only fixture that can catch failedGates=[firstFailure]. D11 must have every outcome UNKNOWN, so G5 fails while G4 is N-A and dominantOptionAttestedSuccessRate is null, never 0. R4 must EMIT: R1-R3 all expect silence, so without R4 the analyzer passes with `return []`. R5 must EMIT too, and its timeline is PINNED: F(A), F(A), S(B), F(A) in ONE run - two failures against the target, then an unrelated tool's success, then the third failure. Written any other way it binds nothing, because a whole-timeline implementation emits on it too. It is what scopes `consecutive` to the (runId, toolName, inputFingerprint) subsequence, which R1-R4 leave ambiguous. This packet LANDS GREEN and contains no analyzer assertions - see `The fixture wave lands green` in MVP_PLAN_V3 Phase 5 for why a red suite cannot be reported under lane-handoff. Deliver fixtures/inputs/**, fixtures/expectations.ts (the grid as typed data), and test/grid/** holding assertAgainstGrid() plus meta-tests proving that comparator catches a missing second failedGate, a dominantOptionAttestedSuccessRate of 0 where null is required, and an N-A counted as a pass. A comparator nobody mutation-checked is the green that lies. PRE-DISPATCH AMENDMENT (council review 2026-08-17). WAVE WIRING, stated so no one has to guess it: this packet's green means the comparator's META-TESTS pass. Nothing this packet writes may import platform/analysis-engine/src/** - the analyzer does not exist yet - and assertAgainstGrid() is proven against hand-built objects only. Wave 3 imports the analyzer, the fixtures and the comparator and feeds `actual` through assertAgainstGrid(); imports are reads and are always legal across lanes. Nobody edits fixtures/** or test/grid/** after this packet merges, and the coordinator hashes both before and after each wave-3 packet with `pnpm hash:5a`. THIS PACKET ALSO OWNS THE BOUNDARY GROUPS. Build the fifteen B1-B5 groups of the `Threshold boundary rows` table in MVP_PLAN_V3 Phase 5 as inputs under fixtures/inputs/, and transcribe their expected values into fixtures/expectations.ts beside the D and R rows. p5.det-candidate consumes them and may not author any part of them - that is the whole ordering guarantee, applied to the one spec that pays for ADR 0004. FILE NAMING IS A CONTRACT, because the oracle probes it: fixtures/expectations.ts, a test/grid/ directory, and the ids D10, D11 and R5 present under fixtures/. TWO CORRECTIONS TO THE GRID YOU ARE TRANSCRIBING, both from the adversarial semantics review of 2026-08-17 - see .artifacts/evidence/5a/fixture-semantics-review.md. (A) The `counterexamples` column was corrected on seven of twelve rows: D1 1-to-3, D2 3-to-4, D3 3-to-7, D4 2-to-4, D6 2-to-22, D9 18-to-16, D11 2-to-0. The old column counted minority-selected rows; §20.1 counts dominant-option FAILURE rows plus minority-option SUCCESS rows, which is a different population. spike/aggregate.ts:133 and the spike fixtures' own `expect.counterexamples` values encode the OLD reading and now disagree with the grid on seven rows BY DESIGN - do not reconcile them, do not source from them. Transcribe the plan. (B) assertAgainstGrid() must compare dominancePercentage, outcomeCoverage and dominantOptionAttestedSuccessRate AS NUMBERS, not only the gate cells. No D fixture flips G4 between the blended and the dominant-specific success rate, so a comparator that checks only gate cells lets spike/aggregate.ts:100's blended rate graduate in wave 3 behind sixteen green fixtures. B3-lo is the group where the two readings land on opposite sides.",
       "own": {
         "allowed": ["platform/analysis-engine/fixtures/**", "platform/analysis-engine/test/grid/**"]
       },
@@ -1043,17 +1053,24 @@
       "id": "p5.det-candidate",
       "phase": 5,
       "lane": "engine",
-      "title": "Deterministic candidate analyzer — §18 aggregation, §19 gates, §21 output",
+      "title": "Deterministic candidate analyzer — §18 aggregation, §19 gates (§21 output is 5b)",
       "owner": "builder",
       "needs": ["p5.negative-fixtures"],
       "probes": [
         {
-          "kind": "grep",
-          "dir": "platform/analysis-engine",
-          "pattern": "minorityContextConcentration"
+          "kind": "path",
+          "path": "platform/analysis-engine/src/gates.ts"
+        },
+        {
+          "kind": "path",
+          "path": "platform/analysis-engine/src/aggregate.ts"
+        },
+        {
+          "kind": "path",
+          "path": "platform/analysis-engine/test/analyzer/threshold-binding.spec.ts"
         }
       ],
-      "note": "5a wave 3, first of two. Graduates spike/aggregate.ts and spike/gates.ts. Assert NOTHING here: feed each D fixture through assertAgainstGrid() from test/grid/**, which p5.negative-fixtures owns and this packet may not edit. fixtures/** and test/grid/** are outside allowed_paths on purpose - an analyzer packet that could relax its own expectations is the failure this split exists to prevent. Hash fixtures/expectations.ts and test/grid/** before and after this packet and compare; `pnpm lanes check` validates paths, not that a later packet weakened an earlier one's assertions. Also lands the threshold-binding spec that ADR docs/decisions/0004 substitutes for Tester at the gate: shift each of the five thresholds one unit in each direction and assert that every verdict that should flip does, and every verdict that should not stay put. A threshold no fixture binds is a threshold that can move silently. LANE COLLISION with p5.repeated-failed on src/** and test/analyzer/** - serialise. TWO KNOWN SPIKE BUGS ride along if spike/gates.ts and spike/aggregate.ts are copied verbatim, and both are already contradicted by the doc comments p5.engine-pkg landed in src/gate-contract.ts. spike/gates.ts:116 computes failedGates as `status !== 'PASS'`, which puts a NOT_APPLICABLE G4 into D11's failedGates when the grid says D11 fails G5 only - failedGates holds FAIL and nothing else. spike/aggregate.ts:100 computes the attested success rate group-wide when §19 evaluates G4 on the dominant option, which disagrees with the grid on D1, D3 and D6; the field is named dominantOptionAttestedSuccessRate for exactly that reason. D11 catches the first and D3 the second, through assertAgainstGrid(). Gate functions go in a NEW src/gates.ts; src/gate-contract.ts holds the vocabulary and never a function.",
+      "note": "5a wave 3, first of two. Graduates spike/aggregate.ts and spike/gates.ts. Assert NOTHING here: feed each D fixture through assertAgainstGrid() from test/grid/**, which p5.negative-fixtures owns and this packet may not edit. fixtures/** and test/grid/** are outside allowed_paths on purpose - an analyzer packet that could relax its own expectations is the failure this split exists to prevent. Hash fixtures/expectations.ts and test/grid/** before and after this packet and compare; `pnpm lanes check` validates paths, not that a later packet weakened an earlier one's assertions. Also lands the threshold-binding spec that ADR docs/decisions/0004 substitutes for Tester at the gate: shift each of the five thresholds one unit in each direction and assert that every verdict that should flip does, and every verdict that should not stay put. A threshold no fixture binds is a threshold that can move silently. LANE COLLISION with p5.repeated-failed on src/** and test/analyzer/** - serialise. TWO KNOWN SPIKE BUGS ride along if spike/gates.ts and spike/aggregate.ts are copied verbatim, and both are already contradicted by the doc comments p5.engine-pkg landed in src/gate-contract.ts. spike/gates.ts:116 computes failedGates as `status !== 'PASS'`, which puts a NOT_APPLICABLE G4 into D11's failedGates when the grid says D11 fails G5 only - failedGates holds FAIL and nothing else. spike/aggregate.ts:100 computes the attested success rate group-wide when §19 evaluates G4 on the dominant option, which disagrees with the grid on D1, D3 and D6; the field is named dominantOptionAttestedSuccessRate for exactly that reason. D11 catches the first and D3 the second, through assertAgainstGrid(). Gate functions go in a NEW src/gates.ts; src/gate-contract.ts holds the vocabulary and never a function. PRE-DISPATCH AMENDMENT (council review 2026-08-17) - THE THRESHOLD-BINDING SPEC AS DESCRIBED ABOVE CANNOT FAIL. Every D fixture sits far from every threshold: sample counts are 12, 24, 26, 40, 45, 50, 50, 50, 60 and never 30, distinct contexts are 2, 8, 8, 9, 10, 10, 11, 12, 15 and never 5, and no ratio is 0.90 or 0.80. Shifting a threshold one unit therefore flips nothing, and ADR 0004 would be paid with a spec that is green by construction. Four corrections bind this packet. (1) THRESHOLDS ARE INJECTABLE: every gate function and the analyzer entry take an AnalyzerConfig parameter defaulting to DEFAULT_CONFIG from src/config.ts, which p5.engine-pkg already landed frozen. No module-level threshold constant may appear anywhere in src/**. (2) THE SPEC USES THE BOUNDARY GROUPS, not the D fixtures: the fifteen B1-B5 groups of the `Threshold boundary rows` table in MVP_PLAN_V3 Phase 5, whose inputs and expected values p5.negative-fixtures lands in fixtures/** and this packet may not edit. (3) THE SHIFT ASSERTIONS follow the generic rule stated with that table - shift one threshold one unit in one direction, and every group on the far side of the move flips while every other group stays put. Both directions, all five thresholds. (4) THE ACCEPTANCE CRITERION IS THAT THE SPEC CAN FAIL, not that it landed. Mutation-check it: flip `>=` to `>` in each of the five gate comparisons in turn, confirm the spec goes red on each of the five, restore, and record all five results in .artifacts/evidence/5a/threshold-binding-mutation.md. A spec that stays green under a flipped operator has not paid for ADR 0004 and Tester runs at the gate. FILE NAMING IS A CONTRACT, because the oracle probes these paths: src/gates.ts, src/aggregate.ts, test/analyzer/threshold-binding.spec.ts. The previous probe on this packet grepped for `minorityContextConcentration`, which src/types.ts has satisfied since wave 1, so the oracle reported this packet DONE before it had started.",
       "own": {
         "allowed": ["platform/analysis-engine/src/**", "platform/analysis-engine/test/analyzer/**"]
       },
@@ -1070,12 +1087,15 @@
       "needs": ["p5.negative-fixtures"],
       "probes": [
         {
-          "kind": "grep",
-          "dir": "platform/analysis-engine",
-          "pattern": "inputFingerprint"
+          "kind": "path",
+          "path": "platform/analysis-engine/src/repeated-failed-action.ts"
+        },
+        {
+          "kind": "path",
+          "path": "platform/analysis-engine/test/analyzer/repeated-failed-action.spec.ts"
         }
       ],
-      "note": "5a wave 3, second of two. §20.2 conditions only - same toolName, same sanitized inputFingerprint, result FAILED or an Error, at least three CONSECUTIVE attempts, no success between them. Generic loop detection is out of scope and the recommendation text says `repeated failed action`, never `loop detection`. R1-R3 all expect silence, so `return []` passes three of the five fixtures. R4 proves the analyzer exists; R5 proves the streak is scoped to the (runId, toolName, inputFingerprint) subsequence rather than to the run's whole timeline - under the timeline reading an unrelated tool's success suppresses a real repeated failure, i.e. the finding depends on scheduling noise. A run where R4 or R5 does not emit is a FAILED handoff, not a DONE with a caveat. Assert nothing directly; feed fixtures through assertAgainstGrid() from test/grid/**, which this packet may not edit. LANE COLLISION with p5.det-candidate on src/** and test/analyzer/** - serialise, and re-hash fixtures/expectations.ts and test/grid/** afterwards.",
+      "note": "5a wave 3, second of two. §20.2 conditions only - same runId, same toolName, same sanitized inputFingerprint, result FAILED or an Error, at least three CONSECUTIVE attempts, no success between them. Generic loop detection is out of scope and the recommendation text says `repeated failed action`, never `loop detection`. R1-R3 all expect silence, so `return []` passes three of the five fixtures. R4 proves the analyzer exists; R5 proves the streak is scoped to the (runId, toolName, inputFingerprint) subsequence rather than to the run's whole timeline - under the timeline reading an unrelated tool's success suppresses a real repeated failure, i.e. the finding depends on scheduling noise. A run where R4 or R5 does not emit is a FAILED handoff, not a DONE with a caveat. Assert nothing directly; feed fixtures through assertAgainstGrid() from test/grid/**, which this packet may not edit. LANE COLLISION with p5.det-candidate on src/** and test/analyzer/** - serialise, and re-hash fixtures/expectations.ts and test/grid/** afterwards with `pnpm hash:5a`. The hash also covers test/analyzer/threshold-binding.spec.ts, which p5.det-candidate landed and this packet shares a path with: allowed_paths cannot protect it and gutting it would silently unpay ADR 0004. FILE NAMING IS A CONTRACT, because the oracle probes these paths: src/repeated-failed-action.ts and test/analyzer/repeated-failed-action.spec.ts. The previous probe on this packet grepped for `inputFingerprint`, which src/tool-call.ts has satisfied since wave 1, so the oracle reported this packet DONE before it had started. TWO CONDITIONS HAVE NO FIXTURE BEHIND THEM, and you are told so rather than left to discover it. (1) §20.2 fires when the result is FAILED **or** records an Error; every one of R1-R5 expresses failure through `outcome` alone, so an implementation that reads `outcome` and ignores errorType passes all five fixtures with half the condition unimplemented. The wave-2 Builder found this and it is deferred to 5b - see BACKLOG.md `No R fixture binds the \"or records an Error\" half of §20.2` - because absorbing it means reopening fixtures/** after the wave that owns it has merged and been hashed. (2) `Same runId` was added to §20.2 on 2026-08-17 and every R fixture has exactly one run, so an implementation that keys the streak on (toolName, inputFingerprint) alone also passes all five - and that is the cross-run false positive §20.2's opening paragraph says kills the product. Implement BOTH halves of (1) and the runId key of (2) anyway. The suite cannot catch you; the 5b gate will. The comparator would catch both if a fixture existed: proved adversarially, .artifacts/evidence/5a/q1-comparator-adversarial.md.",
       "own": {
         "allowed": ["platform/analysis-engine/src/**", "platform/analysis-engine/test/analyzer/**"]
       },
@@ -1150,7 +1170,8 @@
       "id": "p5.spike-deleted",
       "phase": 5,
       "lane": "engine",
-      "title": "spike/ deleted",
+      "title": "spike/ deleted — 5b wave 4, NOT 5a",
+      "note": "MVP_PLAN_V3.md:2236 puts this in the 5b Definition of Done, and .artifacts/plans/remaining-roadmap.md:369-374 assigns it to wave 4: 'here, not earlier. Until this packet it is the independent cross-check on 5a's numbers.' The needs edge below is satisfied after wave 3, which makes the node look available at the 5a gate. It is not. Deleting spike/ destroys the only on-disk record of the seven rows where the spike disagrees with the grid by design.",
       "owner": "builder",
       "needs": ["p5.det-candidate"],
       "probes": [
@@ -1235,9 +1256,8 @@
       "needs": ["p6.scenario3", "p3.seeded-clock"],
       "probes": [
         {
-          "kind": "grep",
-          "dir": "playground",
-          "pattern": "seed"
+          "kind": "manual",
+          "evidence": ".artifacts/evidence/6/seed-repro.md"
         }
       ],
       "own": {

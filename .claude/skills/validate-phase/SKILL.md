@@ -10,12 +10,13 @@ two diverge more often than anyone expects.
 
 ## Procedure
 
-1. **Read the phase's Definition of Done from `MVP_PLAN.md`.** Read it now, in full, from
-   the document. Not from memory and not from the task list.
+1. **Read the phase's Definition of Done from `MVP_PLAN_V3.md`.** Read it now, in full, from
+   the document. Not from memory and not from the task list. `pnpm kb show phase <n>` prints
+   that one section without spending a context window on the whole plan.
 
-2. **Check the corrections document** at
-   `docs/superpowers/specs/2026-08-14-lengentic-mvp-corrections-design.md` for deltas
-   affecting this phase — §14 has a per-phase summary. Corrections win over the plan.
+2. **There is no second document that wins on conflict.** v3 absorbed the corrections
+   document and retired it. A comment citing a section number may be citing v2, whose numbers
+   differ — resolve the citation against v3 before trusting it.
 
 3. **Take each checkbox one at a time and produce evidence.** For each, one of:
    - a command you ran and its real output, or
@@ -38,6 +39,13 @@ If any checkbox is not met, the phase is not complete. Say that plainly rather t
 qualifying it — a phase reported complete at 90% is how the next phase inherits a
 foundation nobody verified.
 
-## Then stop
+## Then hand the verdict back
 
-Do not begin the next phase. `MVP_PLAN.md` §8 and §96 both forbid it. Report and wait.
+Report the verdict. Do not advance on your own — this skill produces one input to GREEN, not
+GREEN itself. `CLAUDE.md` `## Plan discipline` defines GREEN as gates, this verdict, expected
+artifacts, and unresolved failure evidence all agreeing, and the caller checks all four.
+
+Under `autopilot`, the caller advances on GREEN without asking. Outside it, report and wait.
+
+Never soften a `NOT MET`. A phase reported complete at 90% is how the next phase inherits a
+foundation nobody verified.

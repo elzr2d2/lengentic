@@ -59,6 +59,13 @@ the count as "3 (1 attested)", or exclude `UNKNOWN` dissents from the concentrat
 calculation. Deliberately **not** decided in Phase 0 — it changes what the report claims,
 and the fixtures should drive that decision rather than an aesthetic preference.
 
+**Premise void 2026-08-17.** This entry assumed the Phase 0 reading, where a counterexample was
+any minority-selected row and could therefore be `UNKNOWN`. §20.1's reading — landed in the
+grid on 2026-08-17, see `.artifacts/evidence/5a/fixture-semantics-review.md` — counts only
+attested rows, so an unattested dissent is not a counterexample at all and there is nothing to
+weight. `D2` now carries four, all attested. What survives is the _concentration_ question:
+`minorityContextConcentration` is still a group-by over minority rows, `UNKNOWN` ones included.
+
 ### Concentration output is noisy for wide minorities
 
 **Source:** observed in fixture `D9`.
@@ -893,9 +900,17 @@ of Done item that already existed — `D10` for "names every failing gate", `D11
 "`attestedSuccessRate` is null, never 0". The four below are not required by any Definition of
 Done item and are deferred.
 
-### No fixture sits on a gate threshold
+### No fixture sits on a gate threshold — ABSORBED INTO 5a, 2026-08-17
 
 **Source:** both grid computations, independently.
+
+**Status: no longer deferred.** A council review found that ADR 0004's threshold-binding spec
+cannot fail against a corpus that never sits on a threshold, so the spec would have paid for
+skipping Tester with a green that could not go red. The fifteen `B1`–`B5` groups in
+`MVP_PLAN_V3.md` Phase 5, **Threshold boundary rows**, close this entry: `29/30/31` samples,
+`4/5/6` contexts, and `89.9/90.0/90.1%` on all three ratio gates. Provenance:
+`.artifacts/evidence/5a/threshold-boundary-rows.md`. The original entry is kept below because
+its reasoning is what the absorption rests on.
 
 Sample counts across the whole corpus are 12, 24, 26, 40, 45, 50, 50, 50, 60 — never 30.
 Distinct-context counts are 2, 8, 8, 9, 10, 10, 11, 12, 15 — never 5. No ratio equals 0.90 or
@@ -940,6 +955,12 @@ largest unkeyed row's `count` is at least `contexts.length`. It stops being imma
 future fixture whose dominant row is smaller than the context list — which the threshold
 fixtures above would be. **Trigger:** whichever lands first, the boundary fixtures or the
 format note.
+
+**The trigger has fired (2026-08-17).** The boundary groups land in `p5.negative-fixtures`.
+Their own cursor is pinned in the plan — round-robin over the pool, in order, from the pool's
+first entry — and every boundary group has more decisions than pool entries, so their
+`distinctContextKeyCount` is invariant again. What still has no written rule is the cursor over
+the run-length-encoded `D1`–`D9` rows that the same packet graduates. Settle it there.
 
 ### Two fixture `rationale` strings quote a blended success rate
 
@@ -1093,3 +1114,336 @@ reads this exact block.
   code that had been committed and never executed — see _Discovered during the first Docker
   execution_ below. Note for every future phase that adds a container surface: the first run
   is a review, not a smoke test.
+
+## Discovered at the 5a pre-dispatch step (2026-08-17)
+
+### The lane-ownership hook blocks scratchpad writes
+
+**Source:** boundary grid computation A, unprompted, mid-task.
+
+`.claude/hooks/check-lane-ownership.mjs` rejected a write to the session scratchpad — a path
+outside the repository entirely — as being outside lane `p5.engine-pkg`'s surface. The agent
+worked around it through Bash and disclosed the incident.
+
+Any agent that uses the scratchpad while a lane file is present hits this, and the workaround
+is "use a different tool", which is exactly the shape that gets a hook switched off. A path
+that resolves outside the repository is not the lane's business either way. **Trigger:** the
+Phase 1 debt wave, alongside the pre-commit hook work, since both touch `.claude/hooks/`.
+
+### An oracle probe can report a packet DONE before it starts
+
+**Source:** the 5a pre-dispatch review, confirmed against `pnpm oracle waves` output.
+
+`p5.det-candidate` probed `grep minorityContextConcentration` and `p5.repeated-failed` probed
+`grep inputFingerprint`, both over `platform/analysis-engine`. Wave 1 graduated the types, so
+`src/types.ts` and `src/tool-call.ts` satisfied both patterns the moment wave 1 merged. Both
+wave-3 packets read `DONE` in `pnpm oracle waves` while neither had been written, and
+`pnpm lanes wave 5` batched two 5b packets in their place.
+
+Fixed for those two by probing paths only a wave-3 packet can create. The class of defect is
+not fixed: a probe whose pattern an _earlier_ packet also satisfies is a false green, and
+nothing checks for it. **Wanted:** a selftest scenario in `pnpm check:lanes` or a lint over
+`graph.json` that flags any `grep` probe whose pattern already matches at the time its own
+blockers complete. **Trigger:** before the first Phase 2 parallel wave, which is the first time
+a wrong wave shape costs more than one dispatch.
+
+**Addressed 2026-08-17** by `pnpm check:probes` (`scripts/lanes.ts probes`), on a narrower and
+more checkable rule than the one wanted above: **a probe may only look inside the surface its
+own node owns.** No history simulation is needed — the two broken probes named
+`platform/analysis-engine`, which is not inside `src/**` or `test/analyzer/**`, and that is
+statically visible.
+
+It found eight more nodes with the same defect on its first run. Every Phase 3 node grepped the
+whole of `playground` while owning one directory inside it, so the first sibling to land would
+have marked the rest done — Phase 3 would have collapsed to one packet exactly as Phase 5
+collapsed to none. All eight are narrowed. Red-then-green proof, including the wave shape the
+lie produced: `.artifacts/evidence/5a/oracle-lint-proof.md`.
+
+Runs in CI beside `check:lanes` and `check:kb`, and out of `pnpm gates` for the same reason.
+What is **not** covered: a `grep` probe whose pattern is satisfied by an earlier deliverable
+inside the node's _own_ surface. `p5.engine-pkg` owns `platform/analysis-engine/**`, so a
+future node sharing that surface could still be probed loosely. The `WARN` on grep-only nodes
+is the hint; 35 nodes currently carry it.
+
+### `D10` fails two count gates, never a count gate and a ratio gate
+
+**Source:** the adversarial fixture-semantics review, 2026-08-17.
+
+`D10` exists to catch `failedGates = [firstFailure]`, and it does: 12 samples over 2 contexts
+fails `G1` and `G2` together. Both are integer-threshold gates. An implementation that
+evaluates every count gate but short-circuits inside the ratio gates `G3`/`G4`/`G5` passes
+`D10` unharmed, because `D10` has no failing ratio gate.
+
+Wanted: a row that fails one of each — 12 samples, 8 contexts, 60% dominance fails `G1` and
+`G3` — as a strictly stronger discriminator at the same cost. Deferred because the Definition
+of Done asks that every failing gate be named and `D10` already makes that falsifiable;
+swapping the shape now would rewrite a grid row that two independent computations agreed on.
+**Trigger:** 5b, when the analyzer goes behind `POST /v1/analysis/run` and the fixture corpus
+is revisited anyway.
+
+### Cited evidence lives in a git-ignored directory
+
+**Source:** the 5a pre-dispatch commit, 2026-08-17.
+
+`MVP_PLAN_V3.md` cites `.artifacts/evidence/5a/gate-expectation-grid.md`,
+`.artifacts/evidence/5a/threshold-boundary-rows.md` and
+`.artifacts/evidence/5a/fixture-semantics-review.md` as the provenance of the only legal source
+of expected values, and `docs/decisions/0004` is paid for by
+`.artifacts/evidence/5a/threshold-binding-mutation.md`. `.gitignore:15` excludes `.artifacts/`
+entirely, so a clean clone has the citations and none of the evidence.
+
+The convention is deliberate — `CLAUDE.md` says to store detail in `.artifacts/` and return
+paths — and it is right for run logs and scratch. It is wrong for the handful of documents the
+plan of record cites as provenance. **Wanted:** either a tracked `docs/evidence/` for cited
+provenance, or a `.gitignore` exception for `.artifacts/evidence/**`. **Trigger:** the 5a gate,
+where a human is asked to accept ADR 0004 as paid on the strength of a file that is not in the
+repository.
+
+## Discovered building the negative fixture suite (2026-08-17, 5a wave 2)
+
+### No `R` fixture binds the "or records an Error" half of §20.2
+
+**Source:** the wave-2 Builder, which could not file it — `BACKLOG.md` is outside its lane.
+
+§20.2 emits when the result is `FAILED` **or** records an Error. Every one of `R1`–`R5`
+expresses failure through `outcome` alone; none has an `outcome: SUCCESS` row carrying a
+non-null `errorType`. A wave-3 implementation that reads `outcome` and ignores errors passes
+all five, and half the condition graduates unexercised.
+
+This is the same shape as the `D10`/`D11` findings — a Definition of Done sentence with no
+fixture that can falsify it — but it differs in one way that decides the disposition: the 5a
+Definition of Done asks that `R4` and `R5` both emit, and it does **not** assert the error
+branch. Absorbing it would mean reopening `fixtures/**` after the wave that owns it has merged
+and been hashed, which is the one thing the wave split exists to prevent.
+
+So it is deferred, and the cost is named instead of hidden: `p5.repeated-failed` is briefed to
+implement both halves, and nothing in 5a can prove it did. **Trigger:** 5b, where the analyzer
+goes behind `POST /v1/analysis/run` and the fixture corpus is revisited anyway — or
+`p6.scenario2`, if that scenario produces a tool call that errors without a `FAILED` outcome,
+whichever comes first.
+
+## Discovered while auditing how decisions are recorded (2026-08-17)
+
+### `pnpm decide` — one generated index over the six decision stores
+
+**Source:** human instruction, 2026-08-17 — "stop asking trivial functional questions; build a
+decision workflow from our decision graph." Research and prior art:
+`.artifacts/reports/decision-system-research-2026-08-17.md`. Full plan:
+`.artifacts/plans/pnpm-decide-plan.md`.
+
+Decisions live in six places — `docs/decisions/`, `scripts/oracle/graph.json` `decisions[]`,
+`BACKLOG.md`, `CONTEXT.md`, `MVP_PLAN_V3.md`, and `.artifacts/telemetry/lanes.jsonl` — and
+nothing joins them. ADR 0004 overturns a `BACKLOG.md` entry in prose with no edge recording it.
+`OD-3` is `"answered": true` and does not say what was answered. Nothing answers "has this
+already been decided?" before a question is asked, which is how a settled question reaches a
+human as a fresh one.
+
+**Ruled out, so it is not re-litigated.** No vector database and no RAG. The corpus is ~100
+records under 50k tokens changing a few times a week; below roughly 500 documents retrieval is
+overhead, and an embedding is not a mechanical check. No new store, no service, no MCP server,
+no write path — the tool is generated and read-only.
+
+**Named risk.** A loose match that answers "already decided" silences a question that should
+have been asked. That is `check:probes` one layer up. `NOVEL` is the default below the
+confidence floor, hits carry `file:line` and never a paraphrase, and the negative fixtures are
+written before the positive path.
+
+**Blocked on** the gitignored-evidence question already filed above — an index that cites
+`.artifacts/evidence/**` would ship citations to files no clone contains.
+
+**Trigger:** after the 5a gate. It is not in any 5a Definition of Done, and building it now
+would expand the phase.
+
+**Built ahead of the trigger** — human instruction, 2026-08-17, overriding the trigger above:
+"it's not related to 5a development but I need it to make the development faster." Landed as
+`scripts/decide.ts` + `scripts/decide/selftest.ts` (`pnpm decide`, `pnpm check:decide`), 26
+scenarios, confidence-floor mutation-checked (`.artifacts/evidence/decide/floor-mutation.md`).
+Scope narrowed to sidestep the gitignored-evidence block rather than answer it: five of the
+six stores are tracked files, cited `file:line` against themselves; `cites-evidence` edges into
+`.artifacts/evidence/**` are not built, for the reason stated above. Telemetry
+(`.artifacts/telemetry/lanes.jsonl`) is read as a live, best-effort local signal, gitignored
+and all — its absence is a clean tree, not a parse failure. `pnpm decide build` regenerates
+on every invocation rather than committing an index, which was the open question in the plan's
+§9.2 and is now answered by construction. `pnpm gates` could not be fully re-verified green at
+land time — `platform/dashboard`'s `next build` reported "Another next build process is already
+running", pre-existing and unrelated to this change (nothing imports `scripts/decide.ts`);
+lint, typecheck, test, `check:boundaries` and `check:integrity` all ran green. Full plan:
+`.artifacts/plans/pnpm-decide-plan.md`.
+
+### The four-gate ladder is adopted now, without the tool
+
+**Source:** same instruction. The procedure half of the proposal needs no code.
+
+Before any question reaches the human: Gate 0 — a script decides it, so run it and cite the
+output. Gate 1 — already decided, so apply it and cite `file:line`. Gate 2 — blocks a
+deliverable, so escalate _framed_: cost asymmetry, named rejected alternatives, a
+recommendation, and the Detection that would show it wrong. Gate 3 — novel, costly and blocking
+nothing, so council or Architect, then an ADR. Otherwise state the assumption and act.
+
+Recorded here because it is a working agreement, not a deliverable, and because the failure it
+prevents already happened: the wave-3 dispatch was put to a human as "A or B?" when
+`pnpm lanes wave 5`, the council verdict and ADR 0002 had each already answered it. **Trigger:**
+none — in force from 2026-08-17. It becomes `pnpm decide`'s specification when that lands.
+
+## Discovered at the 5a validation gate (2026-08-18)
+
+### `MIN_CONSECUTIVE_FAILURES` is the one threshold with no injection path
+
+**Source:** independent threshold-injection audit at the 5a gate —
+`.artifacts/evidence/5a/threshold-injection-audit.md`. Found while verifying
+`MVP_PLAN_V3.md:2217-2218`, "every threshold is injected rather than read from a module-level
+constant".
+
+`src/repeated-failed-action.ts:33` holds `const MIN_CONSECUTIVE_FAILURES = 3`, and
+`detectRepeatedFailedActions` takes no config parameter. No test binds a different value, so
+unlike the five gate thresholds this one cannot be shifted to prove a comparison is really
+bound. The five gate comparators are clean: they read `config.*` only, `countGate`/`ratioGate`
+take `threshold` as a bare argument with no fallback, and nothing in `src/gates.ts` references
+`DEFAULT_CONFIG`.
+
+Deferred because the 5a checkbox is scoped by its own acceptance criterion at
+`MVP_PLAN_V3.md:2219-2222`, which names **the five gate comparisons** and nothing else, and
+because §20.2 states "three consecutive" as a fixed condition of the pattern rather than as a
+tunable. Under that reading `MIN_CONSECUTIVE_FAILURES` is part of the definition of a repeated
+failed action, not a threshold on one. **Assumption recorded, not escalated** — the competing
+reading of "every threshold" would widen 5a's scope, and the acceptance criterion is the tighter
+authority.
+
+Worth doing when a deployment wants to tune the streak floor, or when a `B6` boundary group is
+wanted for §20.2 the way `B1`-`B5` exist for the gates. Ruled out already: moving it into
+`AnalyzerConfig` now, because that changes a frozen 5a type after both analyzer packets landed
+and buys nothing the current DoD asks for.
+
+### Conflation detection is shape-identity, not provenance
+
+**Source:** Builder's own stated risk on bounded-recovery attempt 2, commit `5af3b87`, at the 5a
+gate. Evidence: `.artifacts/evidence/5a/minority-context-concentration-conflation-mutation.md`.
+
+`conflatedWithCounterexamplesProblems()` (`test/grid/assert-against-grid.ts:309`) catches a
+`minorityContextConcentration` conflated from `counterexamples` only when the two per-context
+groupings are **exactly identical**. A conflation that adds or drops one entry, or that merges a
+real minority-`FAILURE` row in alongside the wrong ones, would not trip it. That is enough to
+bind `MVP_PLAN_V3.md:2213` and enough to reproduce the validator's attack on `D7` and both `D8`
+rows, which is what the packet was opened for.
+
+Deferred because the general fix is provenance tracking on `ContextConcentration`, and that is a
+type change in `src/**` — outside the recovery packet's `allowed_paths`, and a frozen 5a type
+after both analyzer packets landed. Ruled out already: widening the packet's paths to do it
+anyway. Worth doing if 5b's rendering work reopens `ContextConcentration` for another reason.
+
+### `gates:full` on every commit costs minutes, dominated by isolation Arm 1
+
+**Source:** Builder's `follow_up_required` on `p1.debt.precommit`, commit `4876287`, Phase 1
+carried debt. Evidence: `.artifacts/evidence/1/precommit-hook-proof.md` and the four `.log`
+files beside it.
+
+`.husky/pre-commit` runs `pnpm gates:full`, so every commit pays `check:isolation` Arm 1 — a
+full `pnpm install` + build + test in a temp checkout with `playground/` removed. Coordinator
+re-measured it independently at `4876287`: `pnpm gates` exit 0 and `pnpm check:isolation` both
+arms PASS, but Arm 1 is the multi-minute term and it answers a question whose answer changes
+only when an import changes.
+
+Implemented as specified on purpose. `MVP_PLAN_V3.md` §7 names `gates:full` the pre-commit
+tier, and "do not redesign the approved MVP while implementing it" governs — the lane's job was
+to build the tier the plan names, not to pick a cheaper one.
+
+Worth doing when the cost is actually felt: cache the Arm 1 install, or gate Arm 1 on whether
+the diff touches an import or a manifest, leaving `pnpm gates` on every commit and the full arm
+on push and in CI. Ruled out already: substituting `pnpm gates` for `gates:full` in the hook,
+which silently retires the only enforcement of §4's isolation contract and reads as green.
+
+Not filed: the Builder's second candidate, a worry that `.husky/prepare.mjs`'s `existsSync('.git')`
+guard might miss git worktrees. It does not — in a worktree `.git` is a file, and `existsSync`
+is type-agnostic. No gap, so no entry.
+
+### The secret scanner cannot see a secret staged into the scanner itself
+
+**Source:** Coordinator review of `p1.debt.secrets`, commit `40f1643`, Phase 1 carried debt.
+Evidence: `.artifacts/evidence/1/p1.debt.secrets.md`, and `scripts/check-secrets.ts:78` —
+`scanLine()` returns early on `file === SELF_PATH`, and `scanTree()` skips the same path.
+
+`scripts/check-secrets.ts` holds seven credential-shaped pattern literals, so it would flag
+itself on every run. The lane solved that with an explicit path allowlist and said so in its own
+header: "the honest fix is 'don't scan the scanner', not 'weaken the pattern so it can't see its
+own definition'." That call is right, and the alternative — filing the patterns down until they
+no longer match themselves — would have degraded detection everywhere to fix one file.
+
+The residue is that **both** modes skip the file, so a real credential pasted into
+`scripts/check-secrets.ts` is invisible to staged-diff mode and to `--sweep` alike. One file in
+the repo is unscannable, and it is the file a future maintainer edits while thinking about
+secrets.
+
+Small, and not urgent: the surface is one file that only changes when the pattern set changes.
+Worth doing if the scanner grows past its current single file — scan self but skip only the
+lines between explicit `check-secrets:allow-start` / `-end` markers around the `PATTERNS` array,
+which shrinks the blind spot from a file to a block. Ruled out already: dropping the allowlist
+without a replacement, which makes every run red and trains everyone to `--no-verify`.
+
+### Secret detection is a curated pattern set, not entropy analysis
+
+**Source:** Builder's `follow_up_required` on `p1.debt.secrets`, commit `40f1643`, Phase 1
+carried debt.
+
+`scripts/check-secrets.ts` matches seven named vendor token formats — AWS access key ID, GitHub,
+Slack, Google API key, OpenAI/Anthropic-style `sk-`, PEM private-key block, JWT shape. Verified
+live: all seven fire on a planted fixture, and a full `--sweep` over every tracked file reports
+0 findings, so the set costs no false positives today.
+
+What it does not catch is a high-entropy string with no recognizable vendor prefix — a database
+URL with an inline password, a bare 40-character hex API token, a `.pem` pasted without its
+header. A first-draft generic Bearer-token pattern was cut during the build precisely because it
+false-positived on `scripts/lanes/selftest.ts:1116`, an existing structured-logging redaction
+fixture. That is the real trade-off, not an oversight.
+
+Deferred because the honest upgrade is `gitleaks` or `trufflehog`, which needs either an npm
+dependency (`package.json` and `pnpm-lock.yaml` are outside this packet's `allowed_paths`) or an
+external binary every developer and CI runner must install. Worth doing when telemetry payloads
+with credential-shaped fixtures start landing in Phase 2, which is the point OD-6 itself names as
+the reason this could not wait.
+
+## Discovered designing the cross-reference checker (2026-08-18)
+
+### Defect 1 — "validation gate" vs "human approval gate" — is meaning drift, and no string method reaches it
+
+**Source:** `docs/specs/2026-08-18-cross-reference-checker.md:59-74`, which classifies it out of
+scope and owes this entry (spec implementation step 8). Original observation: the 5a gate,
+2026-08-18.
+
+`CLAUDE.md` `## Plan discipline` calls a phase boundary a **validation gate**; the plan's phase
+prose reads in places as a **human approval gate**. Nine different phrasings across the two
+documents say versions of the same thing with different force. An agent that reads the wrong one
+either stops for permission it does not need, or advances past a boundary that wanted a human.
+
+It is filed here rather than built because **it defeats every method the checker has**. String
+matching cannot compare nine phrasings. Key comparison needs a key, and there is none — the two
+documents never name the same field. Generation cannot help either: neither side is derived from
+the other, so there is no single source to regenerate from. Any check written for it would pass
+whatever it was written against, which is the unbindable-checkbox failure the 5a recovery was
+for — `MVP_PLAN_V3.md:2213` was read by no test at all and still sat checked.
+
+Reopens when either document is rewritten such that one side becomes generated from the other, or
+when a third occurrence of the drift causes real wrong work. Until then the mitigation is the one
+already applied: the human answered it as trigger 6 at `34d9fc5`, and `CLAUDE.md` now states the
+answer once, in one place.
+
+### The product half — a decision graph inside LenGentic — is out of scope, and revival is trigger 2
+
+**Source:** human decision 2026-08-18, at the first question of the decision-graph design loop.
+Recorded in `docs/specs/2026-08-18-cross-reference-checker.md:15-23`.
+
+The original request had two halves. The dev-harness half became the cross-reference checker
+spec. The product half — a decision graph _inside_ the product, recording and linking the
+decisions LenGentic itself observes — was cut.
+
+The reason it was cut is that it is not new work: LenGentic already **is** a decision-observation
+system. §18 aggregates by group key, §19 gates, §20.1 collects counterexamples, §21 renders.
+Those sections are approved and unbuilt. Building a second decision-recording mechanism beside
+them, while the first one is still being implemented, is redesigning the approved MVP during
+implementation — forbidden by `CLAUDE.md` `## Plan discipline`.
+
+**Anyone reviving this reaches the human first.** It materially changes approved product scope,
+which is escalation trigger 2. It is not a packet a coordinator may dispatch on its own judgement,
+and the fact that it is written down here is not approval to build it.
+
+Reopens only after §18–§21 are built and shipped, and only if the shipped thing demonstrably
+fails to record something a user needed — which is evidence this entry does not have today.

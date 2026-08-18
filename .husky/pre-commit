@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+
+set -e
+
+# Secret detection before commit — OD-6 / MVP_PLAN_V3.md:1534. Runs before
+# gates:full (minutes) so a staged credential fails fast, without waiting on
+# the rest of the gate ladder.
+pnpm tsx scripts/check-secrets.ts
+pnpm gates:full
