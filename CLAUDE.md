@@ -274,10 +274,28 @@ engine, no database, no HTTP, no SDK, no UI. `5b` is waves 4–6 and stays after
   run serially because they collide on `src/**` and `test/analyzer/**`. Both handoffs report
   `DONE` with an empty `unverified` bucket; hash pairs and mutation proofs are in
   `.artifacts/evidence/5a/`.
-- **`pnpm lanes wave 5a` now reports `no outstanding work in phase 5a`.** The one 5a
-  deliverable left is `p5.spike-deleted`, and deleting `spike/` is destructive — it is the only
-  on-disk record of the seven rows where the spike disagrees with the grid by design. That is
-  escalation trigger 1, not a routine step.
+- **Recovery `8808bc9` — landed green.** The 5a gate was RED on first inspection with every
+  deterministic gate passing, and two Definition of Done checkboxes were bound by no test that
+  could fail. `MVP_PLAN_V3.md:2212` was checked by cardinality alone at
+  `test/grid/assert-against-grid.ts:111`, so replacing `D6`'s 22 counterexamples with 22
+  dominant-option **successes** — inverse population, identical count — passed silently.
+  `MVP_PLAN_V3.md:2213` was read by no test at all; `test/grid/hand-built.ts:13` said so in its
+  own header. Both now bound by membership, mutation proof in
+  `.artifacts/evidence/5a/counterexample-membership-mutation.md`.
+- **`pnpm lanes wave 5a` reports `no outstanding work in phase 5a`.** That message means the
+  phase is finished, not that a command failed — it exits `1` either way, so read the message.
+
+**`p5.spike-deleted` is not a 5a deliverable.** `MVP_PLAN_V3.md:2236` puts "`spike/` is deleted"
+in the **5b** Definition of Done, and `.artifacts/plans/remaining-roadmap.md:369-374` assigns it
+to wave 4 — "here, not earlier. Until this packet it is the independent cross-check on 5a's
+numbers." `scripts/oracle/graph.json` gives the node `needs: ["p5.det-candidate"]`, which is why
+it looks available after wave 3; the dependency is satisfied but the phase is not. Do not delete
+`spike/` at the 5a gate.
+
+**A phase whose gates are green can still be RED.** `pnpm gates:full` exited 0, both
+`check:isolation` arms passed, `check:boundaries` found 0 violations over 55 modules and the
+engine suite was 191/191 — while two DoD checkboxes were unbound. Gates are one of GREEN's four
+sources, never GREEN itself.
 
 **The most transferable thing 5a has learned: two independent blind computations agreed, cell
 for cell, on a `counterexamples` column that was wrong.** Agreement proved they had not copied

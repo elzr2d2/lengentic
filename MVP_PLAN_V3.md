@@ -1270,8 +1270,19 @@ One disposable spike plus seven implementation phases. No sub-phases.
 ```
 
 Every implementation phase carries at most **five major work packages**, each with a named
-owner, acceptance criteria, concrete validation commands, a Definition of Done, and a human
-approval gate. **Do not automatically start the next phase.**
+owner, acceptance criteria, concrete validation commands, a Definition of Done, and a
+**validation gate**. Amended 2026-08-18: a phase boundary is a validation gate, not an
+approval gate. GREEN — required gates, `validate-phase`, expected artifacts on disk, and no
+unexplained red, all four agreeing — advances the session into the next already-approved
+phase without asking. RED enters bounded recovery. Only the six escalation triggers in
+`CLAUDE.md` `## Plan discipline` reach the human, and they are checked before each dispatch
+and each advance rather than only after a failure.
+
+This amendment settles a conflict, it does not create new latitude. `CLAUDE.md` had already
+been changed to "a phase boundary is a validation gate, not an approval gate"; nine
+`Human approval gate` markers here still said the opposite, so one of the two documents was
+false. A human resolved it in favour of `CLAUDE.md` on 2026-08-18. The surviving marker at
+line 1438 is a record of a gate that was passed, not an instruction.
 
 ## Execution order amendment — 2026-08-16
 
@@ -1507,7 +1518,7 @@ already catches proves the suite works, not that the routing works.
 - [x] API reaches PostgreSQL.
 - [x] `docker compose up` succeeds.
 
-**Human approval gate.** Only then may Phase 2 begin.
+**Validation gate.** GREEN advances — `CLAUDE.md` `## Plan discipline`. The six escalation triggers still stop the session. Phase 2 begins once 5a and Phase 1 carried debt are GREEN.
 
 ## Carried debt — tracked, not blocking
 
@@ -1585,7 +1596,7 @@ cleanly. The Dashboard shows the resulting Run.
 - [ ] A malformed event in a batch rejects only itself.
 - [ ] No Playground code is involved.
 
-**Human approval gate.**
+**Validation gate.** GREEN advances — `CLAUDE.md` `## Plan discipline`. The six escalation triggers still stop the session.
 
 ---
 
@@ -1730,7 +1741,7 @@ Running `pnpm playground:happy-path` creates a complete Run visible in LenGentic
 - [ ] `rawContext` is redacted and size-capped per §15.
 - [ ] The Platform exposes no path that invokes or alters Playground execution.
 
-**Human approval gate.**
+**Validation gate.** GREEN advances — `CLAUDE.md` `## Plan discipline`. The six escalation triggers still stop the session.
 ---
 
 # PHASE 4 — RICH TELEMETRY + RUN EXPLORER
@@ -1784,7 +1795,7 @@ failures occurred, and whether any telemetry was lost or truncated.
 - [ ] An attestation for an unknown `decisionId` is accepted and stored.
 - [ ] Dropped-event count is visible in the Dashboard.
 
-**Human approval gate.**
+**Validation gate.** GREEN advances — `CLAUDE.md` `## Plan discipline`. The six escalation triggers still stop the session.
 
 ---
 
@@ -2221,7 +2232,7 @@ no `pnpm test:integration` — nothing in 5a touches a database.
       `.artifacts/evidence/5a/threshold-binding-mutation.md`. Without those five reds ADR 0004
       is unpaid and Tester runs at the gate.
 
-**Human approval gate. Phase 2 begins only after it.**
+**Validation gate.** GREEN advances — `CLAUDE.md` `## Plan discipline`. The six escalation triggers still stop the session. Phase 2 begins once this gate is GREEN.
 
 ## Definition of Done — 5b
 
@@ -2235,7 +2246,7 @@ Everything above still holds, plus:
       attested.
 - [ ] `spike/` is deleted.
 
-**Human approval gate.**
+**Validation gate.** GREEN advances — `CLAUDE.md` `## Plan discipline`. The six escalation triggers still stop the session.
 
 ---
 
@@ -2334,7 +2345,7 @@ Multi-provider comparison is Post-MVP.
 - [ ] Scenarios are seed-reproducible.
 - [ ] At least one optional real-provider Run can be inspected.
 
-**Human approval gate.**
+**Validation gate.** GREEN advances — `CLAUDE.md` `## Plan discipline`. The six escalation triggers still stop the session.
 
 ---
 
@@ -2422,7 +2433,7 @@ A Run appears in the Dashboard.
 - [ ] README complete, including the limits section.
 - [ ] Demo runs end to end without manual repair.
 
-**Human approval gate. This closes the MVP.**
+**Validation gate.** GREEN advances — `CLAUDE.md` `## Plan discipline`. The six escalation triggers still stop the session. This closes the MVP.
 
 ---
 
