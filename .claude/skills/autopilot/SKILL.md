@@ -106,6 +106,17 @@ Any one alone is a green that lies. `pnpm gates` passing while a `NOT MET` check
 RED. A lane reporting `DONE` with a `deferred` acceptance criterion is RED — deferred, skipped
 and unknown are all unverified.
 
+**A finding tagged to another node is not an unexplained red for this node.** `review-diff` §5
+tags every finding `this-node`, a `<node-id>`, or `plan`. Only the `this-node` count feeds the
+Failure-evidence row. A `<node-id>` finding is explained the moment it is filed to
+`BACKLOG.md` with its trigger — it is that node's acceptance criterion, and holding this gate
+open on it makes every gate inherit the whole downstream design.
+
+Review itself runs **per wave, over the wave's whole diff** — not per node.
+`.claude/rules/agent-activation.json` `reviewCadence` is the rule and `CONTEXT.md` states it:
+"Validate per wave; review per phase." The single exception is `change_class: contract`, which
+keeps its per-node review.
+
 Anything short of all four is RED. Go to §4.
 
 ## 4. Bounded recovery — two strategies, not two retries

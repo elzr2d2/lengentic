@@ -69,6 +69,16 @@
     ]
   },
 
+  "$reviewCadenceComment": "WHEN the `review` capability fires, which is a different question from whether it is required. CONTEXT.md states the rule — 'Validate per wave; review per phase' — and this file used to contradict it by making `review` a per-node step in four of five classes. Per-node review is what let three findings about `p2.sdk-core` and `p2.ingest-endpoint` hold `p2.shared-schema` RED: every gate inherited the whole downstream design. Cadence does not change the class chains above; a class that does not require `review` still does not get one.",
+  "reviewCadence": {
+    "default": "wave",
+    "$defaultComment": "One review per wave, over the wave's whole diff, after every lane in the wave has committed and `pnpm lanes check` has passed for each. Reviewing the wave together is also strictly more informative than reviewing its lanes apart — cross-lane coupling is only visible in the combined diff.",
+    "perNodeClasses": ["contract"],
+    "$perNodeClassesComment": "The one exception. A wire schema, shared interface or migration is inherited by everything downstream, so its mistakes are the expensive ones and are worth catching before the next lane builds on them. Everything else waits for the wave gate.",
+    "findingOwnership": "review-diff#5",
+    "$findingOwnershipComment": "Every finding is tagged `this-node`, a `<node-id>`, or `plan`. Only `this-node` blocks the gate; `<node-id>` findings are filed to BACKLOG.md with their trigger and become that node's acceptance criteria. This is what bounds a review — without it, per-wave review would simply move the unbounded gate one level up."
+  },
+
   "$responsibilitiesComment": "Disjoint by construction. Watchdog and Reviewer are the pair most often collapsed into one call, and collapsing them is how boundary violations get argued about as style. Watchdog answers 'is this allowed'; Reviewer answers 'is this good'. Neither answer substitutes for the other, and `pnpm lanes selftest` asserts the two sets stay disjoint.",
   "responsibilities": {
     "architect": ["architecture", "interface-design", "plan-ambiguity", "architecture-risk"],

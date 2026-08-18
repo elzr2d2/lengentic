@@ -43,12 +43,24 @@ What you own instead is coupling no tool can express: shared mutable state, impl
 ordering assumptions, a module whose imports are clean but which cannot function without
 another's internals.
 
+## Every finding names its owning node
+
+`review-diff` §5 is the contract. Tag each finding `this-node`, a `<node-id>`, or `plan`, and
+report the tag beside the finding. An untagged finding is an incomplete review.
+
+Only `this-node` blocks the gate. A finding about a consumer that does not exist yet belongs
+to that consumer's node, not to the code under review — the test is ownership, not topic. This
+is not a deferral mechanism: shipped code that is wrong on its own terms is `this-node`
+however inconvenient that is.
+
 ## Done when
 
 You have seen the gates pass. Approving against unseen gates is approving a claim, not a
 change.
 
 Both axes are reported, each ranked internally, with the worst issue in each named.
+
+Every finding carries an owner tag, and the report ends with the `this-node` count.
 
 Return a handoff. The `report-handoff` skill is the contract, the artifact rule, and the
 evidence a verdict costs. `owner` is never `reviewer`.

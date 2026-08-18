@@ -1447,3 +1447,32 @@ and the fact that it is written down here is not approval to build it.
 
 Reopens only after §18–§21 are built and shipped, and only if the shipped thing demonstrably
 fails to record something a user needed — which is evidence this entry does not have today.
+
+### `STALE` needs a read-model vocabulary, and it lands in `platform/shared/read/**` — not `schema/`
+
+**Source:** Reviewer finding SC1 against `p2.shared-schema` at `195af11`,
+`.artifacts/evidence/2/wire-contract-review-195af11.md`. **Trigger:** `p2.runs-api`, Phase 2 wave 3.
+
+`platform/shared/schema/status.ts:4` freezes `RUN_STATUSES = ['RUNNING','COMPLETED','FAILED']`.
+ADR 0005 decision 4 requires the API response to report `STALE`, computed server-side from
+`lastEventAt` and the existing `STALE_RUN_THRESHOLD_MS`. The stored enum cannot express it, and
+`MVP_PLAN_V3.md:592` is explicit that `STALE` is derived at read time and **never stored**.
+
+**Already decided — Architect's option B, previous session.** `p2.runs-api` widens its
+`allowed_paths` into `platform/shared/read/**` and puts the response vocabulary there. Deliberately
+**not** `schema/`, so `CLAUDE.md` `## Types` — "`platform/shared/schema/**` is the only wire
+contract" — stays literally true: `schema/` is the _ingestion_ contract, `read/` is the _response_
+model, and neither one leaks into the other.
+
+It is filed here because the decision existed only in a previous session's context. Reviewer could
+not tell "a later wave adds it" from "nobody noticed", and said so as its own unknown. That is the
+whole failure mode: an unwritten decision is indistinguishable from an oversight, and comes back as
+a finding every time someone reads the code fresh.
+
+**What `p2.runs-api` must not do:** declare a second run-status enum anywhere under
+`platform/shared/schema/**`, or mutate `RUN_STATUSES`. Either one makes the stored enum and the
+response enum the same object, and the next writer stores `STALE`.
+
+Closes when `p2.runs-api` ships the read model with a test that asserts a run whose `lastEventAt`
+is older than `STALE_RUN_THRESHOLD_MS` reports `STALE` while its stored `status` is still
+`RUNNING` — both halves asserted, because either alone passes on a wrong implementation.
