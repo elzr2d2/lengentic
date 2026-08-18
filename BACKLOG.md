@@ -1502,6 +1502,30 @@ detection as a read-time concern — one detector at read time covers self-paren
 case and true cycles as the general one, which ingestion-time checking never could. Do not
 re-add it at the wire without a plan citation.
 
+### Merge state is rehydrated across requests, and `completionFieldOrigins` must survive the round trip
+
+**Source:** Architect ruling on the `p2.merge-rules` completion-field repair, 2026-08-18 (lane
+`lane/p2.merge-rules`, HEAD `3d0696d`). **Trigger:** `p2.ingest-endpoint` and `p2.prisma-run-step`.
+
+Order-independent completion-field merging needs per-key provenance — which (`occurredAt`,
+`eventId`) last wrote each key — carried in `EntityMergeState` as `completionFieldOrigins`. Inside
+one `mergeEvent` fold chain that is free. Across requests it is not: if the ingest endpoint loads
+state from Postgres, merges, and writes back **without** persisting the origins map, every key's
+origin resets on the next batch and the last-arriving batch wins per key again — the exact ADR 0007
+§3 violation the repair removes, reintroduced one layer up and invisible to `merge-rules.spec.ts`,
+which never crosses a process boundary.
+
+Deferred because nothing in `MVP_PLAN_V3.md` §12–§13 or the wave-1 architect brief states how merge
+state is persisted or whether it is rehydrated at all, and inventing a column here would be
+`p2.prisma-run-step`'s decision made in the wrong packet. Ruled out already: storing provenance
+inside `completionFields` itself, which leaks merge bookkeeping into the value the persistence edge
+maps (`CLAUDE.md` `## Types`).
+
+Closes when the packet owning the ingest path either (a) persists the origins map alongside
+`completionFields`, with a test that merges two completion events carrying disjoint keys in two
+separate requests in both orders and asserts one final state, or (b) shows the state is never
+rehydrated — one in-process fold per entity per batch — and records that as why no column is needed.
+
 ### `REQUEST_ERROR_CODES` is half a contract — the endpoint must confirm the names and land the response shape
 
 **Source:** Reviewer finding SC-A on `c39f4d2` (per-node contract review, 2026-08-18).
@@ -1516,3 +1540,49 @@ citation (S4) while adding these three uncited names — both moves were directe
 this is a naming decision the endpoint packet must **confirm, not inherit**. Closes when the
 endpoint lands the 400-body schema in `platform/shared/schema/**` (it is wire contract) using
 these names or replacing them in the same commit, with a test binding code to body.
+
+### `merge-rules.ts` per-key provenance drops 12 `Object.prototype` key names, silently
+
+**Source:** Fresh Tester re-verification of the `p2.merge-rules` order-independence repair,
+commit `f9443a4`, 2026-08-18 (agent `aa6430a1ab6589c69`). **Trigger:** whichever packet gives a
+caller control over `metadata` key names flattened into `fields` — likely `p2.ingest-endpoint`.
+
+`nextOrigins`/`nextFields` in `mergeEvent`'s completion branch are plain `{}` objects. A key
+named `toString`, `constructor`, `hasOwnProperty`, `valueOf`, `__proto__` (12 total —
+`Object.prototype`'s own names) reads back the **inherited** prototype member instead of
+`undefined` when probed with `nextOrigins[key]`, so the provenance guard falls through to
+`compareCompletionOrder(incoming, <prototype member>)`, computes `NaN`, and `NaN > 0` is
+`false` — the key is silently dropped: no value written, no origin recorded, no error. The
+start branch (whole-record replace) is unaffected — same input keeps all 12 keys there.
+Regression introduced by the per-key-provenance repair itself: the prior shallow-spread
+implementation (`{...base.completionFields, ...completionEvent.fields}`) preserved these keys,
+since object spread uses `CreateDataProperty` and never consults the prototype chain.
+
+**Not reachable today.** Completion payload top-level keys are the closed set `{status,
+metadata}` (`platform/shared/schema/run-events.ts:17-20`, `step-events.ts:18-20`); a
+caller-controlled key name only reaches `fields` if some future packet flattens `metadata`'s
+contents into the top level before folding. No prototype pollution occurs — `{}.polluted`
+stays `undefined` in the tester's probe.
+
+Closes when whichever packet makes `fields` keys caller-controlled either fixes
+`nextOrigins`/`nextFields` to `Object.create(null)` (or gates lookups with
+`Object.hasOwn`) in the same commit, or the wire contract stays closed-set forever and this
+entry is closed as "never reachable" with that citation.
+
+### `merge-rules.ts` completion tiebreak resolves by eventId, not by time, on sub-millisecond ties
+
+**Source:** Same Tester pass as above, commit `f9443a4`. **Trigger:** any packet touching
+completion timestamp precision — likely `p2.ingest-endpoint` or a future `TimestampSchema`
+tightening. Pre-existing behavior, not introduced by this repair.
+
+`TimestampSchema = z.iso.datetime({ offset: true })` (`platform/shared/schema/primitives.ts:8`)
+accepts sub-millisecond precision (e.g. `.000100Z` vs `.000900Z`), but `compareCompletionOrder`
+compares via `Date.parse`, which truncates to whole milliseconds. Two schema-valid completions
+900µs apart truncate to an equal instant and fall to the eventId tiebreak — the genuinely
+**earlier** event can win if its `eventId` sorts greater. `MVP_PLAN_V3.md:505-506` says "last
+writer wins by `occurredAt`"; ADR 0007 scopes the eventId tiebreak to an "identical"
+`occurredAt`, which sub-ms-truncated-to-equal is not. Deterministic (both arrival orders agree,
+so ADR 0007's order-independence purity claim is not violated) — this is a §12 semantics gap,
+not an ADR 0007 violation. Closes when `TimestampSchema` is tightened to reject sub-millisecond
+precision, or the comparator is changed to compare full ISO strings before falling back to
+`Date.parse`, with a test at exactly this boundary.
