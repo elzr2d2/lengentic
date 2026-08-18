@@ -1330,3 +1330,28 @@ Deferred because the general fix is provenance tracking on `ContextConcentration
 type change in `src/**` — outside the recovery packet's `allowed_paths`, and a frozen 5a type
 after both analyzer packets landed. Ruled out already: widening the packet's paths to do it
 anyway. Worth doing if 5b's rendering work reopens `ContextConcentration` for another reason.
+
+### `gates:full` on every commit costs minutes, dominated by isolation Arm 1
+
+**Source:** Builder's `follow_up_required` on `p1.debt.precommit`, commit `4876287`, Phase 1
+carried debt. Evidence: `.artifacts/evidence/1/precommit-hook-proof.md` and the four `.log`
+files beside it.
+
+`.husky/pre-commit` runs `pnpm gates:full`, so every commit pays `check:isolation` Arm 1 — a
+full `pnpm install` + build + test in a temp checkout with `playground/` removed. Coordinator
+re-measured it independently at `4876287`: `pnpm gates` exit 0 and `pnpm check:isolation` both
+arms PASS, but Arm 1 is the multi-minute term and it answers a question whose answer changes
+only when an import changes.
+
+Implemented as specified on purpose. `MVP_PLAN_V3.md` §7 names `gates:full` the pre-commit
+tier, and "do not redesign the approved MVP while implementing it" governs — the lane's job was
+to build the tier the plan names, not to pick a cheaper one.
+
+Worth doing when the cost is actually felt: cache the Arm 1 install, or gate Arm 1 on whether
+the diff touches an import or a manifest, leaving `pnpm gates` on every commit and the full arm
+on push and in CI. Ruled out already: substituting `pnpm gates` for `gates:full` in the hook,
+which silently retires the only enforcement of §4's isolation contract and reads as green.
+
+Not filed: the Builder's second candidate, a worry that `.husky/prepare.mjs`'s `existsSync('.git')`
+guard might miss git worktrees. It does not — in a worktree `.git` is a file, and `existsSync`
+is type-agnostic. No gap, so no entry.
