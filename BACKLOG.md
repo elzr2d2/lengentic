@@ -1313,3 +1313,20 @@ Worth doing when a deployment wants to tune the streak floor, or when a `B6` bou
 wanted for §20.2 the way `B1`-`B5` exist for the gates. Ruled out already: moving it into
 `AnalyzerConfig` now, because that changes a frozen 5a type after both analyzer packets landed
 and buys nothing the current DoD asks for.
+
+### Conflation detection is shape-identity, not provenance
+
+**Source:** Builder's own stated risk on bounded-recovery attempt 2, commit `5af3b87`, at the 5a
+gate. Evidence: `.artifacts/evidence/5a/minority-context-concentration-conflation-mutation.md`.
+
+`conflatedWithCounterexamplesProblems()` (`test/grid/assert-against-grid.ts:309`) catches a
+`minorityContextConcentration` conflated from `counterexamples` only when the two per-context
+groupings are **exactly identical**. A conflation that adds or drops one entry, or that merges a
+real minority-`FAILURE` row in alongside the wrong ones, would not trip it. That is enough to
+bind `MVP_PLAN_V3.md:2213` and enough to reproduce the validator's attack on `D7` and both `D8`
+rows, which is what the packet was opened for.
+
+Deferred because the general fix is provenance tracking on `ContextConcentration`, and that is a
+type change in `src/**` — outside the recovery packet's `allowed_paths`, and a frozen 5a type
+after both analyzer packets landed. Ruled out already: widening the packet's paths to do it
+anyway. Worth doing if 5b's rendering work reopens `ContextConcentration` for another reason.
