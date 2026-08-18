@@ -1355,3 +1355,48 @@ which silently retires the only enforcement of §4's isolation contract and read
 Not filed: the Builder's second candidate, a worry that `.husky/prepare.mjs`'s `existsSync('.git')`
 guard might miss git worktrees. It does not — in a worktree `.git` is a file, and `existsSync`
 is type-agnostic. No gap, so no entry.
+
+### The secret scanner cannot see a secret staged into the scanner itself
+
+**Source:** Coordinator review of `p1.debt.secrets`, commit `40f1643`, Phase 1 carried debt.
+Evidence: `.artifacts/evidence/1/p1.debt.secrets.md`, and `scripts/check-secrets.ts:78` —
+`scanLine()` returns early on `file === SELF_PATH`, and `scanTree()` skips the same path.
+
+`scripts/check-secrets.ts` holds seven credential-shaped pattern literals, so it would flag
+itself on every run. The lane solved that with an explicit path allowlist and said so in its own
+header: "the honest fix is 'don't scan the scanner', not 'weaken the pattern so it can't see its
+own definition'." That call is right, and the alternative — filing the patterns down until they
+no longer match themselves — would have degraded detection everywhere to fix one file.
+
+The residue is that **both** modes skip the file, so a real credential pasted into
+`scripts/check-secrets.ts` is invisible to staged-diff mode and to `--sweep` alike. One file in
+the repo is unscannable, and it is the file a future maintainer edits while thinking about
+secrets.
+
+Small, and not urgent: the surface is one file that only changes when the pattern set changes.
+Worth doing if the scanner grows past its current single file — scan self but skip only the
+lines between explicit `check-secrets:allow-start` / `-end` markers around the `PATTERNS` array,
+which shrinks the blind spot from a file to a block. Ruled out already: dropping the allowlist
+without a replacement, which makes every run red and trains everyone to `--no-verify`.
+
+### Secret detection is a curated pattern set, not entropy analysis
+
+**Source:** Builder's `follow_up_required` on `p1.debt.secrets`, commit `40f1643`, Phase 1
+carried debt.
+
+`scripts/check-secrets.ts` matches seven named vendor token formats — AWS access key ID, GitHub,
+Slack, Google API key, OpenAI/Anthropic-style `sk-`, PEM private-key block, JWT shape. Verified
+live: all seven fire on a planted fixture, and a full `--sweep` over every tracked file reports
+0 findings, so the set costs no false positives today.
+
+What it does not catch is a high-entropy string with no recognizable vendor prefix — a database
+URL with an inline password, a bare 40-character hex API token, a `.pem` pasted without its
+header. A first-draft generic Bearer-token pattern was cut during the build precisely because it
+false-positived on `scripts/lanes/selftest.ts:1116`, an existing structured-logging redaction
+fixture. That is the real trade-off, not an oversight.
+
+Deferred because the honest upgrade is `gitleaks` or `trufflehog`, which needs either an npm
+dependency (`package.json` and `pnpm-lock.yaml` are outside this packet's `allowed_paths`) or an
+external binary every developer and CI runner must install. Worth doing when telemetry payloads
+with credential-shaped fixtures start landing in Phase 2, which is the point OD-6 itself names as
+the reason this could not wait.

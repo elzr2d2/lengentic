@@ -1534,6 +1534,21 @@ No pre-commit hook exists, though gates:full is documented as the pre-commit tie
 No secret detection exists, though it is required before commit-ready.
 ```
 
+**All three discharged 2026-08-18. The block above is the debt as it stood, kept for the
+record — it is no longer an outstanding claim.**
+
+| Debt                       | Landed           | Verified by                                                                                                                                                                                                                                                       |
+| -------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| File-based handoffs (OD-5) | already in place | `.artifacts/handoffs/*.json`, `pnpm lanes handoff`                                                                                                                                                                                                                |
+| Pre-commit hook (OD-6)     | `4876287`        | `core.hooksPath` → `.husky`, hook fires `gates:full`; a throwaway non-zero hook blocked a commit, proving git honours the path on this machine                                                                                                                    |
+| Secret detection (OD-6)    | `40f1643`        | `scripts/check-secrets.ts` run from `.husky/pre-commit` before `gates:full`. A planted AWS key + GitHub token were staged and `git commit` was **refused**, exit 1, nothing landed; all seven patterns fire; `--sweep` over every tracked file reports 0 findings |
+
+`12cc103` belongs to the same batch: `4876287` added a root `prepare` lifecycle script and both
+Dockerfiles installed before copying `.husky/`, so `docker compose up --build` died on
+`MODULE_NOT_FOUND` with zero containers created. Found by running the stack, not by reading the
+record above it — the reusable lesson is that a lane can pass every gate and still break the
+system, because the Dockerfiles are in no gate.
+
 ---
 
 # PHASE 2 — FIRST VERTICAL SLICE
