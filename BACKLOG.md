@@ -1284,3 +1284,32 @@ Recorded here because it is a working agreement, not a deliverable, and because 
 prevents already happened: the wave-3 dispatch was put to a human as "A or B?" when
 `pnpm lanes wave 5`, the council verdict and ADR 0002 had each already answered it. **Trigger:**
 none — in force from 2026-08-17. It becomes `pnpm decide`'s specification when that lands.
+
+## Discovered at the 5a validation gate (2026-08-18)
+
+### `MIN_CONSECUTIVE_FAILURES` is the one threshold with no injection path
+
+**Source:** independent threshold-injection audit at the 5a gate —
+`.artifacts/evidence/5a/threshold-injection-audit.md`. Found while verifying
+`MVP_PLAN_V3.md:2217-2218`, "every threshold is injected rather than read from a module-level
+constant".
+
+`src/repeated-failed-action.ts:33` holds `const MIN_CONSECUTIVE_FAILURES = 3`, and
+`detectRepeatedFailedActions` takes no config parameter. No test binds a different value, so
+unlike the five gate thresholds this one cannot be shifted to prove a comparison is really
+bound. The five gate comparators are clean: they read `config.*` only, `countGate`/`ratioGate`
+take `threshold` as a bare argument with no fallback, and nothing in `src/gates.ts` references
+`DEFAULT_CONFIG`.
+
+Deferred because the 5a checkbox is scoped by its own acceptance criterion at
+`MVP_PLAN_V3.md:2219-2222`, which names **the five gate comparisons** and nothing else, and
+because §20.2 states "three consecutive" as a fixed condition of the pattern rather than as a
+tunable. Under that reading `MIN_CONSECUTIVE_FAILURES` is part of the definition of a repeated
+failed action, not a threshold on one. **Assumption recorded, not escalated** — the competing
+reading of "every threshold" would widen 5a's scope, and the acceptance criterion is the tighter
+authority.
+
+Worth doing when a deployment wants to tune the streak floor, or when a `B6` boundary group is
+wanted for §20.2 the way `B1`-`B5` exist for the gates. Ruled out already: moving it into
+`AnalyzerConfig` now, because that changes a frozen 5a type after both analyzer packets landed
+and buys nothing the current DoD asks for.
