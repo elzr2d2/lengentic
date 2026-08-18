@@ -276,7 +276,68 @@ function minorityContextConcentrationProblems(
     }
   }
 
+  problems.push(...conflatedWithCounterexamplesProblems(aggregate));
+
   return problems;
+}
+
+/**
+ * Catches the conflation `minorityContextConcentrationProblems`'s total-and-share checks
+ * above cannot: `minorityContextConcentration` built by grouping `counterexamples` by
+ * `contextKey` instead of independently over every minority row (MVP_PLAN_V3.md:967-969,
+ * restated at :1913 — "do not compute one from the other").
+ *
+ * The total-cardinality check is silent whenever the two populations' totals coincide by
+ * construction, which they do on three real corpus rows (`D7`, both `D8` splits). This check
+ * does not need the totals to differ, because it does not compare totals at all. It compares
+ * SHAPE: `aggregate.counterexamples` is a MIX of dominant-option FAILUREs (verified by
+ * `counterexampleMembershipProblems`, above, to be genuinely non-minority — the dominant
+ * option is never a minority selection) and minority-option SUCCESSes. `minorityContextConcentration`'s
+ * declared population is every minority row, which by definition EXCLUDES the dominant
+ * option entirely. So if `minorityContextConcentration`, grouped by `contextKey`, is
+ * IDENTICAL — same keys, same counts, nothing more, nothing less — to `counterexamples`
+ * grouped by `contextKey`, while `counterexamples` contains at least one dominant-option
+ * FAILURE, the concentration cannot have been computed independently: a genuine minority
+ * population would need the true minority-FAILURE rows (invisible to `counterexamples`
+ * entirely) to happen to sum to exactly the dominant-option FAILURE count at that same
+ * context, for every context, coincidentally. That is the conflation, not a coincidence.
+ *
+ * Does not reach for `fixtures/inputs/**` and does not re-derive the correct minority
+ * population from raw data — it only compares two fields already present on the SAME actual
+ * object, one of which (`counterexamples`) is independently membership-checked above.
+ */
+function conflatedWithCounterexamplesProblems(aggregate: DecisionAggregate): string[] {
+  const dominantFailureCount = aggregate.counterexamples.filter(
+    (ce) => ce.selectedOption === aggregate.dominantOption && ce.outcome === 'FAILURE',
+  ).length;
+  if (dominantFailureCount === 0) return [];
+
+  const countByContext = (entries: readonly { contextKey: string }[]): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (const entry of entries) {
+      counts.set(entry.contextKey, (counts.get(entry.contextKey) ?? 0) + 1);
+    }
+    return counts;
+  };
+
+  const counterexampleShape = countByContext(aggregate.counterexamples);
+  const concentrationShape = new Map<string, number>(
+    aggregate.minorityContextConcentration.map((entry) => [entry.contextKey, entry.count]),
+  );
+
+  const identical =
+    counterexampleShape.size === concentrationShape.size &&
+    [...counterexampleShape].every(
+      ([contextKey, count]) => concentrationShape.get(contextKey) === count,
+    );
+
+  if (!identical) return [];
+  return [
+    `minorityContextConcentration: identical, context-for-context, to counterexamples ` +
+      `grouped by context — but counterexamples includes ${dominantFailureCount} dominant-` +
+      `option FAILURE(s), which are never minority rows. This is §18's population computed ` +
+      `FROM §20.1's population instead of independently (MVP_PLAN_V3.md:967-969).`,
+  ];
 }
 
 /**

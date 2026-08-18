@@ -31,10 +31,34 @@ import {
 
 const D1 = gridRow('D1');
 const D6 = gridRow('D6');
+const D7 = gridRow('D7');
+const D8a = gridRow('D8', 'a1b2c3d');
+const D8b = gridRow('D8', 'e4f5a6b');
 const D10 = gridRow('D10');
 const D11 = gridRow('D11');
 const B3lo = gridRow('B3-lo');
 const B4lo = gridRow('B4-lo');
+
+/**
+ * The exact conflation the recovery packet exists to catch: `minorityContextConcentration`
+ * built by grouping `counterexamples` by `contextKey` instead of independently over every
+ * minority row. `D7` and both `D8` splits are the rows where `minorityTotal` and
+ * `counterexampleCount` coincide, so the total-cardinality check alone cannot see this — it
+ * has to be caught on shape, not count.
+ */
+function conflateFromCounterexamples(group: AnalyzedGroup): AnalyzedGroup {
+  const counts = new Map<string, number>();
+  for (const ce of group.aggregate.counterexamples) {
+    counts.set(ce.contextKey, (counts.get(ce.contextKey) ?? 0) + 1);
+  }
+  const total = group.aggregate.counterexamples.length;
+  const conflated = [...counts].map(([contextKey, count]) => ({
+    contextKey,
+    count,
+    share: total > 0 ? count / total : 0,
+  }));
+  return withAggregate(group, { minorityContextConcentration: conflated });
+}
 
 interface Mutation {
   readonly name: string;
@@ -272,6 +296,43 @@ const MUTATIONS: readonly Mutation[] = [
         minorityContextConcentration: [{ contextKey: 'c1', count: 101, share: 1 }],
       }),
     message: /minorityContextConcentration: expected empty — dominance is 100%/,
+  },
+  {
+    // Attempt 1's surviving defect (recovery-verification.md): totals coincide at D7
+    // (minorityTotal 2, counterexampleCount 2), so the cardinality check alone accepts a
+    // concentration built from the wrong population. This must be caught on shape.
+    name: 'minorityContextConcentration conflated from counterexamples despite coincident totals (D7)',
+    row: D7,
+    mutate: conflateFromCounterexamples,
+    message: /minorityContextConcentration: identical, context-for-context, to counterexamples/,
+  },
+  {
+    name: 'minorityContextConcentration conflated from counterexamples despite coincident totals (D8 a1b2c3d)',
+    row: D8a,
+    mutate: conflateFromCounterexamples,
+    message: /minorityContextConcentration: identical, context-for-context, to counterexamples/,
+  },
+  {
+    name: 'minorityContextConcentration conflated from counterexamples despite coincident totals (D8 e4f5a6b)',
+    row: D8b,
+    mutate: conflateFromCounterexamples,
+    message: /minorityContextConcentration: identical, context-for-context, to counterexamples/,
+  },
+  {
+    // Attempt 1's own follow-up: the share-consistency check has never seen more than one
+    // bucket, because `hand-built.ts`'s conforming() only ever emits a single synthetic
+    // entry. Counts summing correctly does not imply the shares were computed correctly.
+    name: 'minorityContextConcentration share wrong in a multi-context split, counts still sum correctly (B3-lo)',
+    row: B3lo,
+    mutate: (group) =>
+      withAggregate(group, {
+        minorityContextConcentration: [
+          { contextKey: 'c_a', count: 60, share: 60 / 101 },
+          { contextKey: 'c_b', count: 41, share: 0.5 },
+        ],
+      }),
+    message:
+      /minorityContextConcentration: contextKey "c_b" share 50\.00% does not match its count\/total 40\.59%/,
   },
 ];
 
