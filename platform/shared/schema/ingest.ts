@@ -22,6 +22,32 @@ export const INGEST_ERROR_CODES = Object.freeze({
 
 export type IngestErrorCode = (typeof INGEST_ERROR_CODES)[keyof typeof INGEST_ERROR_CODES];
 
+// §12's rejection split, made machine-readable — before this it existed only as the
+// comment above INGEST_ERROR_CODES, so nothing a consumer (or a test) could assert
+// against separated "event-level" from "request-level". See ADR 0006 and
+// .artifacts/evidence/2/wire-contract-recovery.md S3.
+//
+// Event-level: the offending event is REJECTED; the rest of the batch still lands.
+// Derived from INGEST_ERROR_CODES itself, so this list cannot drift from the codes it
+// classifies — including EVENT_TOO_LARGE, which ADR 0006 is explicit is event-level, not
+// a request-level HTTP 400 (that implementation would discard the other 499 good events).
+export const EVENT_LEVEL_ERROR_CODES = Object.freeze(
+  Object.values(INGEST_ERROR_CODES),
+) as readonly IngestErrorCode[];
+
+// Request-level: §12:531-534 lists these three by prose only, with no wire constant
+// anywhere in the contract — `p2.ingest-endpoint` would otherwise have had to invent
+// values outside `platform/shared`, breaking "schema/** is the only wire contract"
+// (CLAUDE.md ## Types). The whole batch is rejected (HTTP 400); no event-level results
+// are produced.
+export const REQUEST_ERROR_CODES = Object.freeze({
+  BODY_TOO_LARGE: 'BODY_TOO_LARGE',
+  INVALID_JSON: 'INVALID_JSON',
+  INVALID_BATCH: 'INVALID_BATCH',
+} as const);
+
+export type RequestErrorCode = (typeof REQUEST_ERROR_CODES)[keyof typeof REQUEST_ERROR_CODES];
+
 // Batch shape only. Typing `events` as an array of validated events would make one
 // malformed event fail the whole array parse and reject the batch — the exact failure
 // §12 forbids ("A malformed event never rejects the whole batch") and Phase 2's DoD

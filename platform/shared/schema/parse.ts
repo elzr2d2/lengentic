@@ -1,15 +1,21 @@
-import { IdSchema, TimestampSchema } from './primitives';
-import { TELEMETRY_SCHEMA_VERSION } from './envelope';
-import { TELEMETRY_EVENT_TYPES, type TelemetryEventType } from './event-type';
-import { TELEMETRY_PAYLOAD_SCHEMAS, type TelemetryEvent } from './registry';
+import { IdSchema } from './primitives';
+import { TelemetryEventEnvelopeSchema } from './envelope';
+import { RunStartedPayloadSchema, RunCompletedPayloadSchema } from './run-events';
+import { StepStartedPayloadSchema, StepCompletedPayloadSchema } from './step-events';
+import type { TelemetryEvent, TelemetryEventOf } from './registry';
 import { INGEST_ERROR_CODES, type IngestErrorCode } from './ingest';
 
 export type TelemetryEventParseResult =
   | { readonly ok: true; readonly event: TelemetryEvent }
   | {
       readonly ok: false;
-      /** null when the event carried no readable eventId — see IngestResult.eventId sentinel. */
-      readonly eventId: string | null;
+      /**
+       * '' when the event carried no readable eventId — the IngestResult.eventId
+       * sentinel. IngestResultSchema.eventId is z.string() (ingest.ts), so the sentinel
+       * must itself be a string; it was never legal for it to be null. See
+       * .artifacts/evidence/2/wire-contract-recovery.md S6.
+       */
+      readonly eventId: string;
       readonly code: IngestErrorCode;
       readonly message: string;
     };
@@ -18,13 +24,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function readEventId(input: Record<string, unknown>): string | null {
+function readEventId(input: Record<string, unknown>): string {
   const parsed = IdSchema.safeParse(input['eventId']);
-  return parsed.success ? parsed.data : null;
+  return parsed.success ? parsed.data : '';
 }
 
 function reject(
-  eventId: string | null,
+  eventId: string,
   code: IngestErrorCode,
   message: string,
 ): TelemetryEventParseResult {
@@ -32,104 +38,147 @@ function reject(
 }
 
 /**
+ * Classifies a TelemetryEventEnvelopeSchema failure into the §12 bullet order:
+ * schemaVersion, then type, then the remaining required fields. This is the only place
+ * envelope validity is *decided* — parseTelemetryEvent never re-implements a field check
+ * TelemetryEventEnvelopeSchema already owns. See
+ * .artifacts/evidence/2/wire-contract-recovery.md S1.
+ */
+const REQUIRED_FIELD_KEYS = new Set(['eventId', 'entityId', 'runId', 'occurredAt']);
+
+function classifyEnvelopeFailure(
+  input: Record<string, unknown>,
+  issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }>,
+): { code: IngestErrorCode; message: string } {
+  if (issues.some((issue) => issue.path[0] === 'schemaVersion')) {
+    return {
+      code: INGEST_ERROR_CODES.UNSUPPORTED_SCHEMA_VERSION,
+      message: `unsupported schemaVersion: ${JSON.stringify(input['schemaVersion'])}`,
+    };
+  }
+  if (issues.some((issue) => issue.path[0] === 'type')) {
+    return {
+      code: INGEST_ERROR_CODES.UNKNOWN_EVENT_TYPE,
+      message: `unknown event type: ${JSON.stringify(input['type'])}`,
+    };
+  }
+  if (
+    issues.some(
+      (issue) => typeof issue.path[0] === 'string' && REQUIRED_FIELD_KEYS.has(issue.path[0]),
+    )
+  ) {
+    return {
+      code: INGEST_ERROR_CODES.MISSING_REQUIRED_FIELD,
+      message: 'missing or invalid eventId, entityId, runId or occurredAt',
+    };
+  }
+  // Only `payload` remains among TelemetryEventEnvelopeSchema's keys — z.unknown() still
+  // requires the key to be present (a value of `undefined` is fine; an absent key is not),
+  // so a wholly-missing payload surfaces here rather than in the per-type payload check
+  // below (§12 bullet 4, "payload fails its Zod schema").
+  return {
+    code: INGEST_ERROR_CODES.INVALID_PAYLOAD,
+    message: 'payload failed validation',
+  };
+}
+
+/**
  * The §12 rejection classifier — the one entry point that answers "is this event valid".
- * Check order is §12's bullet order, verbatim: an event wrong in two ways reports the
- * earlier bullet. This is the only non-arbitrary order available.
+ * Envelope validity is decided by TelemetryEventEnvelopeSchema itself, not a hand-rolled
+ * equivalent (see .artifacts/evidence/2/wire-contract-recovery.md S1). Check order is
+ * §12's bullet order, verbatim: an event wrong in two ways reports the earlier bullet.
+ * This is the only non-arbitrary order available.
  */
 export function parseTelemetryEvent(input: unknown): TelemetryEventParseResult {
   // Step 0: not a plain object folds into MISSING_REQUIRED_FIELD — it is literally
   // missing all four required fields. No separate MALFORMED_EVENT code; §12 never
   // authorises one and the remedy is identical.
   if (!isPlainObject(input)) {
-    return reject(null, INGEST_ERROR_CODES.MISSING_REQUIRED_FIELD, 'event must be a JSON object');
+    return reject('', INGEST_ERROR_CODES.MISSING_REQUIRED_FIELD, 'event must be a JSON object');
   }
 
   const eventId = readEventId(input);
 
-  // Step 1: schemaVersion.
-  if (input['schemaVersion'] !== TELEMETRY_SCHEMA_VERSION) {
-    return reject(
-      eventId,
-      INGEST_ERROR_CODES.UNSUPPORTED_SCHEMA_VERSION,
-      `unsupported schemaVersion: ${JSON.stringify(input['schemaVersion'])}`,
-    );
+  // Steps 1-3: schemaVersion, type, and the remaining required identity/time fields —
+  // all decided by the declared envelope schema. Adding a required field to
+  // TelemetryEventEnvelopeSchema changes what `envelope` below carries; every switch
+  // case constructs its event by naming fields explicitly (never a blanket spread), so
+  // a field the schema now requires but a case omits is a compile error here, not a
+  // silently-passed `as` cast. See .artifacts/evidence/2/wire-contract-recovery.md S1.
+  const envelopeResult = TelemetryEventEnvelopeSchema.safeParse(input);
+  if (!envelopeResult.success) {
+    const { code, message } = classifyEnvelopeFailure(input, envelopeResult.error.issues);
+    return reject(eventId, code, message);
   }
+  const envelope = envelopeResult.data;
 
-  // Step 2: type.
-  const type = input['type'];
-  if (typeof type !== 'string' || !TELEMETRY_EVENT_TYPES.includes(type as TelemetryEventType)) {
-    return reject(
-      eventId,
-      INGEST_ERROR_CODES.UNKNOWN_EVENT_TYPE,
-      `unknown event type: ${JSON.stringify(type)}`,
-    );
-  }
-  const eventType = type as TelemetryEventType;
-
-  // Step 3: required identity/time fields.
-  const idResult = IdSchema.safeParse(input['eventId']);
-  if (!idResult.success) {
-    return reject(eventId, INGEST_ERROR_CODES.MISSING_REQUIRED_FIELD, 'missing or invalid eventId');
-  }
-  const entityIdResult = IdSchema.safeParse(input['entityId']);
-  if (!entityIdResult.success) {
-    return reject(
-      eventId,
-      INGEST_ERROR_CODES.MISSING_REQUIRED_FIELD,
-      'missing or invalid entityId',
-    );
-  }
-  const runIdResult = IdSchema.safeParse(input['runId']);
-  if (!runIdResult.success) {
-    return reject(eventId, INGEST_ERROR_CODES.MISSING_REQUIRED_FIELD, 'missing or invalid runId');
-  }
-  const occurredAtResult = TimestampSchema.safeParse(input['occurredAt']);
-  if (!occurredAtResult.success) {
-    return reject(
-      eventId,
-      INGEST_ERROR_CODES.MISSING_REQUIRED_FIELD,
-      'missing or invalid occurredAt',
-    );
-  }
-
-  // Step 4: payload against its registered schema.
-  const payloadSchema = TELEMETRY_PAYLOAD_SCHEMAS[eventType];
-  const payloadResult = payloadSchema.safeParse(input['payload']);
-  if (!payloadResult.success) {
-    return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
-  }
-
-  // Step 5: envelope/type consistency, type-specific.
-  if (
-    (eventType === 'run.started' || eventType === 'run.completed') &&
-    entityIdResult.data !== runIdResult.data
-  ) {
-    return reject(
-      eventId,
-      INGEST_ERROR_CODES.INVALID_PAYLOAD,
-      'run event entityId must equal runId',
-    );
-  }
-  if (eventType === 'step.started') {
-    const startedPayload = payloadResult.data as { parentStepId: string | null };
-    if (startedPayload.parentStepId === entityIdResult.data) {
-      return reject(
-        eventId,
-        INGEST_ERROR_CODES.INVALID_PAYLOAD,
-        'step parentStepId must not equal entityId',
-      );
+  // Step 4: payload against its registered schema, per event type. Cross-field rules
+  // over entityId/runId/parentStepId that used to live here were dropped — neither §12
+  // nor §13 authorises them (see .artifacts/evidence/2/wire-contract-recovery.md S4).
+  switch (envelope.type) {
+    case 'run.started': {
+      const payloadResult = RunStartedPayloadSchema.safeParse(envelope.payload);
+      if (!payloadResult.success) {
+        return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
+      }
+      const event: TelemetryEventOf<'run.started'> = {
+        eventId: envelope.eventId,
+        schemaVersion: envelope.schemaVersion,
+        type: 'run.started',
+        entityId: envelope.entityId,
+        runId: envelope.runId,
+        occurredAt: envelope.occurredAt,
+        payload: payloadResult.data,
+      };
+      return { ok: true, event };
+    }
+    case 'run.completed': {
+      const payloadResult = RunCompletedPayloadSchema.safeParse(envelope.payload);
+      if (!payloadResult.success) {
+        return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
+      }
+      const event: TelemetryEventOf<'run.completed'> = {
+        eventId: envelope.eventId,
+        schemaVersion: envelope.schemaVersion,
+        type: 'run.completed',
+        entityId: envelope.entityId,
+        runId: envelope.runId,
+        occurredAt: envelope.occurredAt,
+        payload: payloadResult.data,
+      };
+      return { ok: true, event };
+    }
+    case 'step.started': {
+      const payloadResult = StepStartedPayloadSchema.safeParse(envelope.payload);
+      if (!payloadResult.success) {
+        return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
+      }
+      const event: TelemetryEventOf<'step.started'> = {
+        eventId: envelope.eventId,
+        schemaVersion: envelope.schemaVersion,
+        type: 'step.started',
+        entityId: envelope.entityId,
+        runId: envelope.runId,
+        occurredAt: envelope.occurredAt,
+        payload: payloadResult.data,
+      };
+      return { ok: true, event };
+    }
+    case 'step.completed': {
+      const payloadResult = StepCompletedPayloadSchema.safeParse(envelope.payload);
+      if (!payloadResult.success) {
+        return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
+      }
+      const event: TelemetryEventOf<'step.completed'> = {
+        eventId: envelope.eventId,
+        schemaVersion: envelope.schemaVersion,
+        type: 'step.completed',
+        entityId: envelope.entityId,
+        runId: envelope.runId,
+        occurredAt: envelope.occurredAt,
+        payload: payloadResult.data,
+      };
+      return { ok: true, event };
     }
   }
-
-  const event = {
-    eventId: idResult.data,
-    schemaVersion: TELEMETRY_SCHEMA_VERSION,
-    type: eventType,
-    entityId: entityIdResult.data,
-    runId: runIdResult.data,
-    occurredAt: occurredAtResult.data,
-    payload: payloadResult.data,
-  } as TelemetryEvent;
-
-  return { ok: true, event };
 }

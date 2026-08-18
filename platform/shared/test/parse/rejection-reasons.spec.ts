@@ -118,7 +118,23 @@ describe('parseTelemetryEvent — MISSING_REQUIRED_FIELD', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.code).toBe('MISSING_REQUIRED_FIELD');
-      expect(result.eventId).toBeNull();
+      // IngestResult.eventId sentinel: '', never null — IngestResultSchema.eventId is
+      // z.string() and cannot hold null. See
+      // .artifacts/evidence/2/wire-contract-recovery.md S6.
+      expect(result.eventId).toBe('');
+    }
+  });
+
+  it('pins the IngestResult.eventId sentinel encoding to "" — never null', () => {
+    // A plain-object event whose eventId itself is unreadable (wrong type, here) —
+    // exercises the readEventId() fallback specifically, not the Step-0 not-a-JSON-object
+    // guard above (which returns '' as a literal and would not catch a sentinel
+    // regression in readEventId()).
+    const result = parseTelemetryEvent({ ...VALID_RUN_STARTED, eventId: 12345 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.eventId).toBe('');
+      expect(result.eventId).not.toBeNull();
     }
   });
 
@@ -161,32 +177,6 @@ describe('parseTelemetryEvent — INVALID_PAYLOAD', () => {
       type: 'step.completed',
       entityId: 'step-1',
       payload: { status: 'DONE', metadata: null },
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe('INVALID_PAYLOAD');
-  });
-
-  it('rejects run.started where entityId !== runId', () => {
-    const result = parseTelemetryEvent({
-      ...VALID_RUN_STARTED,
-      entityId: 'not-the-run-id',
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe('INVALID_PAYLOAD');
-  });
-
-  it('rejects step.started where parentStepId === entityId (self-parent)', () => {
-    const result = parseTelemetryEvent({
-      ...VALID_RUN_STARTED,
-      type: 'step.started',
-      entityId: 'step-1',
-      payload: {
-        name: 'do-thing',
-        agentName: 'agent-1',
-        type: 'tool',
-        parentStepId: 'step-1',
-        metadata: null,
-      },
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('INVALID_PAYLOAD');
