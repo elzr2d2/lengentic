@@ -1706,3 +1706,132 @@ on this packet, worked around both times with `git checkout --` before committin
 `git rm --cached platform/dashboard/tsconfig.tsbuildinfo` plus a `.gitignore` line for
 `*.tsbuildinfo` under `platform/dashboard/`. Outside every current Phase 2 lane's `allowed_paths`
 (root `.gitignore`), so no lane has fixed it inline.
+
+## Discovered during the .claude infrastructure audit (2026-08-19)
+
+The audit report with `file:line` citations is `.artifacts/audits/2026-08-19-claude-infra-audit.md`.
+Items 1–6 of its §7 ranked fix list were implemented on branch `harness-audit-fixes`
+(commits `e52bb2e`–`77f42a1` plus the fixes-1/2/5 commit); everything below was deliberately
+deferred. None of it is required by the Phase 2 Definition of Done.
+
+### Verify that claimed artifact paths exist
+
+**Source:** audit §7 item 7 (§3 item 8). **Trigger:** the next packet that touches
+`scripts/lanes.ts` evidence checks, or a standalone harness fix.
+
+`artifact` paths in evidence entries and the top-level `artifacts` array are never checked to
+exist — "the output is at this path" is an unchecked claim, and `report-handoff` builds its
+detail-in-artifact discipline on it. `checkEvidence` already has the handoff in hand; an
+`existsSync` per cited path closes it. Deferred because it needs a decision about worktree-relative
+vs repo-relative paths for lanes running in worktrees.
+
+### Distinct exit code when `pnpm lanes wave` means "phase finished"
+
+**Source:** audit §7 item 8 (§5 item 3); `scripts/lanes.ts:1156`. **Trigger:** the next
+phase-gate session that scripts around `pnpm lanes wave`.
+
+"No outstanding work in phase N" and "failed" both exit 1; CLAUDE.md already carries a warning
+paragraph because this burned a session. Give "finished" exit 0 with its message, or a dedicated
+code. One-line fix plus a selftest scenario.
+
+### In-repo, model-invocable charter skill for autopilot §0
+
+**Source:** audit §7 item 9 (§4 item 2). **Trigger:** the next attempt to start autopilot
+unattended, or on a fresh clone.
+
+`autopilot` step 0 requires `grill-with-docs`, which is user-global and sets
+`disable-model-invocation: true`, so autopilot cannot start unattended and a fresh clone has no
+charter step at all. Move a minimal charter-capture skill into `.claude/skills/`.
+
+### `frame-phase` stops unconditionally; should stop only on trigger 3
+
+**Source:** audit §7 item 10 (§4 item 1, §5 item 9); `frame-phase:81-82`. **Trigger:** the next
+phase framing (Phase 3 start).
+
+The skill says "stop and confirm with the user" per phase, contradicting CLAUDE.md's "a phase
+boundary is a validation gate, not an approval gate". Make it stop only when the decision
+frontier is non-empty (escalation trigger 3), and wire it to `pnpm decide`, which no skill
+currently calls.
+
+### `pnpm oracle green <phase>` aggregating GREEN's four sources
+
+**Source:** audit §7 item 11 (§3 item 9). **Trigger:** the next phase validation gate.
+
+Three of GREEN's four sources are prose only (`autopilot:98-104`); gates alone are executable.
+The oracle already has `path`/`absent` probe kinds — a command that aggregates gates, probes,
+handoff verdicts and open findings into one GREEN/RED would make `validate-phase` mechanical.
+
+### Structured finding metadata in `handoff.schema.json`
+
+**Source:** audit §7 item 12 (§3 items 10, 11). **Trigger:** the next change to
+`.claude/rules/handoff.schema.json`.
+
+Reviewer's `this-node` tags and count, watchdog's per-hit confirmed/unconfirmed marker and
+reflector's seven mandatory fields exist only in prose; `classification` is free text while a
+4-value enum already exists at `log-event.schema.json:74-77`. Add `classification`, `nodeId`
+and a finding-owner tag so the wave gate can read them mechanically.
+
+### Script-written autopilot checkpoint and machine-readable mode flag
+
+**Source:** audit §7 item 13 (§4 items 3, 4). **Trigger:** the next autopilot run.
+
+Nothing writes `.claude/autopilot.local.md` but model discipline, and it is the sole authority
+for recovery-attempt history. "Under autopilot" has no machine signal (`validate-phase:48`
+branches on a mode no script can read). `pnpm autopilot checkpoint` plus a flag file closes both.
+
+### Doc rot: retired-plan citations and contradictions
+
+**Source:** audit §7 item 14 and the whole §6 list. **Trigger:** standalone mechanical sweep,
+or whichever packet next edits each file.
+
+The full §6 list, verbatim targets: `update-backlog:8,18,34` cites v2 and §94 (v3 is §27);
+`run-quality-gates:8,29` cites v2 §29/§31; `update-backlog:28-33` misdescribes BACKLOG.md's
+structure; `validate-phase:45-46` mis-cites where GREEN's four sources are defined;
+`report-handoff`'s per-role table omits validator while `validator.md:52` points at it;
+`dispatch-lanes:114-116` says gates:full once per batch but `.husky/pre-commit` runs it per
+commit; `review-diff:3` says per-commit review while `agent-activation.json` and
+`CONTEXT.md:131` say per-wave; `agent-activation.json:82` cites `pnpm lanes selftest` (alias is
+`check:lanes`); the "disjoint by construction" comment is false and already logged at
+`BACKLOG.md:1067-1104`; `format-changed.mjs:40` exempts `MVP_PLAN.md` but not `MVP_PLAN_V3.md`;
+`validate-handoff.mjs` brace-regex is non-greedy and can truncate nested objects outside a
+fence; three definitions of DONE (lane schema, phase GREEN, `log.finish()`) with only the first
+machine-enforced; ADR 0004 vs `agent-activation.json` disagree by design with the machine output
+known-wrong (`docs/decisions/0004:95`) — an `agentOverride` per node would encode it; diagnose/
+architecture/retrospective have `activationConditions` but are never optional, while `review` is
+optional in two classes with no condition.
+
+### Agents cannot run their own mandated procedures
+
+**Source:** audit §7 item 15 (§4 item 6). **Trigger:** the next edit to any `.claude/agents/*.md`.
+
+Reviewer must dispatch two sub-agents (`review-diff:34-36`) with no Task tool; diagnostician is
+told to reach for runner with no Task tool; no agent lists `Skill`; builder declares no `tools:`
+at all and silently inherits everything. Decide per role and declare explicitly.
+
+### Validator and reflector are unreachable through capability resolution
+
+**Source:** audit §7 item 16 (§4 item 5); `oracle.ts` capability resolution takes the first
+existing agent file. **Trigger:** the next change to `agent-activation.json` capabilities.
+
+`execute` resolves to runner, `adversarial-test` to tester; `retrospective` appears in no class.
+`validator.md:6` claims it "fires after every executable work packet" and is in fact dispatched
+by hand. Either wire them into classes or record dormant-by-design in the file itself.
+
+### Lane handoff return path that survives the gitignored `.artifacts/`
+
+**Source:** audit §7 item 17 (§6); `.gitignore:15`, `dispatch-lanes:96`,
+`autopilot.local.md:11-13` (already burned once). **Trigger:** the next parallel lane dispatch
+that uses worktrees.
+
+A lane worktree's handoff JSON never propagates to the main repo because `.artifacts/` is
+gitignored. Add a copy step to `pnpm lanes integrate`, or a tracked handoff directory.
+
+### Small autonomy mechanics: worktree cleanup rule, backlog linter, usage summary shape
+
+**Source:** audit §7 item 18 (§5 items 5, 6). **Trigger:** opportunistic, next time each surface
+is edited.
+
+Three small items: (a) worktree cleanup decided by evidence (handoff DONE + branch merged +
+clean `git status`) instead of a standing human question; (b) a linter that every BACKLOG entry
+carries `**Source:**` and a trigger; (c) `token_or_usage_summary` as a structured object so
+Reflector can aggregate it without parsing prose.
