@@ -1,9 +1,9 @@
 // LenGentic database schema.
 //
-// Phase 1 deliberately declares no models. The telemetry domain (Run, Step) arrives in
-// Phase 2 (MVP_PLAN.md §39) and the rich entities in Phase 4. What Phase 1 proves is that
-// the migration pipeline, the client generator, and connectivity all work — adding
-// speculative tables now would violate §8 and pre-commit decisions Phase 2 should own.
+// The telemetry domain (Run, Step) landed in Phase 2. The rich entities (Decision, ModelCall,
+// ToolCall, Error) are still Phase 4. What Phase 1 proved is that the migration pipeline, the
+// client generator, and connectivity all work — adding speculative tables then would have
+// violated §8 and pre-commit decisions Phase 2 should own.
 
 // Prisma 7 removed `url` from the datasource block. The connection string lives in
 // prisma.config.ts for migrations, and is passed to the client through a driver adapter
@@ -19,4 +19,129 @@ generator client {
   // The API is a NestJS app and NestJS is CommonJS. Prisma 7 is ESM-first, so the format
   // has to be stated rather than inherited.
   moduleFormat = "cjs"
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry domain — MVP_PLAN_V3.md §11 (identifier model) and §13 (domain model).
+//
+// Every identifier is CLIENT-generated (§11). Not one of these models has an `@default` on
+// its primary key: the SDK supplies the id, which is what makes ingestion idempotent — an
+// SDK retry after a timeout re-sends the same id and upserts the same row instead of
+// creating a second one. A `@default(uuid())` here would silently restore the duplicate.
+//
+// Ids are typed `VarChar(128)`, not `Uuid`. §11 says UUIDv7 is *preferred* for time-ordered
+// indexes, not required, and the wire contract already settled the real bound:
+// `IdSchema = z.string().min(1).max(128)` in platform/shared/schema/primitives.ts. A
+// `@db.Uuid` column would reject ids the wire contract accepts — a 500 on a request Zod
+// already declared valid. Same reasoning for `VarChar(200)` on name-shaped columns, which
+// mirrors `NameSchema`. These two bounds move only with primitives.ts.
+// ---------------------------------------------------------------------------
+
+/// Stored status only. Never STALE — MVP_PLAN_V3.md §13 and docs/decisions/0005 decision 4
+/// make STALE derived at read time from `lastEventAt` and STALE_RUN_THRESHOLD_MS, computed
+/// server-side and never written to a row. Mirrors RUN_STATUSES in
+/// platform/shared/schema/status.ts, which is also where `StepStatus = RunStatus` is
+/// declared — hence one enum for both models rather than two that can drift apart.
+enum RunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model Run {
+  /// Client-generated (§11). No default, deliberately — see the header note.
+  id String @id @db.VarChar(128)
+
+  /// Always equal to `id` today. Kept as its own column, reserved for future fan-out: one
+  /// trace will eventually span several runs, and at that point `traceId` stops being a copy
+  /// of the PK. Deliberately NOT `@unique` — a unique constraint would encode "one run per
+  /// trace", which is precisely the assumption fan-out has to break. §11.
+  traceId String @db.VarChar(128)
+
+  /// Nullable at the database level even though §13 calls `workflowVersion` required, and the
+  /// wire contract enforces exactly that (`RunStartedPayloadSchema` requires both, non-null).
+  /// The nullability is about EVENT ARRIVAL ORDER, not about the caller's obligation: §12's
+  /// merge rules create an entity from whichever event lands first, and a `runCompleted`
+  /// event carries no workflow fields (`RunCompletedPayloadSchema` = status + metadata).
+  /// NOT NULL would make a completion-before-start batch unstorable. Null means "the start
+  /// event has not landed yet" and is excluded from aggregation, the same treatment
+  /// CONTEXT.md already gives a null `contextKey`.
+  workflowName    String? @db.VarChar(200)
+  workflowVersion String? @db.VarChar(200)
+
+  status RunStatus @default(RUNNING)
+
+  /// Client clock (§13). Null until a start / completion event has been merged.
+  startedAt   DateTime? @db.Timestamptz(3)
+  completedAt DateTime? @db.Timestamptz(3)
+
+  /// Server clock (§13). `receivedAt` is set once, on row creation, and never updated.
+  /// `lastEventAt` advances monotonically and is the sole input to the derived STALE read.
+  /// No `@default(now())` on either: merge-rules.ts takes `receivedAt` as an explicit input
+  /// so it stays a pure function, and STALE arithmetic requires both values to come from the
+  /// same clock as the comparison — a database default would introduce a second one.
+  receivedAt  DateTime @db.Timestamptz(3)
+  lastEventAt DateTime @db.Timestamptz(3)
+
+  /// ADR 0007 carrier columns. The tie-break when two events share an identical `occurredAt`
+  /// compares `eventId`, and ADR 0007 §3 requires that to hold across requests, not only
+  /// within one batch ("arrival order is never consulted, for any field, at any time").
+  /// `EntityMergeState.startEventId` / `.completionEventId` therefore have to survive in the
+  /// row; without them a cross-request tie silently falls back to arrival order.
+  startEventId      String? @db.VarChar(128)
+  completionEventId String? @db.VarChar(128)
+
+  /// jsonb (Prisma's Postgres mapping for `Json`). Nullable: `MetadataSchema` is `.nullish()`
+  /// on every payload, so "no metadata" is the normal case and must not be a rejection.
+  metadata Json?
+
+  /// Row creation, database clock. Distinct from `receivedAt`, which is the application's
+  /// server clock for the first event of this run — they will differ, and only `receivedAt`
+  /// is comparable with `lastEventAt`. §13 lists both.
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  /// The default aggregation scope: all historical analysis groups by
+  /// (workflowName, workflowVersion). Phase 2 framing note; group key, CONTEXT.md.
+  @@index([workflowName, workflowVersion])
+}
+
+model Step {
+  /// = spanId, client-generated (§11, §13). No default.
+  id String @id @db.VarChar(128)
+
+  /// Plain column. NO foreign key to Run — see the design note in
+  /// .artifacts/lanes/p2.prisma-run-step-design.md §2. A step event may legitimately arrive
+  /// before its run's start event, and a stub `Run` cannot be conjured because the workflow
+  /// fields live only on the start payload. An FK would turn that into a rejected event.
+  runId String @db.VarChar(128)
+
+  /// Nullable, and explicitly NO foreign key constraint (§13). Steps arrive out of order; a
+  /// child may reference a parent that has not landed yet, and an FK would reject it. Null
+  /// means "root step" — a distinct, deliberate signal, which is why `StepStartedPayload`
+  /// types it `.nullable()` rather than optional.
+  parentStepId String? @db.VarChar(128)
+
+  /// Nullable for the same arrival-order reason as Run.workflowName: these three arrive only
+  /// on `StepStartedPayload`, and a `stepCompleted` event can be the first one seen.
+  name      String? @db.VarChar(200)
+  agentName String? @db.VarChar(200)
+  type      String? @db.VarChar(200)
+
+  status RunStatus @default(RUNNING)
+
+  startedAt   DateTime? @db.Timestamptz(3)
+  completedAt DateTime? @db.Timestamptz(3)
+
+  /// Server clock, set once on creation. §13 gives Step no `lastEventAt`: liveness is a Run
+  /// concept, and a step's aliveness question is really "is its run stale".
+  receivedAt DateTime @db.Timestamptz(3)
+
+  /// ADR 0007 carrier columns — same justification as on Run.
+  startEventId      String? @db.VarChar(128)
+  completionEventId String? @db.VarChar(128)
+
+  metadata Json?
+
+  @@index([runId])
+  @@index([parentStepId])
 }
