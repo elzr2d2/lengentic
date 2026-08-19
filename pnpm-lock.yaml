@@ -50,6 +50,9 @@ importers:
       '@lengentic/database':
         specifier: workspace:*
         version: link:../database
+      '@lengentic/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@nestjs/common':
         specifier: ^11.2.1
         version: 11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@8.1.1)
