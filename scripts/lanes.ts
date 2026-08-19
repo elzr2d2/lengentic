@@ -38,6 +38,7 @@ import {
   loadActivation,
   resolveGraph,
   resolveRoles,
+  reviewIsPerNode,
   type ProbeSpec,
   type Resolved,
 } from './oracle.ts';
@@ -112,9 +113,25 @@ export interface LaneEntry {
   validation: string[];
   required_agents: string[];
   optional_agents: string[];
+  /** Where this lane's review runs — `per-node` only for reviewCadence.perNodeClasses. */
+  review_cadence: 'per-node' | 'wave';
   /** Batch members that must stop if this one fails. Everything else keeps going. */
   halts_if_failed: string[];
   independent_of: string[];
+}
+
+/**
+ * `reviewCadence` from `.claude/rules/agent-activation.json`, applied to one batch. Lanes in
+ * `per_node` keep their per-node review (their class is inherited downstream). Every other
+ * lane is reviewed **once**, at the wave gate, over the wave's combined diff — a per-node
+ * review there is what let findings about one node hold another node's gate RED.
+ * `wave_review_required` is true when any wave-cadence lane's class lists `review` as
+ * required; that one review must run after every lane has committed, before integration.
+ */
+export interface ReviewCadence {
+  per_node: string[];
+  wave: string[];
+  wave_review_required: boolean;
 }
 
 export interface Decision {
@@ -124,6 +141,7 @@ export interface Decision {
   blockers: string[];
   dependency_order: string[];
   shared_contracts: string[];
+  review_cadence: ReviewCadence;
   lanes: LaneEntry[];
   max_concurrency: number;
   requirements: Requirement[];
@@ -415,10 +433,28 @@ export function evaluate(units: Unit[], policy: Policy, repo: RepoState): Decisi
     blockers: failed.map((r) => `${r.id} ${r.text} — ${r.detail}`),
     dependency_order: order,
     shared_contracts: sharedContracts(units, ids),
+    review_cadence: reviewCadenceFor(units),
     lanes: units.map((u) => laneEntry(u, units)),
     max_concurrency: eligible ? Math.min(policy.maxConcurrency, units.length) : 1,
     requirements: req,
   };
+}
+
+function reviewCadenceFor(units: Unit[]): ReviewCadence {
+  const activation = loadActivation();
+  const per_node: string[] = [];
+  const wave: string[] = [];
+  let required = false;
+  for (const u of units) {
+    if (reviewIsPerNode(u.changeClass ?? '', activation)) {
+      per_node.push(u.task_id);
+      continue;
+    }
+    wave.push(u.task_id);
+    const rule = u.changeClass ? activation.classes[u.changeClass] : undefined;
+    if (rule?.required.includes('review')) required = true;
+  }
+  return { per_node: per_node.sort(), wave: wave.sort(), wave_review_required: required };
 }
 
 function names(units: Unit[]): string {
@@ -529,6 +565,13 @@ function laneEntry(u: Unit, units: Unit[]): LaneEntry {
         'agent chain is not silently empty',
     );
   }
+  // reviewCadence, enforced mechanically: outside `perNodeClasses` the `review` capability
+  // is stripped from the per-node chain and surfaced once at the Decision level instead. A
+  // chain this function prints is a chain that gets dispatched, so this is where the rule
+  // either binds or stays prose.
+  const perNodeReview = reviewIsPerNode(u.changeClass ?? '', activation);
+  const requiredCaps = perNodeReview ? rule.required : rule.required.filter((c) => c !== 'review');
+  const optionalCaps = perNodeReview ? rule.optional : rule.optional.filter((c) => c !== 'review');
   const halts = dependents(u, units);
   return {
     task_id: u.task_id,
@@ -538,8 +581,9 @@ function laneEntry(u: Unit, units: Unit[]): LaneEntry {
     allowed_paths: u.allowed_paths,
     forbidden_paths: u.forbidden_paths,
     validation: u.validation_commands,
-    required_agents: resolveRoles(rule.required, activation),
-    optional_agents: resolveRoles(rule.optional, activation),
+    required_agents: resolveRoles(requiredCaps, activation),
+    optional_agents: resolveRoles(optionalCaps, activation),
+    review_cadence: perNodeReview ? 'per-node' : 'wave',
     halts_if_failed: halts,
     independent_of: units
       .map((o) => o.task_id)
@@ -1137,6 +1181,12 @@ export function renderDecision(d: Decision): string {
   out.push(...yamlList(d.dependency_order, '    '));
   out.push('  shared_contracts:');
   out.push(...yamlList(d.shared_contracts, '    '));
+  out.push('  review_cadence:');
+  out.push('    per_node:');
+  out.push(...yamlList(d.review_cadence.per_node, '      '));
+  out.push('    wave:');
+  out.push(...yamlList(d.review_cadence.wave, '      '));
+  out.push(`    wave_review_required: ${d.review_cadence.wave_review_required}`);
   out.push('  lanes:');
   if (d.lanes.length === 0) out.push('    []');
   for (const l of d.lanes) {
@@ -1144,6 +1194,7 @@ export function renderDecision(d: Decision): string {
     out.push(`      lane: ${l.lane}`);
     out.push(`      risk: ${l.risk ?? 'null'}`);
     out.push(`      change_class: ${l.change_class ?? 'null'}`);
+    out.push(`      review_cadence: ${l.review_cadence}`);
     out.push('      allowed_paths:');
     out.push(...yamlList(l.allowed_paths, '        '));
     out.push('      forbidden_paths:');
@@ -1199,6 +1250,41 @@ export function nextWave(phase: number): string[] {
     .sort();
 }
 
+export function knownPhases(): number[] {
+  const byId = resolveGraph();
+  return [...new Set([...byId.values()].map((n) => n.phase))].sort((a, b) => a - b);
+}
+
+export type WaveOutcome =
+  | { kind: 'error'; message: string }
+  | { kind: 'complete'; message: string }
+  | { kind: 'wave'; ids: string[] };
+
+/**
+ * `pnpm lanes wave <phase>` used to exit 1 both when the phase was finished and when the
+ * command genuinely failed, so every caller had to parse the message to tell a finished
+ * phase from a broken one — and one session sent a finished phase into bounded recovery.
+ * Now the exit code is the verdict: a finished phase is `PHASE_COMPLETE` and exit 0; only
+ * a real error (a phase the graph does not know) is non-zero.
+ */
+export function waveOutcome(raw: string | undefined): WaveOutcome {
+  const known = knownPhases();
+  const phase = Number(raw);
+  if (raw === undefined || raw === '' || !known.includes(phase)) {
+    return {
+      kind: 'error',
+      message:
+        `unknown phase: ${raw ?? '(none)'} — graph phases: ${known.join(', ')}. ` +
+        'usage: pnpm lanes wave <phase>',
+    };
+  }
+  const ids = nextWave(phase);
+  if (ids.length === 0) {
+    return { kind: 'complete', message: `PHASE_COMPLETE: no outstanding work in phase ${raw}` };
+  }
+  return { kind: 'wave', ids };
+}
+
 function isDirectRun(): boolean {
   const invoked = process.argv[1];
   if (!invoked) return false;
@@ -1215,14 +1301,24 @@ async function main(): Promise<void> {
   switch (cmd) {
     case 'decide':
     case 'wave': {
-      const ids = cmd === 'wave' ? nextWave(Number(args[0] ?? '0')) : args;
-      if (ids.length === 0) {
-        console.error(
-          cmd === 'wave'
-            ? `no outstanding work in phase ${args[0]}`
-            : 'usage: pnpm lanes decide <node-id> [<node-id>...]',
-        );
-        process.exit(1);
+      let ids: string[];
+      if (cmd === 'wave') {
+        const outcome = waveOutcome(args[0]);
+        if (outcome.kind === 'error') {
+          console.error(outcome.message);
+          process.exit(1);
+        }
+        if (outcome.kind === 'complete') {
+          console.log(outcome.message);
+          process.exit(0);
+        }
+        ids = outcome.ids;
+      } else {
+        ids = args;
+        if (ids.length === 0) {
+          console.error('usage: pnpm lanes decide <node-id> [<node-id>...]');
+          process.exit(1);
+        }
       }
       const p = policy();
       const maxOverride = flag(rest, 'max');
@@ -1639,17 +1735,29 @@ function changedFiles(base: string | undefined): string[] {
 }
 
 function advice(d: Decision, ids: string[]): string {
+  const rc = d.review_cadence;
+  const review = rc.wave_review_required
+    ? `Review: ONCE per wave, over the wave's combined diff${
+        rc.per_node.length > 0
+          ? `; per-node only for ${rc.per_node.join(', ')}`
+          : ' — never per node'
+      }.`
+    : rc.per_node.length > 0
+      ? `Review: per-node for ${rc.per_node.join(', ')} only; no wave review required.`
+      : 'Review: no lane class requires review.';
   if (d.eligible) {
     return [
       `PARALLEL approved for ${ids.length} lanes at concurrency ${d.max_concurrency}.`,
       `Next: pnpm lanes worktrees ${ids.join(' ')}`,
       `Then dispatch one packet per lane in a single message: ${ids.map((i) => `pnpm oracle packet ${i}`).join(' ; ')}`,
+      review,
     ].join('\n');
   }
   return [
     `SEQUENTIAL. ${d.blockers.length} hard requirement(s) not verified.`,
     `Run them in this order: ${d.dependency_order.join(' → ')}`,
     `Start with: pnpm oracle packet ${d.dependency_order[0] ?? ids[0] ?? ''}`,
+    review,
   ].join('\n');
 }
 

@@ -78,8 +78,12 @@ vertical slice through every layer, demoable on its own, sized to fit one fresh 
 window. Check the wave assignment for lane collisions — two packets in one wave touching the
 same directory get serialised or given a worktree, never dispatched into the same tree.
 
-Then **stop and confirm**. Do not begin implementation off the back of your own framing —
-the user says whether shared understanding was reached.
+Then confirm the framing — how depends on who is driving. Outside autopilot, **stop**: the
+user says whether shared understanding was reached. Under the `autopilot` skill, the approved
+charter is that confirmation: check the six triggers in `CLAUDE.md`; when none fires, record
+the framing outcome in the checkpoint and proceed to dispatch without asking. A frontier that
+did not empty is trigger 3 in both modes — an open decision stops the phase, not a missing
+"shall I continue".
 
 ## Done when
 

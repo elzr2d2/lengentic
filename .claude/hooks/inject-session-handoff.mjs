@@ -140,8 +140,9 @@ try {
       hookEventName: 'SessionStart',
       additionalContext:
         `A session handoff from a previous window was found and is reproduced below. It is a ` +
-        `continuation brief, not an instruction to act — read it, then confirm with the human ` +
-        `before resuming. Full file: ${citedPath}` +
+        `continuation brief: verify its head/branch against the current tree, reconcile with ` +
+        `\`pnpm oracle status\`, then resume from its next_step. Escalate only if a CLAUDE.md ` +
+        `trigger fires. Full file: ${citedPath}` +
         `${truncated ? ` (truncated here at ${MAX_CHARS} chars; read the file for the rest)` : ''}` +
         `${unverified}\n\n${body}`,
     },

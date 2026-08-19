@@ -242,73 +242,20 @@ Last section: numbered implementation steps.
 
 ## Current state
 
-Phase 0 complete — thesis validated, all nine fixture groups produce agreed verdicts.
-Phase 1 complete and approved — gates, isolation, Docker runtime and integration tests all
-re-verified against a live stack.
+Runtime status never lives in this file. What is done: `pnpm oracle status`. What runs next:
+`pnpm lanes wave <phase>` — prints `PHASE_COMPLETE` and exits 0 when the phase is finished,
+exits non-zero only on a real error. Recovery history: `.claude/autopilot.local.md`. Phase
+narratives live in git history and `.artifacts/evidence/`, not here.
 
-**Execution order was amended at the Phase 1 gate: `0 → 1 → 5a → 2 → 3 → 4 → 5b → 6 → 7`.**
-Phase numbers are identity, not sequence. See the amendment in `MVP_PLAN_V3.md` Part III for
-the rationale and the two rejected alternatives. `5a` is Phase 5 waves 1–3 — the pure analysis
-engine, no database, no HTTP, no SDK, no UI. `5b` is waves 4–6 and stays after Phase 4.
+**Execution order, amended at the Phase 1 gate: `0 → 1 → 5a → 2 → 3 → 4 → 5b → 6 → 7`.**
+Phase numbers are identity, not sequence — the amendment and the two rejected alternatives
+are in `MVP_PLAN_V3.md` Part III. `5a` is Phase 5 waves 1–3 (the pure analysis engine); `5b`
+is waves 4–6, stays after Phase 4, and owns deleting `spike/` (`MVP_PLAN_V3.md:2236`). The
+graph stores plain phase numbers, so `lanes wave` takes `5`, not `5a`.
 
-**5a is in progress on branch `phase-5a`, two of three waves landed.**
-
-- **Wave 1 `p5.engine-pkg` — merged** (PRs #2 and #3, `aa9ae67`). The package, the graduated
-  types with the three renames, `src/gate-contract.ts` with no `src/gates.ts` beside it, and
-  `src/config.ts` holding frozen, injectable thresholds.
-- **Pre-dispatch commit `121b699`.** Not a formality: a council review and an adversarial
-  semantics review found four defects, each of which would have shipped a green that lies.
-  (1) The threshold-binding spec could not fail — every `D` fixture sits far from every
-  threshold, so `docs/decisions/0004` was unpaid by construction. Fifteen `B1`–`B5` boundary
-  groups now sit **on** the thresholds, and the acceptance criterion is five reds under a
-  flipped operator, not a landed file. (2) The grid's `counterexamples` column counted minority
-  rows rather than §20.1's dominant-option failures plus minority-option successes; seven of
-  twelve rows corrected, `D6` said 2 where the honest count is 22. (3) `R5`'s timeline is
-  pinned to `F(A) F(A) S(B) F(A)` — two of the three readings bound nothing — and `Same runId`
-  became a §20.2 condition. (4) Two oracle probes reported their packets `DONE` before they
-  started.
-- **Wave 2 `p5.negative-fixtures` — landed green** at `a863346`. 136 tests, four files. Gutting
-  the comparators turns 34 red; corrupting one expectation cell turns 4 red. Evidence:
-  `.artifacts/evidence/5a/negative-fixtures-mutation.md`.
-- **Wave 3 — landed.** `p5.det-candidate` at `6042a72`, then `p5.repeated-failed` at `af624cc`,
-  run serially because they collide on `src/**` and `test/analyzer/**`. Both handoffs report
-  `DONE` with an empty `unverified` bucket; hash pairs and mutation proofs are in
-  `.artifacts/evidence/5a/`.
-- **Recovery `8808bc9` — landed green.** The 5a gate was RED on first inspection with every
-  deterministic gate passing, and two Definition of Done checkboxes were bound by no test that
-  could fail. `MVP_PLAN_V3.md:2212` was checked by cardinality alone at
-  `test/grid/assert-against-grid.ts:111`, so replacing `D6`'s 22 counterexamples with 22
-  dominant-option **successes** — inverse population, identical count — passed silently.
-  `MVP_PLAN_V3.md:2213` was read by no test at all; `test/grid/hand-built.ts:13` said so in its
-  own header. Both now bound by membership, mutation proof in
-  `.artifacts/evidence/5a/counterexample-membership-mutation.md`.
-- **`pnpm lanes wave 5a` reports `no outstanding work in phase 5a`.** That message means the
-  phase is finished, not that a command failed — it exits `1` either way, so read the message.
-
-**`p5.spike-deleted` is not a 5a deliverable.** `MVP_PLAN_V3.md:2236` puts "`spike/` is deleted"
-in the **5b** Definition of Done, and `.artifacts/plans/remaining-roadmap.md:369-374` assigns it
-to wave 4 — "here, not earlier. Until this packet it is the independent cross-check on 5a's
-numbers." `scripts/oracle/graph.json` gives the node `needs: ["p5.det-candidate"]`, which is why
-it looks available after wave 3; the dependency is satisfied but the phase is not. Do not delete
-`spike/` at the 5a gate.
-
-**A phase whose gates are green can still be RED.** `pnpm gates:full` exited 0, both
-`check:isolation` arms passed, `check:boundaries` found 0 violations over 55 modules and the
-engine suite was 191/191 — while two DoD checkboxes were unbound. Gates are one of GREEN's four
-sources, never GREEN itself.
-
-**The most transferable thing 5a has learned: two independent blind computations agreed, cell
-for cell, on a `counterexamples` column that was wrong.** Agreement proved they had not copied
-each other. It did not prove they were right, and only an adversarial pass with a different
-question caught it — `.artifacts/evidence/5a/fixture-semantics-review.md`. Treat cross-agent
-agreement as evidence of independence, never of correctness.
-
-Three rules bind every remaining 5a packet. The grids in `MVP_PLAN_V3.md` Phase 5 are the
-**only** legal source for an expected value — not `pnpm spike`, not `src/`, and `spike/` now
-disagrees with the grid on seven rows by design. Wave 2 landed **green**, because
-`pnpm lanes handoff` refuses `DONE` on any failing test, so expectations ship as data in
-`fixtures/**` with a comparator in `test/grid/**`. And the analyzer packets own `src/**` and
-`test/analyzer/**` and cannot edit either.
-
-Phase 1's carried debt (file-based handoffs OD-5, pre-commit hook, secret detection) runs
-**after 5a and before Phase 2** — human decision, 2026-08-16.
+Two standing lessons, kept because no tool re-derives them. Gates are one of GREEN's four
+sources, never GREEN itself — a phase once sat at `pnpm gates:full` exit 0 with two unbound
+DoD checkboxes, and was RED. And cross-agent agreement is evidence of independence, never of
+correctness — two blind computations agreed, cell for cell, on a wrong column; only an
+adversarial pass with a different question caught it
+(`.artifacts/evidence/5a/fixture-semantics-review.md`).

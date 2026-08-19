@@ -34,21 +34,23 @@ An autopilot that re-runs finished work burns the context window it needs later.
 | 2     | `pnpm oracle status` / `pnpm lanes wave <phase>` | what is genuinely done and what is unblocked                              |
 | 3     | `.artifacts/handoffs/*.json`                     | per-lane `DONE` / `BLOCKED` with its evidence                             |
 
-**A non-zero exit from `pnpm lanes wave` is not automatically RED.** It exits `1` for two
-opposite reasons, and the exit code alone cannot tell them apart:
-
-| Output                                 | Means                        | Do                                                    |
-| -------------------------------------- | ---------------------------- | ----------------------------------------------------- |
-| `no outstanding work in phase <phase>` | the phase is **finished**    | check GREEN (§3), then advance. Never enter recovery. |
-| anything else                          | the command genuinely failed | RED. Go to §4.                                        |
-
-Read the message, never the exit code, before treating this command as a gate input. Sending a
-finished phase into §4 spends two Diagnostician/Builder attempts and escalates on trigger 5 to
-report that nothing was wrong.
+**`pnpm lanes wave` exit codes are honest.** `PHASE_COMPLETE: no outstanding work in phase
+<phase>` with exit 0 means the phase is finished — check GREEN (§3), then advance; never enter
+recovery on it. A non-zero exit is a real failure (unknown phase, broken graph, unclassified
+node): RED, go to §4.
 
 Rows 2 and 3 are authoritative on completion. The checkpoint is authoritative on **recovery
 history only** — it is the one fact with no other home. Where the checkpoint and `oracle`
 disagree about what is done, `oracle` wins and the checkpoint is corrected.
+
+**Reconcile `step: recovering` before honoring it.** A checkpoint frozen mid-recovery outlives
+the recovery whenever later work lands without the file being rewritten. Before resuming a
+recovery, re-check the named node against row 2. If the oracle reports it `DONE`, or reports it
+ready with the recovery's fix already on its lane branch, the recovery bookkeeping is stale:
+record the attempt's outcome from the evidence on disk, discard the `recovering` step, and
+re-enter the normal loop — the node's required agent chain re-verifies whatever the recovery
+produced. Recovery is resumed only for a red that is reproducible now; it is never resumed
+because the checkpoint says so.
 
 The checkpoint:
 
@@ -113,9 +115,11 @@ Failure-evidence row. A `<node-id>` finding is explained the moment it is filed 
 open on it makes every gate inherit the whole downstream design.
 
 Review itself runs **per wave, over the wave's whole diff** — not per node.
-`.claude/rules/agent-activation.json` `reviewCadence` is the rule and `CONTEXT.md` states it:
-"Validate per wave; review per phase." The single exception is `change_class: contract`, which
-keeps its per-node review.
+`.claude/rules/agent-activation.json` `reviewCadence` is the rule, and `pnpm lanes wave` /
+`pnpm lanes decide` enforce it mechanically: reviewer is stripped from every per-node agent
+chain outside `perNodeClasses` and the decision prints a `review_cadence` block instead.
+Follow the printed cadence; never re-add a per-node review the decision removed. The single
+exception is `change_class: contract`, which keeps its per-node review.
 
 Anything short of all four is RED. Go to §4.
 

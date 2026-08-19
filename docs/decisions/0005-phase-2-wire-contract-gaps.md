@@ -113,4 +113,6 @@ contract have since been answered and are no longer open:
   resolution be "deterministic". Answered by the coordinator 2026-08-18 in
   `docs/decisions/0007-equal-occurredat-ties-break-on-eventid.md`.
 
-A-6 through A-13 remain unasked.
+A-6 through A-13 were closed 2026-08-19 in
+`docs/decisions/0008-phase-2-ambiguity-sweep-a6-a13-closed.md`. Nothing from the sweep
+remains open; Phase 2 framing may not reopen a sweep item without superseding 0008.

@@ -457,6 +457,11 @@ export function verificationBlock(n: Resolved): string[] {
     '',
     `- required: ${resolveRoles(rule.required, activation).join(' → ') || 'none'}`,
     `- optional: ${resolveRoles(rule.optional, activation).join(', ') || 'none'}`,
+    `- review cadence: ${
+      reviewIsPerNode(cls ?? '', activation)
+        ? 'per node — this class is inherited downstream; review lands before the next lane builds on it'
+        : "wave — one review over the wave's combined diff at the wave gate, never per node"
+    }`,
     '',
     'Optional agents run when their activation condition fires, not by default. Dispatching',
     'an agent that had nothing to look at costs the same as one that did.',
@@ -479,6 +484,12 @@ export interface Activation {
   activationConditions?: Record<string, string[]>;
   responsibilities?: Record<string, string[]>;
   controlPlane?: Record<string, string>;
+  reviewCadence?: { default?: string; perNodeClasses?: string[] };
+}
+
+/** Whether this change class keeps its per-node review; everything else reviews per wave. */
+export function reviewIsPerNode(changeClass: string, activation: Activation): boolean {
+  return activation.reviewCadence?.perNodeClasses?.includes(changeClass) ?? false;
 }
 
 let activationCache: Activation | null = null;

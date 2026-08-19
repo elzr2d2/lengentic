@@ -34,6 +34,7 @@ import {
   dependents,
   evaluate,
   integrationPlan,
+  knownPhases,
   matchPath,
   nextWave,
   patternsOverlap,
@@ -41,6 +42,7 @@ import {
   repoState,
   unitsFor,
   validateHandoff,
+  waveOutcome,
   type Decision,
   type Policy,
   type RepoState,
@@ -1398,6 +1400,77 @@ export async function run(): Promise<number> {
       }
     },
   );
+
+  scenario(45, 'review runs once per wave; only perNodeClasses keep a per-node review', () => {
+    const activation = loadActivation();
+    const perNodeClasses = activation.reviewCadence?.perNodeClasses ?? [];
+    const reviewer = resolveRoles(['review'], activation);
+    const d = decide([
+      unit({ task_id: 'alpha', changeClass: 'behavior', allowed_paths: ['a/**'] }),
+      unit({ task_id: 'beta', changeClass: 'contract', allowed_paths: ['b/**'] }),
+    ]);
+    const alpha = d.lanes.find((l) => l.task_id === 'alpha');
+    const beta = d.lanes.find((l) => l.task_id === 'beta');
+    return (
+      expect(
+        perNodeClasses.includes('contract'),
+        'agent-activation.json must keep contract in perNodeClasses',
+      ) ??
+      expect(
+        alpha?.review_cadence === 'wave',
+        `a behavior lane must review per wave; got ${alpha?.review_cadence}`,
+      ) ??
+      expect(
+        alpha !== undefined && !alpha.required_agents.some((a) => reviewer.includes(a)),
+        `reviewer must be stripped from a wave-cadence chain; got ${alpha?.required_agents.join(',')}`,
+      ) ??
+      expect(
+        beta?.review_cadence === 'per-node',
+        `a contract lane must keep per-node review; got ${beta?.review_cadence}`,
+      ) ??
+      expect(
+        beta !== undefined && beta.required_agents.some((a) => reviewer.includes(a)),
+        `a contract chain must keep its reviewer; got ${beta?.required_agents.join(',')}`,
+      ) ??
+      expect(
+        d.review_cadence.wave.includes('alpha') && d.review_cadence.per_node.includes('beta'),
+        `decision-level cadence lists are wrong: ${JSON.stringify(d.review_cadence)}`,
+      ) ??
+      expect(
+        d.review_cadence.wave_review_required,
+        'a wave containing a review-requiring class must require one wave review',
+      )
+    );
+  });
+
+  scenario(46, 'a finished phase is PHASE_COMPLETE, an unknown phase is an error', () => {
+    const bogus = waveOutcome('99');
+    const absent = waveOutcome(undefined);
+    const phases = knownPhases();
+    const mismatch = phases.find((p) => {
+      const o = waveOutcome(String(p));
+      const ids = nextWave(p);
+      return ids.length === 0
+        ? o.kind !== 'complete'
+        : o.kind !== 'wave' || o.ids.join(',') !== ids.join(',');
+    });
+    const complete = phases.map((p) => waveOutcome(String(p))).find((o) => o.kind === 'complete');
+    return (
+      expect(
+        bogus.kind === 'error' && bogus.message.includes('unknown phase'),
+        `phase 99 must be an error naming the phase; got ${JSON.stringify(bogus)}`,
+      ) ??
+      expect(absent.kind === 'error', 'a missing phase argument must be an error') ??
+      expect(
+        mismatch === undefined,
+        `waveOutcome disagrees with nextWave for phase ${String(mismatch)}`,
+      ) ??
+      expect(
+        complete === undefined || complete.message.startsWith('PHASE_COMPLETE'),
+        'a finished phase must announce itself as PHASE_COMPLETE',
+      )
+    );
+  });
 
   return report();
 }
