@@ -1510,7 +1510,8 @@ re-add it at the wire without a plan citation.
 ### Merge state is rehydrated across requests, and `completionFieldOrigins` must survive the round trip
 
 **Source:** Architect ruling on the `p2.merge-rules` completion-field repair, 2026-08-18 (lane
-`lane/p2.merge-rules`, HEAD `3d0696d`). **Trigger:** `p2.ingest-endpoint` and `p2.prisma-run-step`.
+`lane/p2.merge-rules`, HEAD `3d0696d`). **Trigger:** `p2.ingest-endpoint` only — narrowed
+2026-08-19, storage half closed by `p2.prisma-run-step` at `ce2b8f5`/`42cbe55` (see below).
 
 Order-independent completion-field merging needs per-key provenance — which (`occurredAt`,
 `eventId`) last wrote each key — carried in `EntityMergeState` as `completionFieldOrigins`. Inside
@@ -1520,16 +1521,20 @@ origin resets on the next batch and the last-arriving batch wins per key again �
 §3 violation the repair removes, reintroduced one layer up and invisible to `merge-rules.spec.ts`,
 which never crosses a process boundary.
 
-Deferred because nothing in `MVP_PLAN_V3.md` §12–§13 or the wave-1 architect brief states how merge
-state is persisted or whether it is rehydrated at all, and inventing a column here would be
-`p2.prisma-run-step`'s decision made in the wrong packet. Ruled out already: storing provenance
-inside `completionFields` itself, which leaks merge bookkeeping into the value the persistence edge
-maps (`CLAUDE.md` `## Types`).
+**Closure condition (a), storage half, is met.** `p2.prisma-run-step` added
+`completionFieldOrigins Json?` to `Run` and `Step` (migration
+`20260819080115_run_step_completion_origins`, commit `ce2b8f5`), doc-corrected at `42cbe55` after
+a Reviewer pass caught the comment misdescribing the key structure (fresh eyes: it would have
+reintroduced this exact bug one layer down if followed literally — see the new entry below).
+Column name, shape (`Json?`, mirrors `metadata Json?`) and doc comment now match
+`EntityMergeState.completionFieldOrigins` at `merge-rules.ts:56-60,76`.
 
-Closes when the packet owning the ingest path either (a) persists the origins map alongside
-`completionFields`, with a test that merges two completion events carrying disjoint keys in two
-separate requests in both orders and asserts one final state, or (b) shows the state is never
-rehydrated — one in-process fold per entity per batch — and records that as why no column is needed.
+**Still open — the only remaining condition:** the test half of (a) — a test that merges two
+completion events carrying disjoint keys in two separate requests, in both arrival orders, and
+asserts one final state — plus the actual read/write wiring at the ingest endpoint. That is
+`p2.ingest-endpoint`'s packet, not this one. Ruled out already: storing provenance inside
+`completionFields` itself, which leaks merge bookkeeping into the value the persistence edge maps
+(`CLAUDE.md` `## Types`).
 
 ### `REQUEST_ERROR_CODES` is half a contract — the endpoint must confirm the names and land the response shape
 
@@ -1611,12 +1616,93 @@ table) — either widen that node's `allowed_paths` to include `platform/databas
 or split a small schema-only sub-node it depends on. Decide before that packet is dispatched,
 not while it is running.
 
-### `platform/database/src/generated/` is neither tracked nor gitignored
+### ~~`platform/database/src/generated/` is neither tracked nor gitignored~~ — closed, not a bug
 
-**Source:** Same Architect pass. Root `.gitignore` is outside `p2.prisma-run-step`'s
-`allowed_paths`, so this was left alone rather than fixed inline. Prisma's generated client
-output lands there on every `db:generate`/`db:migrate`/`build`; if it is not ignored it will
-show up as untracked churn (or get accidentally committed) the first time someone runs
-`git status` after a generate. **Trigger:** the next lane that touches `.gitignore`, or a
-standalone one-line fix whenever it starts being noisy — add
-`platform/database/src/generated/` to the root `.gitignore`.
+**Source:** Same Architect pass. **Closed 2026-08-19** — verified false. `platform/database/.gitignore:1`
+already ignores `src/generated/`, since Phase 1. `git check-ignore -v` confirms:
+`platform/database/.gitignore:1:src/generated/  platform/database/src/generated/foo.ts`. Confirmed
+independently by two later passes (`p2.prisma-run-step` builder handoff, and Watchdog on
+commits `06508d5`/`ce2b8f5`). No action needed.
+
+### `completionFieldOrigins` doc comment misdescribed its own key structure — caught, not shipped
+
+**Source:** Reviewer finding S-A on `p2.prisma-run-step` lane commit `ce2b8f5`, 2026-08-19
+(fresh re-review dispatched to close BACKLOG's `completionFieldOrigins` trigger above).
+**Trigger:** none — fixed in the same packet at commit `42cbe55`. Recorded for the pattern, not
+as open work.
+
+The doc comment shipped on `ce2b8f5` said the map was keyed "by each key of `metadata`" and was
+"Null before any completion event" — both wrong. The map is keyed by `completionFields` key
+names (today exactly one: the literal string `"metadata"`), and `merge-rules.ts:74-76` requires
+`completionFields` (and by extension the sibling origins map) to be an object, never null, before
+completion. A future packet following the comment literally would have serialized per-metadata-key
+origins, which cannot rehydrate `EntityMergeState.completionFieldOrigins` — silently reintroducing
+the exact arrival-order fallback this column exists to prevent, one layer down and invisible to
+`merge-rules.spec.ts`. Worth keeping as a pattern note: a storage-layer fix that is structurally
+correct can still ship a spec-shaped defect in its own doc comment, and only a second, deliberately
+skeptical review pass (not the same reviewer re-checking their own diagnosis) caught it.
+
+### `Run`/`Step` have one `metadata` column but two independently-resolved merge bags
+
+**Source:** Reviewer finding S-C on `p2.prisma-run-step` lane commit `ce2b8f5`, 2026-08-19.
+**Trigger:** `p2.ingest-endpoint`.
+
+`EntityMergeState` keeps `startFields` (first-writer-wins by `occurredAt`) and `completionFields`
+(last-writer-wins by `occurredAt`) as two independently-resolved bags (`merge-rules.ts:62,65`), and
+for both `Run` and `Step` today the sole key of each bag is `metadata`. But `schema.prisma` has one
+`metadata Json?` column per model — nowhere to store both the start-winner and the completion-winner
+independently. Not `p2.prisma-run-step`'s to fix: `MVP_PLAN_V3.md` §13 lists exactly one `metadata`
+field per model, so the schema matches its contract as written; adding a second column is a domain-
+model change outside this packet's authority. Already an open question in the packet's own design
+note (`.artifacts/lanes/p2.prisma-run-step-design.md:324`, gitignored, not on `main`) — recorded here
+so it survives the worktree. Closes when the ingest-endpoint packet either adds the second column (a
+domain-model change, likely needs an ADR) or shows one column is sufficient and records why.
+
+### No mechanical check that migration SQL reproduces `schema.prisma`
+
+**Source:** Reviewer finding S-D on `p2.prisma-run-step` lane commit `ce2b8f5`, 2026-08-19.
+**Trigger:** `p2.idempotency`, or whichever packet next needs a migration and has write access to
+root config.
+
+`platform/database/prisma.config.ts` sets no `datasource.shadowDatabaseUrl`, so
+`prisma migrate diff --from-migrations ./prisma/migrations --to-schema ./prisma/schema.prisma
+--exit-code` errors out instead of running: `Error: You must set datasource.shadowDatabaseUrl in
+your prisma.config.ts if you want to diff a migrations directory.` `pnpm gates` runs `prisma
+generate` off `schema.prisma` directly and never reads `prisma/migrations/`, so a hand-edited,
+truncated, or missing migration file would pass every gate green. Today the two happen to agree —
+verified by manual column-for-column read-back across two migrations — but this is the first
+migration-bearing Phase 2 packet and every later one inherits the same blind spot. Not
+`p2.prisma-run-step`'s to fix: `prisma.config.ts` is outside its `allowed_paths`
+(`platform/database/prisma/**`, `platform/database/src/**`), and wiring a gate step touches root
+scripts. Collides with the still-open "ADR 0005 dedup table has no lane that can write it" entry
+above — same root cause, no node currently has write access to both `prisma.config.ts` and a gate
+script. Closes when a shadow database URL is configured (locally or in CI) and a migration-drift
+check is added to `pnpm gates` or `pnpm gates:full`.
+
+### `pnpm db:migrate -- --name <x>` hangs; `pnpm exec prisma migrate dev --name <x>` works
+
+**Source:** Two independent Builder runs on `p2.prisma-run-step`, 2026-08-19 (both the original
+schema commit and the `completionFieldOrigins` repair). **Trigger:** whichever packet next
+touches the root `package.json` migration script, or a standalone fix whenever it starts
+costing real time.
+
+`pnpm db:migrate -- --name <migration-name>` hung both times it was tried on this packet;
+`pnpm exec prisma migrate dev --name <migration-name>` (bypassing the package script) worked
+immediately both times, same effect. Root cause not diagnosed — not blocking, since the
+workaround is one substitution — but will bite every future migration-bearing packet the same
+way until someone looks at how `db:migrate` forwards its args.
+
+### `platform/dashboard/tsconfig.tsbuildinfo` is a tracked build artifact that fails every lane's scope gate
+
+**Source:** Reviewer finding S-E on `p2.prisma-run-step` lane commit `ce2b8f5`, 2026-08-19.
+**Trigger:** the next lane that touches `.gitignore`, or a standalone one-line fix whenever it
+starts being noisy.
+
+`platform/dashboard/tsconfig.tsbuildinfo` has been tracked (not gitignored — `git check-ignore`
+exits 1) since Phase 1 commit `a898ac6`. Every `pnpm gates` run rewrites it as a side effect of
+the Next.js build step. Any lane that runs `pnpm gates` before `pnpm lanes check <id>` gets a
+false `BLOCK platform/dashboard/tsconfig.tsbuildinfo — outside allowed_paths` — reproduced twice
+on this packet, worked around both times with `git checkout --` before committing. Real fix:
+`git rm --cached platform/dashboard/tsconfig.tsbuildinfo` plus a `.gitignore` line for
+`*.tsbuildinfo` under `platform/dashboard/`. Outside every current Phase 2 lane's `allowed_paths`
+(root `.gitignore`), so no lane has fixed it inline.
