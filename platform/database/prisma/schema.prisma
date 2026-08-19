@@ -95,6 +95,13 @@ model Run {
   /// on every payload, so "no metadata" is the normal case and must not be a rejection.
   metadata Json?
 
+  /// Per-key provenance for `completionFields` (ADR 0007 §3) — which event last wrote each
+  /// key of `metadata`. Without this column a completion merge split across two requests
+  /// cannot tell which event won per key and falls back to arrival order. Mirrors
+  /// EntityMergeState.completionFieldOrigins (merge-rules.ts) — a JSON map of
+  /// `{ [fieldName]: { occurredAt, eventId } }`. Null before any completion event.
+  completionFieldOrigins Json?
+
   /// Row creation, database clock. Distinct from `receivedAt`, which is the application's
   /// server clock for the first event of this run — they will differ, and only `receivedAt`
   /// is comparable with `lastEventAt`. §13 lists both.
@@ -141,6 +148,13 @@ model Step {
   completionEventId String? @db.VarChar(128)
 
   metadata Json?
+
+  /// Per-key provenance for `completionFields` (ADR 0007 §3) — which event last wrote each
+  /// key of `metadata`. Without this column a completion merge split across two requests
+  /// cannot tell which event won per key and falls back to arrival order. Mirrors
+  /// EntityMergeState.completionFieldOrigins (merge-rules.ts) — a JSON map of
+  /// `{ [fieldName]: { occurredAt, eventId } }`. Null before any completion event.
+  completionFieldOrigins Json?
 
   @@index([runId])
   @@index([parentStepId])
