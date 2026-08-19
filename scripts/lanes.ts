@@ -519,6 +519,16 @@ export function dependents(unit: Unit, units: Unit[]): string[] {
 function laneEntry(u: Unit, units: Unit[]): LaneEntry {
   const activation = loadActivation();
   const rule = u.changeClass ? activation.classes[u.changeClass] : undefined;
+  // A missing or unmapped changeClass used to fall through to an empty required_agents /
+  // optional_agents pair — a packet with no validation chain, silently. Hard error instead:
+  // ten graph nodes hit exactly this before every one of them was classified.
+  if (!rule) {
+    throw new Error(
+      `unit "${u.task_id}" has no usable changeClass (got ${JSON.stringify(u.changeClass)}) — ` +
+        'add one of mechanical|feature|behavior|contract|diagnosis to its graph node so the ' +
+        'agent chain is not silently empty',
+    );
+  }
   const halts = dependents(u, units);
   return {
     task_id: u.task_id,
@@ -528,8 +538,8 @@ function laneEntry(u: Unit, units: Unit[]): LaneEntry {
     allowed_paths: u.allowed_paths,
     forbidden_paths: u.forbidden_paths,
     validation: u.validation_commands,
-    required_agents: rule ? resolveRoles(rule.required, activation) : [],
-    optional_agents: rule ? resolveRoles(rule.optional, activation) : [],
+    required_agents: resolveRoles(rule.required, activation),
+    optional_agents: resolveRoles(rule.optional, activation),
     halts_if_failed: halts,
     independent_of: units
       .map((o) => o.task_id)
@@ -792,15 +802,48 @@ export async function validateHandoff(
     }
   }
 
-  errors.push(...checkEvidence(h, status));
+  errors.push(...checkEvidence(h, status, unit?.acceptance_criteria ?? []));
 
   if (status === 'DONE' && opts.checkCommit) {
     const sha = typeof h?.commit === 'string' ? h.commit : '';
     if (!git(['cat-file', '-e', `${sha}^{commit}`]).ok) {
       errors.push(`commit "${sha}" does not resolve to a commit in this repository`);
+    } else {
+      errors.push(...checkChangedFiles(sha, changed));
     }
   }
   return { ok: errors.length === 0, errors, status };
+}
+
+/**
+ * The commit is the ground truth for what changed; `changed_files` is a self-report next to
+ * it. A lane that omits a file escapes the ownership check at handoff time (the file is
+ * never compared against `allowed_paths`), and a lane that pads the list claims territory it
+ * never touched. Both directions are checkable against `git diff-tree` without trusting the
+ * report.
+ */
+export function checkChangedFiles(sha: string, claimed: string[]): string[] {
+  const errors: string[] = [];
+  const actual = git(['diff-tree', '--no-commit-id', '--name-only', '-r', sha]);
+  if (!actual.ok) return errors; // Commit resolution is checked separately; nothing more to say.
+
+  const actualFiles = new Set(actual.out.split('\n').filter(Boolean).map(normalise));
+  const claimedFiles = new Set(claimed.map(normalise));
+
+  const omitted = [...actualFiles].filter((f) => !claimedFiles.has(f)).sort();
+  const extra = [...claimedFiles].filter((f) => !actualFiles.has(f)).sort();
+
+  if (omitted.length > 0) {
+    errors.push(
+      `changed_files omits ${omitted.length} file(s) commit "${sha}" actually touched: ${omitted.join(', ')}`,
+    );
+  }
+  if (extra.length > 0) {
+    errors.push(
+      `changed_files claims ${extra.length} file(s) commit "${sha}" does not touch: ${extra.join(', ')}`,
+    );
+  }
+  return errors;
 }
 
 interface RunResult {
@@ -827,7 +870,11 @@ const TEST_COMMAND = /(^|\s|:)(test|tests|vitest|jest|playwright|check:integrity
  * mechanical: each one is a way a green report can be true about a command and false about
  * the work, and none of them needs an agent's judgement to detect.
  */
-export function checkEvidence(h: Record<string, unknown>, status: string | null): string[] {
+export function checkEvidence(
+  h: Record<string, unknown>,
+  status: string | null,
+  packetCriteria: string[] = [],
+): string[] {
   const errors: string[] = [];
   const done = status === 'DONE';
 
@@ -842,6 +889,25 @@ export function checkEvidence(h: Record<string, unknown>, status: string | null)
     ? h.acceptance_criteria
     : {};
   const verified = Array.isArray(criteria.verified) ? (criteria.verified as string[]) : [];
+  const unverified = Array.isArray(criteria.unverified) ? (criteria.unverified as string[]) : [];
+
+  // 0. Every criterion the packet named lands in exactly one bucket, whatever the status.
+  //    A lane that lists 2 of the packet's 5 criteria and verifies both would otherwise
+  //    reach DONE with `unverified: []` having said nothing about the other 3 — and a
+  //    criterion missing from both buckets triggers no other check below.
+  for (const criterion of packetCriteria) {
+    const inVerified = verified.includes(criterion);
+    const inUnverified = unverified.includes(criterion);
+    if (inVerified && inUnverified) {
+      errors.push(
+        `acceptance_criteria: "${criterion}" appears in both verified and unverified — a criterion lands in exactly one bucket`,
+      );
+    } else if (!inVerified && !inUnverified) {
+      errors.push(
+        `acceptance_criteria: packet criterion "${criterion}" appears in neither verified nor unverified — silence is not a bucket`,
+      );
+    }
+  }
 
   // 1. Results line up with the commands that produced them. A results array the reader
   //    cannot map back to a command is a summary, not evidence.

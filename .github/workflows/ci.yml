@@ -20,7 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # Full history: check:lanes scenario 40 validates `changed_files` against a fixed
+      # historical commit, which a depth-1 clone does not have.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
 

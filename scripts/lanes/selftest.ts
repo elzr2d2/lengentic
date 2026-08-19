@@ -22,11 +22,13 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import {
+  checkChangedFiles,
   checkOwnership,
   dependencyOrder,
   dependents,
@@ -44,7 +46,7 @@ import {
   type RepoState,
   type Unit,
 } from '../lanes.ts';
-import { loadActivation, resolveRoles } from '../oracle.ts';
+import { loadActivation, resolveRoles, verificationBlock, type Resolved } from '../oracle.ts';
 import {
   colorsEnabled,
   createLogger,
@@ -1062,6 +1064,340 @@ export async function run(): Promise<number> {
       )
     );
   });
+
+  await scenarioAsync(
+    39,
+    'a DONE handoff that omits a packet criterion entirely is refused',
+    async () => {
+      const u = unit({
+        task_id: 'alpha',
+        acceptance_criteria: ['criterion A', 'criterion B', 'criterion C'],
+      });
+      const evidenceFor = (req: string) => ({
+        requirement: req,
+        expected: 'x',
+        actual: 'x',
+        verification: 'pnpm test',
+        result: 'PASS',
+        artifact: '.artifacts/runs/alpha-test.log',
+      });
+      // Verifies two of the packet's three criteria and never mentions the third — neither
+      // verified nor unverified. Schema-valid (unverified is empty) and exactly the hole
+      // audit §3 item 1 named: a lane that lists fewer criteria than its packet reaching DONE.
+      const partial = doneHandoff({
+        acceptance_criteria: { verified: ['criterion A', 'criterion B'], unverified: [] },
+        evidence: [evidenceFor('criterion A'), evidenceFor('criterion B')],
+      });
+      const full = doneHandoff({
+        acceptance_criteria: {
+          verified: ['criterion A', 'criterion B', 'criterion C'],
+          unverified: [],
+        },
+        evidence: [
+          evidenceFor('criterion A'),
+          evidenceFor('criterion B'),
+          evidenceFor('criterion C'),
+        ],
+      });
+      // Lists criterion A in both buckets at once — the other way a handoff can dodge the
+      // "exactly one bucket" rule.
+      const doubled = doneHandoff({
+        acceptance_criteria: {
+          verified: ['criterion A', 'criterion B', 'criterion C'],
+          unverified: ['criterion A'],
+        },
+        evidence: [
+          evidenceFor('criterion A'),
+          evidenceFor('criterion B'),
+          evidenceFor('criterion C'),
+        ],
+      });
+      const partialVerdict = await validateHandoff(partial, u, NO_COMMIT_CHECK);
+      const fullVerdict = await validateHandoff(full, u, NO_COMMIT_CHECK);
+      const doubledVerdict = await validateHandoff(doubled, u, NO_COMMIT_CHECK);
+      return (
+        expect(
+          !partialVerdict.ok,
+          'a DONE handoff that omits a packet criterion must not validate',
+        ) ??
+        expect(
+          partialVerdict.errors.some((e) => e.includes('criterion C')),
+          `the omitted criterion must be named; got: ${partialVerdict.errors.join('; ')}`,
+        ) ??
+        expect(
+          fullVerdict.ok,
+          `a handoff covering every packet criterion must validate; got: ${fullVerdict.errors.join('; ')}`,
+        ) ??
+        expect(
+          !doubledVerdict.ok && doubledVerdict.errors.some((e) => e.includes('criterion A')),
+          `a criterion in both buckets must be refused and named; got: ${doubledVerdict.errors.join('; ')}`,
+        )
+      );
+    },
+  );
+
+  scenario(40, 'changed_files is checked against what the commit actually touched', () => {
+    // A real, immutable commit from this repository's history: "docs(backlog): file
+    // p2.prisma-run-step review findings, close stale gitignore entry", which touches exactly
+    // one file. Sourced independently with `git diff-tree --no-commit-id --name-only -r
+    // 2b489c2` before writing this scenario, not derived from the function under test.
+    const sha = '2b489c2fd832000f7681a4bc8a7e09b9201dd897';
+    const accurate = checkChangedFiles(sha, ['BACKLOG.md']);
+    const omitted = checkChangedFiles(sha, []);
+    const padded = checkChangedFiles(sha, ['BACKLOG.md', 'scripts/lanes.ts']);
+    return (
+      expect(
+        accurate.length === 0,
+        `an accurate claim must not be flagged; got: ${accurate.join('; ')}`,
+      ) ??
+      expect(
+        omitted.some((e) => e.includes('BACKLOG.md')),
+        `a file the commit touched but the claim omits must be named; got: ${omitted.join('; ')}`,
+      ) ??
+      expect(
+        padded.some((e) => e.includes('scripts/lanes.ts')),
+        `a file the claim adds but the commit never touched must be named; got: ${padded.join('; ')}`,
+      )
+    );
+  });
+
+  await scenarioAsync(
+    41,
+    'a finding handoff requires evidence on PASSED and a structured reason on BLOCKED',
+    async () => {
+      const schema = JSON.parse(
+        readFileSync(
+          fileURLToPath(new URL('../../.claude/rules/handoff.schema.json', import.meta.url)),
+          'utf8',
+        ),
+      ) as object;
+      const lib = (await import(
+        new URL('../../.claude/hooks/lib/validate-schema.mjs', import.meta.url).href
+      )) as { validate: (v: unknown, s: object) => string[] };
+      const base = {
+        status: 'PASSED',
+        owner: 'validator',
+        failure: '',
+        evidence: [] as unknown[],
+        affectedArea: 'scripts/lanes.ts',
+        recommendedNextAction: 'merge',
+        confidence: 'HIGH',
+      };
+      const passedNoEvidence = lib.validate(base, schema);
+      const passedWithEvidence = lib.validate(
+        {
+          ...base,
+          evidence: [{ command: 'pnpm test', location: 'x', expected: 'y', actual: 'z' }],
+        },
+        schema,
+      );
+      const blockedNoReason = lib.validate({ ...base, status: 'BLOCKED' }, schema);
+      const blockedWithReason = lib.validate(
+        { ...base, status: 'BLOCKED', blocker: { kind: 'path', ref: 'platform/x' } },
+        schema,
+      );
+      return (
+        expect(
+          passedNoEvidence.some((e) => e.includes('evidence')),
+          `PASSED with empty evidence must be refused; got: ${passedNoEvidence.join('; ')}`,
+        ) ??
+        expect(
+          passedWithEvidence.length === 0,
+          `PASSED with evidence must validate; got: ${passedWithEvidence.join('; ')}`,
+        ) ??
+        expect(
+          blockedNoReason.some((e) => e.includes('blocker')),
+          `BLOCKED with no blocker must be refused; got: ${blockedNoReason.join('; ')}`,
+        ) ??
+        expect(
+          blockedWithReason.length === 0,
+          `BLOCKED with a structured blocker must validate; got: ${blockedWithReason.join('; ')}`,
+        )
+      );
+    },
+  );
+
+  await scenarioAsync(
+    42,
+    'a lane handoff claiming BLOCKED without a structured blocker is refused',
+    async () => {
+      const u = unit({ task_id: 'alpha' });
+      const base = {
+        task_id: 'alpha',
+        status: 'BLOCKED',
+        commit: '',
+        changed_files: [],
+        validation: { commands: [], results: [] },
+        acceptance_criteria: { verified: [], unverified: ['a documented criterion'] },
+        assumptions: [],
+        risks: [],
+        failures: [],
+        follow_up_required: [],
+        token_or_usage_summary: 'fixture',
+      };
+      const noBlocker = await validateHandoff(base, u, NO_COMMIT_CHECK);
+      const withBlocker = await validateHandoff(
+        { ...base, blocker: { kind: 'path', ref: 'docs/decisions/0006-x.md' } },
+        u,
+        NO_COMMIT_CHECK,
+      );
+      return (
+        expect(
+          noBlocker.errors.some((e) => e.includes('blocker')),
+          `BLOCKED with no blocker must be refused; got: ${noBlocker.errors.join('; ')}`,
+        ) ??
+        expect(
+          !withBlocker.errors.some((e) => e.includes('blocker')),
+          `a structured blocker must satisfy the requirement; got: ${withBlocker.errors.join('; ')}`,
+        )
+      );
+    },
+  );
+
+  scenario(
+    43,
+    'a unit or node with no usable changeClass hard-errors instead of shipping an empty agent chain',
+    () => {
+      const withoutClass = unit({ task_id: 'alpha', changeClass: null });
+      const withClass = unit({ task_id: 'beta' });
+      let laneError: string | null = null;
+      try {
+        decide([withoutClass, withClass]);
+      } catch (e) {
+        laneError = e instanceof Error ? e.message : String(e);
+      }
+
+      const node: Resolved = {
+        id: 'fixture.unclassified',
+        phase: 9,
+        lane: 'fixture',
+        title: 'fixture node with no changeClass',
+        owner: 'builder',
+        needs: [],
+        probes: [],
+        state: 'TODO',
+        hits: 0,
+        blockedBy: [],
+        readiness: 'READY',
+        depth: 0,
+        wave: 1,
+      };
+      let oracleError: string | null = null;
+      try {
+        verificationBlock(node);
+      } catch (e) {
+        oracleError = e instanceof Error ? e.message : String(e);
+      }
+
+      return (
+        expect(
+          laneError !== null && laneError.includes('alpha'),
+          `a batch containing an unclassified unit must hard-error naming it; got: ${laneError}`,
+        ) ??
+        expect(
+          oracleError !== null && oracleError.includes('fixture.unclassified'),
+          `a node with no changeClass must hard-error naming it; got: ${oracleError}`,
+        )
+      );
+    },
+  );
+
+  scenario(
+    44,
+    'the SubagentStop hook validates a lane handoff against the lane schema, never the finding schema',
+    () => {
+      const hook = fileURLToPath(
+        new URL('../../.claude/hooks/validate-handoff.mjs', import.meta.url),
+      );
+      const lanePath = join(tmpdir(), `selftest-lane-handoff-${process.pid}.json`);
+      const findingPath = join(tmpdir(), `selftest-finding-handoff-${process.pid}.json`);
+      const brokenPath = join(tmpdir(), `selftest-broken-lane-handoff-${process.pid}.json`);
+
+      const laneHandoff = {
+        task_id: 'fixture.alpha',
+        status: 'DONE',
+        commit: 'abcdef1234567890',
+        changed_files: ['fixture/alpha/index.ts'],
+        validation: {
+          commands: ['pnpm test'],
+          results: [{ command: 'pnpm test', exitCode: 0, passed: true }],
+        },
+        acceptance_criteria: { verified: ['a documented criterion'], unverified: [] },
+        assumptions: [],
+        risks: [],
+        failures: [],
+        follow_up_required: [],
+        token_or_usage_summary: 'fixture',
+        evidence: [
+          {
+            requirement: 'a documented criterion',
+            expected: 'x',
+            actual: 'x',
+            verification: 'pnpm test',
+            result: 'PASS',
+          },
+        ],
+      };
+      const findingHandoff = {
+        status: 'PASSED',
+        owner: 'validator',
+        failure: '',
+        evidence: [{ command: 'pnpm test', location: 'x', expected: 'y', actual: 'z' }],
+        affectedArea: 'scripts/lanes.ts',
+        recommendedNextAction: 'merge',
+        confidence: 'HIGH',
+      };
+      // Lane-shaped (has task_id) but DONE with no evidence — invalid under lane-handoff, and
+      // if it were wrongly checked against handoff.schema.json's additionalProperties:false
+      // it would also fail on every lane-only field name instead.
+      const brokenLaneHandoff = {
+        ...laneHandoff,
+        acceptance_criteria: { verified: [], unverified: [] },
+        evidence: [],
+      };
+
+      writeFileSync(lanePath, JSON.stringify(laneHandoff));
+      writeFileSync(findingPath, JSON.stringify(findingHandoff));
+      writeFileSync(brokenPath, JSON.stringify(brokenLaneHandoff));
+
+      const runHook = (p: string) =>
+        spawnSync(process.execPath, [hook, '--file', p], { encoding: 'utf8' });
+
+      try {
+        const laneResult = runHook(lanePath);
+        const findingResult = runHook(findingPath);
+        const brokenResult = runHook(brokenPath);
+
+        return (
+          expect(
+            laneResult.status === 0,
+            `a valid lane handoff must pass; stderr: ${laneResult.stderr}`,
+          ) ??
+          expect(
+            findingResult.status === 0,
+            `a valid finding handoff must pass; stderr: ${findingResult.stderr}`,
+          ) ??
+          expect(
+            brokenResult.status === 2,
+            `an invalid lane handoff must fail; got exit ${brokenResult.status}`,
+          ) ??
+          expect(
+            brokenResult.stderr.includes('lane-handoff.schema.json'),
+            `the error must name the lane schema, not the finding schema; got: ${brokenResult.stderr}`,
+          ) ??
+          expect(
+            !brokenResult.stderr.includes('unexpected property'),
+            `a lane-shaped handoff must never be checked against handoff.schema.json's ` +
+              `additionalProperties:false; got: ${brokenResult.stderr}`,
+          )
+        );
+      } finally {
+        rmSync(lanePath, { force: true });
+        rmSync(findingPath, { force: true });
+        rmSync(brokenPath, { force: true });
+      }
+    },
+  );
 
   return report();
 }

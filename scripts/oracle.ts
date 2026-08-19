@@ -410,11 +410,20 @@ function ownershipBlock(n: Resolved): string[] {
 }
 
 /** Validation, acceptance and the agents this change class actually needs. */
-function verificationBlock(n: Resolved): string[] {
+export function verificationBlock(n: Resolved): string[] {
   const commands = n.validate ?? [];
   const activation = loadActivation();
   const cls = n.changeClass;
   const rule = cls ? activation.classes[cls] : undefined;
+  // A missing or unmapped changeClass used to silently drop the whole `## Agents` block — a
+  // packet with no validation chain, and nothing in the output said so. Hard error instead.
+  if (!rule) {
+    throw new Error(
+      `node "${n.id}" has no usable changeClass (got ${JSON.stringify(cls)}) — add one of ` +
+        'mechanical|feature|behavior|contract|diagnosis to scripts/oracle/graph.json so the ' +
+        'agent chain is not silently empty',
+    );
+  }
 
   const out = ['## Validation', ''];
   if (commands.length === 0) {
@@ -441,20 +450,18 @@ function verificationBlock(n: Resolved): string[] {
     '',
   );
 
-  if (rule) {
-    out.push(
-      '## Agents',
-      '',
-      `Change class **${cls}** (risk ${n.risk ?? 'unstated'}): ${rule.rationale}`,
-      '',
-      `- required: ${resolveRoles(rule.required, activation).join(' → ') || 'none'}`,
-      `- optional: ${resolveRoles(rule.optional, activation).join(', ') || 'none'}`,
-      '',
-      'Optional agents run when their activation condition fires, not by default. Dispatching',
-      'an agent that had nothing to look at costs the same as one that did.',
-      '',
-    );
-  }
+  out.push(
+    '## Agents',
+    '',
+    `Change class **${cls}** (risk ${n.risk ?? 'unstated'}): ${rule.rationale}`,
+    '',
+    `- required: ${resolveRoles(rule.required, activation).join(' → ') || 'none'}`,
+    `- optional: ${resolveRoles(rule.optional, activation).join(', ') || 'none'}`,
+    '',
+    'Optional agents run when their activation condition fires, not by default. Dispatching',
+    'an agent that had nothing to look at costs the same as one that did.',
+    '',
+  );
   return out;
 }
 
