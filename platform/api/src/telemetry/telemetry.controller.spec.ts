@@ -2,7 +2,7 @@ import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
-import type { IngestResponse } from '@lengentic/shared';
+import { INGEST_LIMITS, type IngestResponse } from '@lengentic/shared';
 import { TelemetryEventsController } from './telemetry.controller';
 import { TelemetryService } from './telemetry.service';
 
@@ -82,6 +82,23 @@ describe('TelemetryEventsController', () => {
 
   it('rejects a request body missing the events field entirely with HTTP 400', async () => {
     const response = await request(app.getHttpServer()).post('/telemetry/events').send({});
+
+    expect(response.status).toBe(400);
+    expect(received).toBeUndefined();
+  });
+
+  it('rejects a batch over the 500-event limit at the request level with HTTP 400, before the service runs', async () => {
+    const events = Array.from({ length: INGEST_LIMITS.maxEventsPerBatch + 1 }, (_, i) => ({
+      eventId: `evt-${i}`,
+      schemaVersion: '1',
+      type: 'run.started',
+      entityId: `run-${i}`,
+      runId: `run-${i}`,
+      occurredAt: '2026-08-18T10:00:00.000Z',
+      payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+    }));
+
+    const response = await request(app.getHttpServer()).post('/telemetry/events').send({ events });
 
     expect(response.status).toBe(400);
     expect(received).toBeUndefined();
