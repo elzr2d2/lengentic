@@ -1591,3 +1591,32 @@ so ADR 0007's order-independence purity claim is not violated) — this is a §1
 not an ADR 0007 violation. Closes when `TimestampSchema` is tightened to reject sub-millisecond
 precision, or the comparator is changed to compare full ISO strings before falling back to
 `Date.parse`, with a test at exactly this boundary.
+
+## Discovered designing p2.prisma-run-step's schema (2026-08-19)
+
+### ADR 0005's dedup table has no lane that can write it
+
+**Source:** Architect packet `p2.prisma-run-step`, design step, 2026-08-19. Full design at
+`.artifacts/lanes/p2.prisma-run-step-design.md` in lane worktree
+`lengentic-lane-p2-prisma-run-step` (not committed — Architect writes no lane code; copy it
+out before the worktree is ever removed if the design itself needs to survive).
+
+`p2.prisma-run-step` is the only Phase 2 node whose `allowed_paths` include
+`platform/database/prisma/**` (`scripts/oracle/graph.json`), and its packet text says
+"Implement only Run and Step" — so it correctly does not add an idempotency/dedup table.
+But `p2.idempotency`'s `allowed_paths` are `platform/api/src/**` only (graph.json:567-569) —
+no later node can write a migration for the dedup table ADR 0005 assumes exists. **Trigger:**
+whichever packet is framed to implement idempotent upsert (work package #3 in Phase 2's
+table) — either widen that node's `allowed_paths` to include `platform/database/prisma/**`,
+or split a small schema-only sub-node it depends on. Decide before that packet is dispatched,
+not while it is running.
+
+### `platform/database/src/generated/` is neither tracked nor gitignored
+
+**Source:** Same Architect pass. Root `.gitignore` is outside `p2.prisma-run-step`'s
+`allowed_paths`, so this was left alone rather than fixed inline. Prisma's generated client
+output lands there on every `db:generate`/`db:migrate`/`build`; if it is not ignored it will
+show up as untracked churn (or get accidentally committed) the first time someone runs
+`git status` after a generate. **Trigger:** the next lane that touches `.gitignore`, or a
+standalone one-line fix whenever it starts being noisy — add
+`platform/database/src/generated/` to the root `.gitignore`.
