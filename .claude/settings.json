@@ -1,5 +1,17 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(pnpm gates*)",
+      "Bash(pnpm check:*)",
+      "Bash(pnpm lanes *)",
+      "Bash(pnpm oracle *)",
+      "Bash(pnpm kb *)",
+      "Bash(pnpm test)",
+      "Bash(pnpm typecheck)",
+      "Bash(pnpm lint)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {

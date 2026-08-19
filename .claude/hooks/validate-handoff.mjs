@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Enforces `.claude/rules/handoff.schema.json` on agent output (MVP_PLAN.md §25, §36).
+ * Enforces `.claude/rules/handoff.schema.json` or `.claude/rules/lane-handoff.schema.json`
+ * on agent output (MVP_PLAN.md §25, §36).
  *
  * Wired to SubagentStop. Reads the subagent's transcript, finds the last assistant
  * message, and looks for a handoff JSON object in it.
@@ -10,6 +11,13 @@
  *   JSON found, valid    -> allow.
  *   JSON found, invalid  -> exit 2. Claude Code surfaces stderr to the agent, which gets
  *                           a chance to correct the shape.
+ *
+ * Two contracts, not one. `handoff.schema.json` is a validation agent's FINDING about
+ * someone else's work; `lane-handoff.schema.json` is a lane's report on its own — see the
+ * lane schema's own description. The candidate's shape says which one it is meant to be:
+ * a lane handoff always carries `task_id` (the graph node it was dispatched against) and
+ * `handoff.schema.json` has `additionalProperties: false`, so validating a lane handoff
+ * against it produces spurious "unexpected property" errors for every lane-only field.
  *
  * The permissive "no JSON" case is deliberate. A hook that blocks on absence would force
  * every agent to emit a handoff, which is not what §25 asks for — it asks that handoffs,
@@ -23,14 +31,18 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { validate } from './lib/validate-schema.mjs';
 
-const SCHEMA_PATH = fileURLToPath(new URL('../rules/handoff.schema.json', import.meta.url));
+const FINDING_SCHEMA_PATH = fileURLToPath(new URL('../rules/handoff.schema.json', import.meta.url));
+const LANE_SCHEMA_PATH = fileURLToPath(
+  new URL('../rules/lane-handoff.schema.json', import.meta.url),
+);
 
 function main() {
   const fileFlag = process.argv.indexOf('--file');
   if (fileFlag !== -1) {
     const path = process.argv[fileFlag + 1];
     if (!path) fail('--file requires a path');
-    report(validateCandidate(JSON.parse(readFileSync(path, 'utf8'))), path);
+    const candidate = JSON.parse(readFileSync(path, 'utf8'));
+    report(validateCandidate(candidate), path, schemaPathFor(candidate));
     return;
   }
 
@@ -40,24 +52,44 @@ function main() {
   const candidate = lastHandoffCandidate(payload.transcript_path);
   if (candidate === null) process.exit(0);
 
-  report(validateCandidate(candidate), 'agent output');
+  report(validateCandidate(candidate), 'agent output', schemaPathFor(candidate));
+}
+
+/** A lane handoff always names the dispatched node in `task_id`; a finding never does. */
+function schemaPathFor(candidate) {
+  return candidate && typeof candidate === 'object' && 'task_id' in candidate
+    ? LANE_SCHEMA_PATH
+    : FINDING_SCHEMA_PATH;
 }
 
 function validateCandidate(candidate) {
-  const schema = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'));
+  const schema = JSON.parse(readFileSync(schemaPathFor(candidate), 'utf8'));
   return validate(candidate, schema);
 }
 
-function report(errors, source) {
+function report(errors, source, schemaPath) {
   if (errors.length === 0) process.exit(0);
+  const schemaName = schemaPath.endsWith('lane-handoff.schema.json')
+    ? 'lane-handoff.schema.json'
+    : 'handoff.schema.json';
+  const hint =
+    schemaName === 'lane-handoff.schema.json'
+      ? [
+          'Return a JSON object with: task_id, status, commit, changed_files, validation,',
+          'acceptance_criteria, assumptions, risks, failures, follow_up_required,',
+          'token_or_usage_summary. `evidence` is required for DONE, `blocker` for BLOCKED.',
+        ]
+      : [
+          'Return a JSON object with: status, owner, failure, evidence, affectedArea,',
+          'recommendedNextAction, confidence. `evidence` must be non-empty when status is',
+          'FAILED or PASSED; `blocker` is required when status is BLOCKED.',
+        ];
   process.stderr.write(
     [
-      `Handoff report from ${source} does not match .claude/rules/handoff.schema.json:`,
+      `Handoff report from ${source} does not match .claude/rules/${schemaName}:`,
       ...errors.map((e) => `  - ${e}`),
       '',
-      'Return a JSON object with: status, owner, failure, evidence, affectedArea,',
-      'recommendedNextAction, confidence. `evidence` must be non-empty when status is',
-      'FAILED — an unevidenced failure is an opinion.',
+      ...hint,
       '',
     ].join('\n'),
   );

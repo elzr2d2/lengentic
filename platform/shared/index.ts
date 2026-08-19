@@ -24,6 +24,8 @@ export { INGEST_LIMITS } from './schema/limits';
 export {
   TELEMETRY_INGEST_PATH,
   INGEST_ERROR_CODES,
+  EVENT_LEVEL_ERROR_CODES,
+  REQUEST_ERROR_CODES,
   IngestRequestSchema,
   IngestResponseSchema,
   IngestResultSchema,
@@ -32,9 +34,11 @@ export {
 } from './schema/ingest';
 export type {
   IngestErrorCode,
+  RequestErrorCode,
   IngestRequest,
   IngestResponse,
   IngestResult,
+  IngestResultError,
   IngestResultStatus,
 } from './schema/ingest';
 

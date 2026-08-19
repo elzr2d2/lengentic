@@ -849,10 +849,15 @@ cannot edit the fixtures it must satisfy.
 review, 2026-08-16. Full reasoning lives there; this entry exists so the items are not lost
 between now and the phase that owns each one.
 
-- **Per-lane `DATABASE_URL`.** R9 compares file paths, so two lane worktrees sharing one
-  Postgres is an undeclared shared write surface and `check-lane-ownership.mjs` cannot see it.
-  _Does not apply to 5a — nothing in it touches a database._ **Trigger:** the first wave that
-  runs a migration alongside any other lane, i.e. Phase 2 wave 2 (`p2.prisma-run-step`).
+- ~~**Per-lane `DATABASE_URL`.**~~ **Resolved 2026-08-19**, at the trigger (`p2.prisma-run-step`
+  dispatch). R9 compares file paths, so two lane worktrees sharing one Postgres was an
+  undeclared shared write surface `check-lane-ownership.mjs` cannot see. `pnpm lanes
+worktrees <id...>` now also prints a command that copies the root `.env` into the lane
+  worktree with `DATABASE_URL`'s `schema` param rewritten to `lane_<slug>` — same Postgres
+  instance, isolated schema per lane; Prisma creates the schema on first `db:migrate`. Fix:
+  `scripts/lanes.ts` (`readBaseDatabaseUrl`, `laneSchemaName`, `laneDatabaseUrl`), covered by
+  the existing `pnpm check:lanes` suite (38/38 green, unchanged count — no new scenario added,
+  this is a printed-command change, not new gate logic).
 - **`pnpm lanes worktrees` prints a comment, not a command.** It emits `current.json` as a `#`
   block for a human to hand-type. No lane file means no enforcement, silently — the worst
   available failure mode. Roughly five lines in `scripts/lanes.ts` case `'worktrees'`.
@@ -1447,3 +1452,386 @@ and the fact that it is written down here is not approval to build it.
 
 Reopens only after §18–§21 are built and shipped, and only if the shipped thing demonstrably
 fails to record something a user needed — which is evidence this entry does not have today.
+
+### `STALE` needs a read-model vocabulary, and it lands in `platform/shared/read/**` — not `schema/`
+
+**Source:** Reviewer finding SC1 against `p2.shared-schema` at `195af11`,
+`.artifacts/evidence/2/wire-contract-review-195af11.md`. **Trigger:** `p2.runs-api`, Phase 2 wave 3.
+
+`platform/shared/schema/status.ts:4` freezes `RUN_STATUSES = ['RUNNING','COMPLETED','FAILED']`.
+ADR 0005 decision 4 requires the API response to report `STALE`, computed server-side from
+`lastEventAt` and the existing `STALE_RUN_THRESHOLD_MS`. The stored enum cannot express it, and
+`MVP_PLAN_V3.md:592` is explicit that `STALE` is derived at read time and **never stored**.
+
+**Already decided — Architect's option B, previous session.** `p2.runs-api` widens its
+`allowed_paths` into `platform/shared/read/**` and puts the response vocabulary there. Deliberately
+**not** `schema/`, so `CLAUDE.md` `## Types` — "`platform/shared/schema/**` is the only wire
+contract" — stays literally true: `schema/` is the _ingestion_ contract, `read/` is the _response_
+model, and neither one leaks into the other.
+
+It is filed here because the decision existed only in a previous session's context. Reviewer could
+not tell "a later wave adds it" from "nobody noticed", and said so as its own unknown. That is the
+whole failure mode: an unwritten decision is indistinguishable from an oversight, and comes back as
+a finding every time someone reads the code fresh.
+
+**What `p2.runs-api` must not do:** declare a second run-status enum anywhere under
+`platform/shared/schema/**`, or mutate `RUN_STATUSES`. Either one makes the stored enum and the
+response enum the same object, and the next writer stores `STALE`.
+
+Closes when `p2.runs-api` ships the read model with a test that asserts a run whose `lastEventAt`
+is older than `STALE_RUN_THRESHOLD_MS` reports `STALE` while its stored `status` is still
+`RUNNING` — both halves asserted, because either alone passes on a wrong implementation.
+
+### `entityId === runId` consistency check for run events — dropped at S4, re-add only with a citation
+
+**Source:** Recovery of `p2.shared-schema` at `c39f4d2`,
+`.artifacts/evidence/2/wire-contract-recovery.md:169`. **Trigger:** `p2.ingest-endpoint`, or any
+future §12 amendment.
+
+`parse.ts` used to reject a run event whose `entityId !== runId`. The rule appears nowhere in
+§12/§13, so S4's remedy was "cite or drop" and it was dropped — the wire contract currently does
+not enforce it. It is a defensible inference; per ADR 0006's own reasoning, re-adding it later
+narrows what the wire accepts, so if it comes back it needs a plan citation (or an ADR) and its
+own rejection code — not `INVALID_PAYLOAD`, which §12 reserves for Zod payload failures.
+
+### Self-parent (`parentStepId === entityId`) cycle detection — dropped at S4; already a read-time candidate
+
+**Source:** Recovery of `p2.shared-schema` at `c39f4d2`,
+`.artifacts/evidence/2/wire-contract-recovery.md:171`; same idea as the architect brief's own
+backlog item (`.artifacts/plans/2-wave1-architect-brief.md:764-771`, "`parentStepId` cycle
+detection at read time"). **Trigger:** `p2.runs-api` (read-time), or a §13 amendment (wire-time).
+
+`parse.ts` used to reject a `step.started` whose `parentStepId === entityId`. No §12/§13 citation
+exists, so it was dropped from the wire contract. The architect brief already flags cycle
+detection as a read-time concern — one detector at read time covers self-parent as the trivial
+case and true cycles as the general one, which ingestion-time checking never could. Do not
+re-add it at the wire without a plan citation.
+
+### Merge state is rehydrated across requests, and `completionFieldOrigins` must survive the round trip
+
+**Source:** Architect ruling on the `p2.merge-rules` completion-field repair, 2026-08-18 (lane
+`lane/p2.merge-rules`, HEAD `3d0696d`). **Trigger:** `p2.ingest-endpoint` only — narrowed
+2026-08-19, storage half closed by `p2.prisma-run-step` at `ce2b8f5`/`42cbe55` (see below).
+
+Order-independent completion-field merging needs per-key provenance — which (`occurredAt`,
+`eventId`) last wrote each key — carried in `EntityMergeState` as `completionFieldOrigins`. Inside
+one `mergeEvent` fold chain that is free. Across requests it is not: if the ingest endpoint loads
+state from Postgres, merges, and writes back **without** persisting the origins map, every key's
+origin resets on the next batch and the last-arriving batch wins per key again — the exact ADR 0007
+§3 violation the repair removes, reintroduced one layer up and invisible to `merge-rules.spec.ts`,
+which never crosses a process boundary.
+
+**Closure condition (a), storage half, is met.** `p2.prisma-run-step` added
+`completionFieldOrigins Json?` to `Run` and `Step` (migration
+`20260819080115_run_step_completion_origins`, commit `ce2b8f5`), doc-corrected at `42cbe55` after
+a Reviewer pass caught the comment misdescribing the key structure (fresh eyes: it would have
+reintroduced this exact bug one layer down if followed literally — see the new entry below).
+Column name, shape (`Json?`, mirrors `metadata Json?`) and doc comment now match
+`EntityMergeState.completionFieldOrigins` at `merge-rules.ts:56-60,76`.
+
+**Still open — the only remaining condition:** the test half of (a) — a test that merges two
+completion events carrying disjoint keys in two separate requests, in both arrival orders, and
+asserts one final state — plus the actual read/write wiring at the ingest endpoint. That is
+`p2.ingest-endpoint`'s packet, not this one. Ruled out already: storing provenance inside
+`completionFields` itself, which leaks merge bookkeeping into the value the persistence edge maps
+(`CLAUDE.md` `## Types`).
+
+### `REQUEST_ERROR_CODES` is half a contract — the endpoint must confirm the names and land the response shape
+
+**Source:** Reviewer finding SC-A on `c39f4d2` (per-node contract review, 2026-08-18).
+**Trigger:** `p2.ingest-endpoint`.
+
+`platform/shared/schema/ingest.ts:43-47` exports three request-level code names
+(`BODY_TOO_LARGE`, `INVALID_JSON`, `INVALID_BATCH`). `MVP_PLAN_V3.md:530-533` names those
+rejections in prose only — the strings are invented, and nothing binds them to a response:
+`IngestResponseSchema` has no request-level error arm, so `p2.ingest-endpoint` still invents
+the HTTP-400 body shape. On the record: the same commit dropped two rules for lacking a
+citation (S4) while adding these three uncited names — both moves were directed by review, so
+this is a naming decision the endpoint packet must **confirm, not inherit**. Closes when the
+endpoint lands the 400-body schema in `platform/shared/schema/**` (it is wire contract) using
+these names or replacing them in the same commit, with a test binding code to body.
+
+### `merge-rules.ts` per-key provenance drops 12 `Object.prototype` key names, silently
+
+**Source:** Fresh Tester re-verification of the `p2.merge-rules` order-independence repair,
+commit `f9443a4`, 2026-08-18 (agent `aa6430a1ab6589c69`). **Trigger:** whichever packet gives a
+caller control over `metadata` key names flattened into `fields` — likely `p2.ingest-endpoint`.
+
+`nextOrigins`/`nextFields` in `mergeEvent`'s completion branch are plain `{}` objects. A key
+named `toString`, `constructor`, `hasOwnProperty`, `valueOf`, `__proto__` (12 total —
+`Object.prototype`'s own names) reads back the **inherited** prototype member instead of
+`undefined` when probed with `nextOrigins[key]`, so the provenance guard falls through to
+`compareCompletionOrder(incoming, <prototype member>)`, computes `NaN`, and `NaN > 0` is
+`false` — the key is silently dropped: no value written, no origin recorded, no error. The
+start branch (whole-record replace) is unaffected — same input keeps all 12 keys there.
+Regression introduced by the per-key-provenance repair itself: the prior shallow-spread
+implementation (`{...base.completionFields, ...completionEvent.fields}`) preserved these keys,
+since object spread uses `CreateDataProperty` and never consults the prototype chain.
+
+**Not reachable today.** Completion payload top-level keys are the closed set `{status,
+metadata}` (`platform/shared/schema/run-events.ts:17-20`, `step-events.ts:18-20`); a
+caller-controlled key name only reaches `fields` if some future packet flattens `metadata`'s
+contents into the top level before folding. No prototype pollution occurs — `{}.polluted`
+stays `undefined` in the tester's probe.
+
+Closes when whichever packet makes `fields` keys caller-controlled either fixes
+`nextOrigins`/`nextFields` to `Object.create(null)` (or gates lookups with
+`Object.hasOwn`) in the same commit, or the wire contract stays closed-set forever and this
+entry is closed as "never reachable" with that citation.
+
+### `merge-rules.ts` completion tiebreak resolves by eventId, not by time, on sub-millisecond ties
+
+**Source:** Same Tester pass as above, commit `f9443a4`. **Trigger:** any packet touching
+completion timestamp precision — likely `p2.ingest-endpoint` or a future `TimestampSchema`
+tightening. Pre-existing behavior, not introduced by this repair.
+
+`TimestampSchema = z.iso.datetime({ offset: true })` (`platform/shared/schema/primitives.ts:8`)
+accepts sub-millisecond precision (e.g. `.000100Z` vs `.000900Z`), but `compareCompletionOrder`
+compares via `Date.parse`, which truncates to whole milliseconds. Two schema-valid completions
+900µs apart truncate to an equal instant and fall to the eventId tiebreak — the genuinely
+**earlier** event can win if its `eventId` sorts greater. `MVP_PLAN_V3.md:505-506` says "last
+writer wins by `occurredAt`"; ADR 0007 scopes the eventId tiebreak to an "identical"
+`occurredAt`, which sub-ms-truncated-to-equal is not. Deterministic (both arrival orders agree,
+so ADR 0007's order-independence purity claim is not violated) — this is a §12 semantics gap,
+not an ADR 0007 violation. Closes when `TimestampSchema` is tightened to reject sub-millisecond
+precision, or the comparator is changed to compare full ISO strings before falling back to
+`Date.parse`, with a test at exactly this boundary.
+
+## Discovered designing p2.prisma-run-step's schema (2026-08-19)
+
+### ADR 0005's dedup table has no lane that can write it
+
+**Source:** Architect packet `p2.prisma-run-step`, design step, 2026-08-19. Full design at
+`.artifacts/lanes/p2.prisma-run-step-design.md` in lane worktree
+`lengentic-lane-p2-prisma-run-step` (not committed — Architect writes no lane code; copy it
+out before the worktree is ever removed if the design itself needs to survive).
+
+`p2.prisma-run-step` is the only Phase 2 node whose `allowed_paths` include
+`platform/database/prisma/**` (`scripts/oracle/graph.json`), and its packet text says
+"Implement only Run and Step" — so it correctly does not add an idempotency/dedup table.
+But `p2.idempotency`'s `allowed_paths` are `platform/api/src/**` only (graph.json:567-569) —
+no later node can write a migration for the dedup table ADR 0005 assumes exists. **Trigger:**
+whichever packet is framed to implement idempotent upsert (work package #3 in Phase 2's
+table) — either widen that node's `allowed_paths` to include `platform/database/prisma/**`,
+or split a small schema-only sub-node it depends on. Decide before that packet is dispatched,
+not while it is running.
+
+### ~~`platform/database/src/generated/` is neither tracked nor gitignored~~ — closed, not a bug
+
+**Source:** Same Architect pass. **Closed 2026-08-19** — verified false. `platform/database/.gitignore:1`
+already ignores `src/generated/`, since Phase 1. `git check-ignore -v` confirms:
+`platform/database/.gitignore:1:src/generated/  platform/database/src/generated/foo.ts`. Confirmed
+independently by two later passes (`p2.prisma-run-step` builder handoff, and Watchdog on
+commits `06508d5`/`ce2b8f5`). No action needed.
+
+### `completionFieldOrigins` doc comment misdescribed its own key structure — caught, not shipped
+
+**Source:** Reviewer finding S-A on `p2.prisma-run-step` lane commit `ce2b8f5`, 2026-08-19
+(fresh re-review dispatched to close BACKLOG's `completionFieldOrigins` trigger above).
+**Trigger:** none — fixed in the same packet at commit `42cbe55`. Recorded for the pattern, not
+as open work.
+
+The doc comment shipped on `ce2b8f5` said the map was keyed "by each key of `metadata`" and was
+"Null before any completion event" — both wrong. The map is keyed by `completionFields` key
+names (today exactly one: the literal string `"metadata"`), and `merge-rules.ts:74-76` requires
+`completionFields` (and by extension the sibling origins map) to be an object, never null, before
+completion. A future packet following the comment literally would have serialized per-metadata-key
+origins, which cannot rehydrate `EntityMergeState.completionFieldOrigins` — silently reintroducing
+the exact arrival-order fallback this column exists to prevent, one layer down and invisible to
+`merge-rules.spec.ts`. Worth keeping as a pattern note: a storage-layer fix that is structurally
+correct can still ship a spec-shaped defect in its own doc comment, and only a second, deliberately
+skeptical review pass (not the same reviewer re-checking their own diagnosis) caught it.
+
+### `Run`/`Step` have one `metadata` column but two independently-resolved merge bags
+
+**Source:** Reviewer finding S-C on `p2.prisma-run-step` lane commit `ce2b8f5`, 2026-08-19.
+**Trigger:** `p2.ingest-endpoint`.
+
+`EntityMergeState` keeps `startFields` (first-writer-wins by `occurredAt`) and `completionFields`
+(last-writer-wins by `occurredAt`) as two independently-resolved bags (`merge-rules.ts:62,65`), and
+for both `Run` and `Step` today the sole key of each bag is `metadata`. But `schema.prisma` has one
+`metadata Json?` column per model — nowhere to store both the start-winner and the completion-winner
+independently. Not `p2.prisma-run-step`'s to fix: `MVP_PLAN_V3.md` §13 lists exactly one `metadata`
+field per model, so the schema matches its contract as written; adding a second column is a domain-
+model change outside this packet's authority. Already an open question in the packet's own design
+note (`.artifacts/lanes/p2.prisma-run-step-design.md:324`, gitignored, not on `main`) — recorded here
+so it survives the worktree. Closes when the ingest-endpoint packet either adds the second column (a
+domain-model change, likely needs an ADR) or shows one column is sufficient and records why.
+
+### No mechanical check that migration SQL reproduces `schema.prisma`
+
+**Source:** Reviewer finding S-D on `p2.prisma-run-step` lane commit `ce2b8f5`, 2026-08-19.
+**Trigger:** `p2.idempotency`, or whichever packet next needs a migration and has write access to
+root config.
+
+`platform/database/prisma.config.ts` sets no `datasource.shadowDatabaseUrl`, so
+`prisma migrate diff --from-migrations ./prisma/migrations --to-schema ./prisma/schema.prisma
+--exit-code` errors out instead of running: `Error: You must set datasource.shadowDatabaseUrl in
+your prisma.config.ts if you want to diff a migrations directory.` `pnpm gates` runs `prisma
+generate` off `schema.prisma` directly and never reads `prisma/migrations/`, so a hand-edited,
+truncated, or missing migration file would pass every gate green. Today the two happen to agree —
+verified by manual column-for-column read-back across two migrations — but this is the first
+migration-bearing Phase 2 packet and every later one inherits the same blind spot. Not
+`p2.prisma-run-step`'s to fix: `prisma.config.ts` is outside its `allowed_paths`
+(`platform/database/prisma/**`, `platform/database/src/**`), and wiring a gate step touches root
+scripts. Collides with the still-open "ADR 0005 dedup table has no lane that can write it" entry
+above — same root cause, no node currently has write access to both `prisma.config.ts` and a gate
+script. Closes when a shadow database URL is configured (locally or in CI) and a migration-drift
+check is added to `pnpm gates` or `pnpm gates:full`.
+
+### `pnpm db:migrate -- --name <x>` hangs; `pnpm exec prisma migrate dev --name <x>` works
+
+**Source:** Two independent Builder runs on `p2.prisma-run-step`, 2026-08-19 (both the original
+schema commit and the `completionFieldOrigins` repair). **Trigger:** whichever packet next
+touches the root `package.json` migration script, or a standalone fix whenever it starts
+costing real time.
+
+`pnpm db:migrate -- --name <migration-name>` hung both times it was tried on this packet;
+`pnpm exec prisma migrate dev --name <migration-name>` (bypassing the package script) worked
+immediately both times, same effect. Root cause not diagnosed — not blocking, since the
+workaround is one substitution — but will bite every future migration-bearing packet the same
+way until someone looks at how `db:migrate` forwards its args.
+
+### `platform/dashboard/tsconfig.tsbuildinfo` is a tracked build artifact that fails every lane's scope gate
+
+**Source:** Reviewer finding S-E on `p2.prisma-run-step` lane commit `ce2b8f5`, 2026-08-19.
+**Trigger:** the next lane that touches `.gitignore`, or a standalone one-line fix whenever it
+starts being noisy.
+
+`platform/dashboard/tsconfig.tsbuildinfo` has been tracked (not gitignored — `git check-ignore`
+exits 1) since Phase 1 commit `a898ac6`. Every `pnpm gates` run rewrites it as a side effect of
+the Next.js build step. Any lane that runs `pnpm gates` before `pnpm lanes check <id>` gets a
+false `BLOCK platform/dashboard/tsconfig.tsbuildinfo — outside allowed_paths` — reproduced twice
+on this packet, worked around both times with `git checkout --` before committing. Real fix:
+`git rm --cached platform/dashboard/tsconfig.tsbuildinfo` plus a `.gitignore` line for
+`*.tsbuildinfo` under `platform/dashboard/`. Outside every current Phase 2 lane's `allowed_paths`
+(root `.gitignore`), so no lane has fixed it inline.
+
+## Discovered during the .claude infrastructure audit (2026-08-19)
+
+The audit report with `file:line` citations is `.artifacts/audits/2026-08-19-claude-infra-audit.md`.
+Items 1–6 of its §7 ranked fix list were implemented on branch `harness-audit-fixes`
+(commits `e52bb2e`–`77f42a1` plus the fixes-1/2/5 commit); everything below was deliberately
+deferred. None of it is required by the Phase 2 Definition of Done.
+
+### Verify that claimed artifact paths exist
+
+**Source:** audit §7 item 7 (§3 item 8). **Trigger:** the next packet that touches
+`scripts/lanes.ts` evidence checks, or a standalone harness fix.
+
+`artifact` paths in evidence entries and the top-level `artifacts` array are never checked to
+exist — "the output is at this path" is an unchecked claim, and `report-handoff` builds its
+detail-in-artifact discipline on it. `checkEvidence` already has the handoff in hand; an
+`existsSync` per cited path closes it. Deferred because it needs a decision about worktree-relative
+vs repo-relative paths for lanes running in worktrees.
+
+### Distinct exit code when `pnpm lanes wave` means "phase finished"
+
+**Source:** audit §7 item 8 (§5 item 3); `scripts/lanes.ts:1156`. **Trigger:** the next
+phase-gate session that scripts around `pnpm lanes wave`.
+
+"No outstanding work in phase N" and "failed" both exit 1; CLAUDE.md already carries a warning
+paragraph because this burned a session. Give "finished" exit 0 with its message, or a dedicated
+code. One-line fix plus a selftest scenario.
+
+### In-repo, model-invocable charter skill for autopilot §0
+
+**Source:** audit §7 item 9 (§4 item 2). **Trigger:** the next attempt to start autopilot
+unattended, or on a fresh clone.
+
+`autopilot` step 0 requires `grill-with-docs`, which is user-global and sets
+`disable-model-invocation: true`, so autopilot cannot start unattended and a fresh clone has no
+charter step at all. Move a minimal charter-capture skill into `.claude/skills/`.
+
+### `frame-phase` stops unconditionally; should stop only on trigger 3
+
+**Source:** audit §7 item 10 (§4 item 1, §5 item 9); `frame-phase:81-82`. **Trigger:** the next
+phase framing (Phase 3 start).
+
+The skill says "stop and confirm with the user" per phase, contradicting CLAUDE.md's "a phase
+boundary is a validation gate, not an approval gate". Make it stop only when the decision
+frontier is non-empty (escalation trigger 3), and wire it to `pnpm decide`, which no skill
+currently calls.
+
+### `pnpm oracle green <phase>` aggregating GREEN's four sources
+
+**Source:** audit §7 item 11 (§3 item 9). **Trigger:** the next phase validation gate.
+
+Three of GREEN's four sources are prose only (`autopilot:98-104`); gates alone are executable.
+The oracle already has `path`/`absent` probe kinds — a command that aggregates gates, probes,
+handoff verdicts and open findings into one GREEN/RED would make `validate-phase` mechanical.
+
+### Structured finding metadata in `handoff.schema.json`
+
+**Source:** audit §7 item 12 (§3 items 10, 11). **Trigger:** the next change to
+`.claude/rules/handoff.schema.json`.
+
+Reviewer's `this-node` tags and count, watchdog's per-hit confirmed/unconfirmed marker and
+reflector's seven mandatory fields exist only in prose; `classification` is free text while a
+4-value enum already exists at `log-event.schema.json:74-77`. Add `classification`, `nodeId`
+and a finding-owner tag so the wave gate can read them mechanically.
+
+### Script-written autopilot checkpoint and machine-readable mode flag
+
+**Source:** audit §7 item 13 (§4 items 3, 4). **Trigger:** the next autopilot run.
+
+Nothing writes `.claude/autopilot.local.md` but model discipline, and it is the sole authority
+for recovery-attempt history. "Under autopilot" has no machine signal (`validate-phase:48`
+branches on a mode no script can read). `pnpm autopilot checkpoint` plus a flag file closes both.
+
+### Doc rot: retired-plan citations and contradictions
+
+**Source:** audit §7 item 14 and the whole §6 list. **Trigger:** standalone mechanical sweep,
+or whichever packet next edits each file.
+
+The full §6 list, verbatim targets: `update-backlog:8,18,34` cites v2 and §94 (v3 is §27);
+`run-quality-gates:8,29` cites v2 §29/§31; `update-backlog:28-33` misdescribes BACKLOG.md's
+structure; `validate-phase:45-46` mis-cites where GREEN's four sources are defined;
+`report-handoff`'s per-role table omits validator while `validator.md:52` points at it;
+`dispatch-lanes:114-116` says gates:full once per batch but `.husky/pre-commit` runs it per
+commit; `review-diff:3` says per-commit review while `agent-activation.json` and
+`CONTEXT.md:131` say per-wave; `agent-activation.json:82` cites `pnpm lanes selftest` (alias is
+`check:lanes`); the "disjoint by construction" comment is false and already logged at
+`BACKLOG.md:1067-1104`; `format-changed.mjs:40` exempts `MVP_PLAN.md` but not `MVP_PLAN_V3.md`;
+`validate-handoff.mjs` brace-regex is non-greedy and can truncate nested objects outside a
+fence; three definitions of DONE (lane schema, phase GREEN, `log.finish()`) with only the first
+machine-enforced; ADR 0004 vs `agent-activation.json` disagree by design with the machine output
+known-wrong (`docs/decisions/0004:95`) — an `agentOverride` per node would encode it; diagnose/
+architecture/retrospective have `activationConditions` but are never optional, while `review` is
+optional in two classes with no condition.
+
+### Agents cannot run their own mandated procedures
+
+**Source:** audit §7 item 15 (§4 item 6). **Trigger:** the next edit to any `.claude/agents/*.md`.
+
+Reviewer must dispatch two sub-agents (`review-diff:34-36`) with no Task tool; diagnostician is
+told to reach for runner with no Task tool; no agent lists `Skill`; builder declares no `tools:`
+at all and silently inherits everything. Decide per role and declare explicitly.
+
+### Validator and reflector are unreachable through capability resolution
+
+**Source:** audit §7 item 16 (§4 item 5); `oracle.ts` capability resolution takes the first
+existing agent file. **Trigger:** the next change to `agent-activation.json` capabilities.
+
+`execute` resolves to runner, `adversarial-test` to tester; `retrospective` appears in no class.
+`validator.md:6` claims it "fires after every executable work packet" and is in fact dispatched
+by hand. Either wire them into classes or record dormant-by-design in the file itself.
+
+### Lane handoff return path that survives the gitignored `.artifacts/`
+
+**Source:** audit §7 item 17 (§6); `.gitignore:15`, `dispatch-lanes:96`,
+`autopilot.local.md:11-13` (already burned once). **Trigger:** the next parallel lane dispatch
+that uses worktrees.
+
+A lane worktree's handoff JSON never propagates to the main repo because `.artifacts/` is
+gitignored. Add a copy step to `pnpm lanes integrate`, or a tracked handoff directory.
+
+### Small autonomy mechanics: worktree cleanup rule, backlog linter, usage summary shape
+
+**Source:** audit §7 item 18 (§5 items 5, 6). **Trigger:** opportunistic, next time each surface
+is edited.
+
+Three small items: (a) worktree cleanup decided by evidence (handoff DONE + branch merged +
+clean `git status`) instead of a standing human question; (b) a linter that every BACKLOG entry
+carries `**Source:**` and a trigger; (c) `token_or_usage_summary` as a structured object so
+Reflector can aggregate it without parsing prose.

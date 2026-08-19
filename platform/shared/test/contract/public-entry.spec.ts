@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  EVENT_LEVEL_ERROR_CODES,
   IdSchema,
   INGEST_ERROR_CODES,
   INGEST_LIMITS,
+  IngestResultErrorSchema,
   IngestResultStatusSchema,
+  REQUEST_ERROR_CODES,
   TELEMETRY_EVENT_TYPES,
   TELEMETRY_INGEST_PATH,
   TELEMETRY_PAYLOAD_SCHEMAS,
   TELEMETRY_SCHEMA_VERSION,
 } from '../../index';
+import type { IngestResultError } from '../../index';
 
 // Expected values below are transcribed from MVP_PLAN_V3.md and
 // docs/decisions/0005-phase-2-wire-contract-gaps.md, never read off the package under
@@ -67,5 +71,43 @@ describe('public entry — literals from the plan', () => {
 
   it('IdSchema rejects the empty string — the IngestResult.eventId sentinel depends on this', () => {
     expect(IdSchema.safeParse('').success).toBe(false);
+  });
+
+  it('IngestResultError is exported beside IngestResultErrorSchema, per README.md:28-29', () => {
+    // Compile-time check: consumers must never need a direct zod import to name this
+    // shape. If IngestResultError stops being exported from the public entry, this file
+    // fails to typecheck.
+    const parsed = IngestResultErrorSchema.parse({ code: 'X', message: 'm' });
+    const typed: IngestResultError = parsed;
+    expect(typed).toEqual({ code: 'X', message: 'm' });
+  });
+});
+
+describe('event-level vs request-level rejection classification (S3 / ADR 0006)', () => {
+  it('EVENT_LEVEL_ERROR_CODES and REQUEST_ERROR_CODES never share a code', () => {
+    const eventCodes: ReadonlySet<string> = new Set(EVENT_LEVEL_ERROR_CODES);
+    const requestCodes = Object.values(REQUEST_ERROR_CODES);
+    for (const code of requestCodes) {
+      expect(eventCodes.has(code)).toBe(false);
+    }
+  });
+
+  it('EVENT_TOO_LARGE is event-level, per ADR 0006 — not request-level', () => {
+    expect(EVENT_LEVEL_ERROR_CODES).toContain('EVENT_TOO_LARGE');
+    expect(Object.values(REQUEST_ERROR_CODES)).not.toContain('EVENT_TOO_LARGE');
+  });
+
+  it('EVENT_LEVEL_ERROR_CODES is exactly INGEST_ERROR_CODES, frozen', () => {
+    expect([...EVENT_LEVEL_ERROR_CODES].sort()).toEqual(Object.values(INGEST_ERROR_CODES).sort());
+    expect(Object.isFrozen(EVENT_LEVEL_ERROR_CODES)).toBe(true);
+  });
+
+  it("REQUEST_ERROR_CODES is §12:531-534's three request-level rejections, frozen", () => {
+    expect(REQUEST_ERROR_CODES).toEqual({
+      BODY_TOO_LARGE: 'BODY_TOO_LARGE',
+      INVALID_JSON: 'INVALID_JSON',
+      INVALID_BATCH: 'INVALID_BATCH',
+    });
+    expect(Object.isFrozen(REQUEST_ERROR_CODES)).toBe(true);
   });
 });

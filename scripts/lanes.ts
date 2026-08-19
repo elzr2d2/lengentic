@@ -519,6 +519,16 @@ export function dependents(unit: Unit, units: Unit[]): string[] {
 function laneEntry(u: Unit, units: Unit[]): LaneEntry {
   const activation = loadActivation();
   const rule = u.changeClass ? activation.classes[u.changeClass] : undefined;
+  // A missing or unmapped changeClass used to fall through to an empty required_agents /
+  // optional_agents pair — a packet with no validation chain, silently. Hard error instead:
+  // ten graph nodes hit exactly this before every one of them was classified.
+  if (!rule) {
+    throw new Error(
+      `unit "${u.task_id}" has no usable changeClass (got ${JSON.stringify(u.changeClass)}) — ` +
+        'add one of mechanical|feature|behavior|contract|diagnosis to its graph node so the ' +
+        'agent chain is not silently empty',
+    );
+  }
   const halts = dependents(u, units);
   return {
     task_id: u.task_id,
@@ -528,8 +538,8 @@ function laneEntry(u: Unit, units: Unit[]): LaneEntry {
     allowed_paths: u.allowed_paths,
     forbidden_paths: u.forbidden_paths,
     validation: u.validation_commands,
-    required_agents: rule ? resolveRoles(rule.required, activation) : [],
-    optional_agents: rule ? resolveRoles(rule.optional, activation) : [],
+    required_agents: resolveRoles(rule.required, activation),
+    optional_agents: resolveRoles(rule.optional, activation),
     halts_if_failed: halts,
     independent_of: units
       .map((o) => o.task_id)
@@ -792,15 +802,48 @@ export async function validateHandoff(
     }
   }
 
-  errors.push(...checkEvidence(h, status));
+  errors.push(...checkEvidence(h, status, unit?.acceptance_criteria ?? []));
 
   if (status === 'DONE' && opts.checkCommit) {
     const sha = typeof h?.commit === 'string' ? h.commit : '';
     if (!git(['cat-file', '-e', `${sha}^{commit}`]).ok) {
       errors.push(`commit "${sha}" does not resolve to a commit in this repository`);
+    } else {
+      errors.push(...checkChangedFiles(sha, changed));
     }
   }
   return { ok: errors.length === 0, errors, status };
+}
+
+/**
+ * The commit is the ground truth for what changed; `changed_files` is a self-report next to
+ * it. A lane that omits a file escapes the ownership check at handoff time (the file is
+ * never compared against `allowed_paths`), and a lane that pads the list claims territory it
+ * never touched. Both directions are checkable against `git diff-tree` without trusting the
+ * report.
+ */
+export function checkChangedFiles(sha: string, claimed: string[]): string[] {
+  const errors: string[] = [];
+  const actual = git(['diff-tree', '--no-commit-id', '--name-only', '-r', sha]);
+  if (!actual.ok) return errors; // Commit resolution is checked separately; nothing more to say.
+
+  const actualFiles = new Set(actual.out.split('\n').filter(Boolean).map(normalise));
+  const claimedFiles = new Set(claimed.map(normalise));
+
+  const omitted = [...actualFiles].filter((f) => !claimedFiles.has(f)).sort();
+  const extra = [...claimedFiles].filter((f) => !actualFiles.has(f)).sort();
+
+  if (omitted.length > 0) {
+    errors.push(
+      `changed_files omits ${omitted.length} file(s) commit "${sha}" actually touched: ${omitted.join(', ')}`,
+    );
+  }
+  if (extra.length > 0) {
+    errors.push(
+      `changed_files claims ${extra.length} file(s) commit "${sha}" does not touch: ${extra.join(', ')}`,
+    );
+  }
+  return errors;
 }
 
 interface RunResult {
@@ -827,7 +870,11 @@ const TEST_COMMAND = /(^|\s|:)(test|tests|vitest|jest|playwright|check:integrity
  * mechanical: each one is a way a green report can be true about a command and false about
  * the work, and none of them needs an agent's judgement to detect.
  */
-export function checkEvidence(h: Record<string, unknown>, status: string | null): string[] {
+export function checkEvidence(
+  h: Record<string, unknown>,
+  status: string | null,
+  packetCriteria: string[] = [],
+): string[] {
   const errors: string[] = [];
   const done = status === 'DONE';
 
@@ -842,6 +889,25 @@ export function checkEvidence(h: Record<string, unknown>, status: string | null)
     ? h.acceptance_criteria
     : {};
   const verified = Array.isArray(criteria.verified) ? (criteria.verified as string[]) : [];
+  const unverified = Array.isArray(criteria.unverified) ? (criteria.unverified as string[]) : [];
+
+  // 0. Every criterion the packet named lands in exactly one bucket, whatever the status.
+  //    A lane that lists 2 of the packet's 5 criteria and verifies both would otherwise
+  //    reach DONE with `unverified: []` having said nothing about the other 3 — and a
+  //    criterion missing from both buckets triggers no other check below.
+  for (const criterion of packetCriteria) {
+    const inVerified = verified.includes(criterion);
+    const inUnverified = unverified.includes(criterion);
+    if (inVerified && inUnverified) {
+      errors.push(
+        `acceptance_criteria: "${criterion}" appears in both verified and unverified — a criterion lands in exactly one bucket`,
+      );
+    } else if (!inVerified && !inUnverified) {
+      errors.push(
+        `acceptance_criteria: packet criterion "${criterion}" appears in neither verified nor unverified — silence is not a bucket`,
+      );
+    }
+  }
 
   // 1. Results line up with the commands that produced them. A results array the reader
   //    cannot map back to a command is a summary, not evidence.
@@ -1120,7 +1186,7 @@ function positional(argv: string[]): string[] {
   return out;
 }
 
-function nextWave(phase: number): string[] {
+export function nextWave(phase: number): string[] {
   const byId = resolveGraph();
   const rows = [...byId.values()].filter(
     (n) => n.phase === phase && n.state !== 'DONE' && n.wave > 0,
@@ -1338,20 +1404,41 @@ async function main(): Promise<void> {
       console.log('# Isolation setup. Review and run these yourself — this command never');
       console.log('# executes git, and never removes a worktree or a branch.');
       console.log(`# base: ${state.head ?? 'UNKNOWN'}\n`);
+      const baseDatabaseUrl = readBaseDatabaseUrl();
       for (const u of units) {
+        const laneSlug = slug(u.task_id);
         console.log(`# ${u.task_id} — ${u.title}`);
+        console.log(`git worktree add -b lane/${u.task_id} ../lengentic-lane-${laneSlug} HEAD`);
         console.log(
-          `git worktree add -b lane/${u.task_id} ../lengentic-lane-${slug(u.task_id)} HEAD`,
+          `node -e "require('fs').mkdirSync('../lengentic-lane-${laneSlug}/.artifacts/lanes',{recursive:true})"`,
         );
-        console.log(
-          `node -e "require('fs').mkdirSync('../lengentic-lane-${slug(u.task_id)}/.artifacts/lanes',{recursive:true})"`,
-        );
-        console.log(
-          `# then write ../lengentic-lane-${slug(u.task_id)}/.artifacts/lanes/current.json:`,
-        );
+        console.log(`# then write ../lengentic-lane-${laneSlug}/.artifacts/lanes/current.json:`);
         console.log(
           `#   ${JSON.stringify({ task_id: u.task_id, allowed_paths: u.allowed_paths, forbidden_paths: u.forbidden_paths })}`,
         );
+        if (baseDatabaseUrl) {
+          const laneUrl = laneDatabaseUrl(baseDatabaseUrl, laneSlug);
+          console.log(
+            `# R9 — isolated Postgres schema so this lane and any sibling lane never share`,
+          );
+          console.log(`# a write surface on the same database instance:`);
+          console.log(
+            `node -e "const fs=require('fs');const e=fs.readFileSync('.env','utf8').replace(/^DATABASE_URL=.*$/m,'DATABASE_URL=${laneUrl}');fs.writeFileSync('../lengentic-lane-${laneSlug}/.env',e)"`,
+          );
+          console.log(
+            `# then, inside the worktree, run the lane's migrate command once (e.g. \`pnpm --filter database db:migrate\`)`,
+          );
+          console.log(
+            `# — Prisma creates the '${laneSchemaName(laneSlug)}' schema on first migrate.`,
+          );
+        } else {
+          console.log(
+            `# WARNING: no DATABASE_URL found in ${join(ROOT, '.env')} — this lane will share`,
+          );
+          console.log(
+            `# the default schema with every other worktree unless you set one manually.`,
+          );
+        }
         console.log('');
       }
       console.log('# Cleanup is deliberately not scripted. Removing a worktree discards');
@@ -1402,6 +1489,26 @@ async function main(): Promise<void> {
 
 function slug(id: string): string {
   return id.replace(/[^a-zA-Z0-9]+/g, '-');
+}
+
+/** Reads the current DATABASE_URL out of the repo-root `.env`, if one exists. */
+function readBaseDatabaseUrl(): string | undefined {
+  const envPath = join(ROOT, '.env');
+  if (!existsSync(envPath)) return undefined;
+  const match = readFileSync(envPath, 'utf8').match(/^DATABASE_URL=(.*)$/m);
+  return match?.[1]?.trim();
+}
+
+/** Postgres schema name for a lane — same instance, isolated write surface (R9). */
+function laneSchemaName(laneSlug: string): string {
+  return `lane_${laneSlug.replace(/-/g, '_')}`;
+}
+
+/** Rewrites a DATABASE_URL's `schema` query param to this lane's own schema. */
+function laneDatabaseUrl(baseUrl: string, laneSlug: string): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set('schema', laneSchemaName(laneSlug));
+  return url.toString();
 }
 
 // ── probe hygiene ─────────────────────────────────────────────────────────────────────
