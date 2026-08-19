@@ -95,11 +95,13 @@ model Run {
   /// on every payload, so "no metadata" is the normal case and must not be a rejection.
   metadata Json?
 
-  /// Per-key provenance for `completionFields` (ADR 0007 §3) — which event last wrote each
-  /// key of `metadata`. Without this column a completion merge split across two requests
-  /// cannot tell which event won per key and falls back to arrival order. Mirrors
+  /// Per-key provenance for `completionFields` (ADR 0007 §3) — which completion event last
+  /// wrote each key of `completionFields` (today exactly one key: `metadata`), not each key
+  /// inside `metadata` itself. Without this column a completion merge split across two
+  /// requests cannot tell which event won per key and falls back to arrival order. Mirrors
   /// EntityMergeState.completionFieldOrigins (merge-rules.ts) — a JSON map of
-  /// `{ [fieldName]: { occurredAt, eventId } }`. Null before any completion event.
+  /// `{ [fieldName]: { occurredAt, eventId } }`. NULL and `{}` both rehydrate to
+  /// EntityMergeState's `{}`.
   completionFieldOrigins Json?
 
   /// Row creation, database clock. Distinct from `receivedAt`, which is the application's
@@ -149,11 +151,13 @@ model Step {
 
   metadata Json?
 
-  /// Per-key provenance for `completionFields` (ADR 0007 §3) — which event last wrote each
-  /// key of `metadata`. Without this column a completion merge split across two requests
-  /// cannot tell which event won per key and falls back to arrival order. Mirrors
+  /// Per-key provenance for `completionFields` (ADR 0007 §3) — which completion event last
+  /// wrote each key of `completionFields` (today exactly one key: `metadata`), not each key
+  /// inside `metadata` itself. Without this column a completion merge split across two
+  /// requests cannot tell which event won per key and falls back to arrival order. Mirrors
   /// EntityMergeState.completionFieldOrigins (merge-rules.ts) — a JSON map of
-  /// `{ [fieldName]: { occurredAt, eventId } }`. Null before any completion event.
+  /// `{ [fieldName]: { occurredAt, eventId } }`. NULL and `{}` both rehydrate to
+  /// EntityMergeState's `{}`.
   completionFieldOrigins Json?
 
   @@index([runId])
