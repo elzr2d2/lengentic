@@ -1338,20 +1338,41 @@ async function main(): Promise<void> {
       console.log('# Isolation setup. Review and run these yourself — this command never');
       console.log('# executes git, and never removes a worktree or a branch.');
       console.log(`# base: ${state.head ?? 'UNKNOWN'}\n`);
+      const baseDatabaseUrl = readBaseDatabaseUrl();
       for (const u of units) {
+        const laneSlug = slug(u.task_id);
         console.log(`# ${u.task_id} — ${u.title}`);
+        console.log(`git worktree add -b lane/${u.task_id} ../lengentic-lane-${laneSlug} HEAD`);
         console.log(
-          `git worktree add -b lane/${u.task_id} ../lengentic-lane-${slug(u.task_id)} HEAD`,
+          `node -e "require('fs').mkdirSync('../lengentic-lane-${laneSlug}/.artifacts/lanes',{recursive:true})"`,
         );
-        console.log(
-          `node -e "require('fs').mkdirSync('../lengentic-lane-${slug(u.task_id)}/.artifacts/lanes',{recursive:true})"`,
-        );
-        console.log(
-          `# then write ../lengentic-lane-${slug(u.task_id)}/.artifacts/lanes/current.json:`,
-        );
+        console.log(`# then write ../lengentic-lane-${laneSlug}/.artifacts/lanes/current.json:`);
         console.log(
           `#   ${JSON.stringify({ task_id: u.task_id, allowed_paths: u.allowed_paths, forbidden_paths: u.forbidden_paths })}`,
         );
+        if (baseDatabaseUrl) {
+          const laneUrl = laneDatabaseUrl(baseDatabaseUrl, laneSlug);
+          console.log(
+            `# R9 — isolated Postgres schema so this lane and any sibling lane never share`,
+          );
+          console.log(`# a write surface on the same database instance:`);
+          console.log(
+            `node -e "const fs=require('fs');const e=fs.readFileSync('.env','utf8').replace(/^DATABASE_URL=.*$/m,'DATABASE_URL=${laneUrl}');fs.writeFileSync('../lengentic-lane-${laneSlug}/.env',e)"`,
+          );
+          console.log(
+            `# then, inside the worktree, run the lane's migrate command once (e.g. \`pnpm --filter database db:migrate\`)`,
+          );
+          console.log(
+            `# — Prisma creates the '${laneSchemaName(laneSlug)}' schema on first migrate.`,
+          );
+        } else {
+          console.log(
+            `# WARNING: no DATABASE_URL found in ${join(ROOT, '.env')} — this lane will share`,
+          );
+          console.log(
+            `# the default schema with every other worktree unless you set one manually.`,
+          );
+        }
         console.log('');
       }
       console.log('# Cleanup is deliberately not scripted. Removing a worktree discards');
@@ -1402,6 +1423,26 @@ async function main(): Promise<void> {
 
 function slug(id: string): string {
   return id.replace(/[^a-zA-Z0-9]+/g, '-');
+}
+
+/** Reads the current DATABASE_URL out of the repo-root `.env`, if one exists. */
+function readBaseDatabaseUrl(): string | undefined {
+  const envPath = join(ROOT, '.env');
+  if (!existsSync(envPath)) return undefined;
+  const match = readFileSync(envPath, 'utf8').match(/^DATABASE_URL=(.*)$/m);
+  return match?.[1]?.trim();
+}
+
+/** Postgres schema name for a lane — same instance, isolated write surface (R9). */
+function laneSchemaName(laneSlug: string): string {
+  return `lane_${laneSlug.replace(/-/g, '_')}`;
+}
+
+/** Rewrites a DATABASE_URL's `schema` query param to this lane's own schema. */
+function laneDatabaseUrl(baseUrl: string, laneSlug: string): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set('schema', laneSchemaName(laneSlug));
+  return url.toString();
 }
 
 // ── probe hygiene ─────────────────────────────────────────────────────────────────────

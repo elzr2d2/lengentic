@@ -849,10 +849,15 @@ cannot edit the fixtures it must satisfy.
 review, 2026-08-16. Full reasoning lives there; this entry exists so the items are not lost
 between now and the phase that owns each one.
 
-- **Per-lane `DATABASE_URL`.** R9 compares file paths, so two lane worktrees sharing one
-  Postgres is an undeclared shared write surface and `check-lane-ownership.mjs` cannot see it.
-  _Does not apply to 5a — nothing in it touches a database._ **Trigger:** the first wave that
-  runs a migration alongside any other lane, i.e. Phase 2 wave 2 (`p2.prisma-run-step`).
+- ~~**Per-lane `DATABASE_URL`.**~~ **Resolved 2026-08-19**, at the trigger (`p2.prisma-run-step`
+  dispatch). R9 compares file paths, so two lane worktrees sharing one Postgres was an
+  undeclared shared write surface `check-lane-ownership.mjs` cannot see. `pnpm lanes
+worktrees <id...>` now also prints a command that copies the root `.env` into the lane
+  worktree with `DATABASE_URL`'s `schema` param rewritten to `lane_<slug>` — same Postgres
+  instance, isolated schema per lane; Prisma creates the schema on first `db:migrate`. Fix:
+  `scripts/lanes.ts` (`readBaseDatabaseUrl`, `laneSchemaName`, `laneDatabaseUrl`), covered by
+  the existing `pnpm check:lanes` suite (38/38 green, unchanged count — no new scenario added,
+  this is a printed-command change, not new gate logic).
 - **`pnpm lanes worktrees` prints a comment, not a command.** It emits `current.json` as a `#`
   block for a human to hand-type. No lane file means no enforcement, silently — the worst
   available failure mode. Roughly five lines in `scripts/lanes.ts` case `'worktrees'`.
