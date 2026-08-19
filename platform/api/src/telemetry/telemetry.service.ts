@@ -13,6 +13,7 @@ import {
 import { entityKindOf, toMergeEvent, type EntityKind } from './event-mapping';
 import { mergeEvent, type EntityMergeState } from './merge-rules';
 import { TelemetryRepository } from './telemetry.repository';
+import { containsUnsafeUnicode } from './wire-sanitize';
 
 interface BatchItem {
   readonly index: number;
@@ -60,8 +61,22 @@ function serializedByteLength(raw: unknown): number {
  * Every `eventId` this entity has already recorded, start or completion side. Used for
  * idempotency (§12: "Re-posting a known eventId is a no-op").
  *
- * Exact for the start side (`startEventId` is the sole start-side winner, tracked
- * atomically). For the completion side this also walks `completionFieldOrigins`, not just
+ * NOT exact for the start side (tester-corrected, 2026-08-19 — this comment previously
+ * claimed it was). `startEventId` is the sole persisted start-side winner: only the ONE
+ * start event that currently wins the first-writer-wins occurredAt contest is remembered.
+ * Any OTHER start event this entity has ever seen — one that loses that contest, whether
+ * because a genuinely earlier event already exists or because of the ADR-0007-mirrored
+ * eventId tie-break — leaves no trace anywhere on the row and is NOT in this set. Reposting
+ * such an event is still safe (merge-rules.ts is pure and entities are upserted by
+ * entityId, so it can never create a second row or error) but is misclassified `ACCEPTED`
+ * a second time instead of `DUPLICATE`. Unlike the completion-side gap below, this is not a
+ * narrow edge case — it is every losing start event, which closing for real needs a
+ * persisted per-start-event (or per-start-field) ledger schema.prisma does not have today
+ * (only `startEventId`, one winner for the whole entity — contrast `completionFieldOrigins`,
+ * which gives the completion side partial multi-winner tracking). Adding that column is a
+ * schema.prisma change, outside `platform/api/src/**`, this lane's `allowed_paths`.
+ *
+ * For the completion side this also walks `completionFieldOrigins`, not just
  * `completionEventId` — a completion event can win an individual field's provenance
  * (ADR 0007 §3) without becoming the entity's overall `completionEventId`, and that event's
  * `eventId` must still count as "seen" or a repost of it would be misclassified `ACCEPTED`
@@ -91,14 +106,20 @@ export class TelemetryService {
   /**
    * POST /v1/telemetry/events. §12's whole per-event contract in one pass:
    *
-   * 1. Event-level rejection (size, then schema) never fails the batch — every raw event
-   *    gets exactly one `IngestResult`, regardless of what happens to its neighbours.
-   * 2. Accepted events are grouped by entity (`kind:entityId`) and folded through
-   *    `mergeEvent` IN BATCH ORDER, seeded from that entity's persisted state — so two
-   *    events for the same entity in one request observe each other, and a duplicate
-   *    within a single batch is caught exactly like a duplicate across two requests.
-   * 3. Each entity's final state is written once, after its whole group has folded — not
-   *    once per event — so a 10-event batch for one Step is one upsert, not ten.
+   * 1. Event-level rejection (size, then schema, then wire-safety) never fails the batch —
+   *    every raw event gets exactly one `IngestResult`, regardless of what happens to its
+   *    neighbours.
+   * 2. Accepted events are grouped by entity (`kind:entityId`).
+   * 3. Each group is folded and saved as ONE atomic unit via
+   *    `TelemetryRepository.withEntityLock` (F1 fix, tester regression 2026-08-19): the
+   *    load, the `mergeEvent` fold IN BATCH ORDER, and the save all happen inside a single
+   *    Postgres transaction guarded by an advisory lock on that entity, so a concurrent
+   *    request touching the same `entityId` cannot interleave its own read-modify-write and
+   *    silently discard this one's contribution. Within the fold, an entity's persisted
+   *    state seeds `seen`/`state` — so two events for the same entity in one request observe
+   *    each other, and a duplicate within a single batch is caught exactly like a duplicate
+   *    across two requests. A group's final state is written once, after its whole group has
+   *    folded — not once per event — so a 10-event batch for one Step is one upsert, not ten.
    */
   async ingest(rawEvents: readonly unknown[]): Promise<IngestResponse> {
     const results: IngestResult[] = new Array(rawEvents.length);
@@ -135,6 +156,27 @@ export class TelemetryService {
       }
 
       const event = parsed.event;
+
+      // F2 fix (tester regression, 2026-08-19): a U+0000 or lone-surrogate value passes
+      // every Zod schema (IdSchema/NameSchema accept both) but Postgres rejects it at the
+      // wire level — an uncaught 500 that can leave earlier events in the SAME batch already
+      // persisted. Reject event-level, exactly like EVENT_TOO_LARGE, before it ever reaches
+      // the repository. INVALID_PAYLOAD is the existing code that fits: this event's payload
+      // is not acceptable, the same category `parseTelemetryEvent` already uses for a
+      // Zod-shape failure.
+      if (containsUnsafeUnicode(event)) {
+        results[index] = {
+          eventId: event.eventId,
+          status: 'REJECTED',
+          error: {
+            code: INGEST_ERROR_CODES.INVALID_PAYLOAD,
+            message: 'event contains a null byte or an unpaired unicode surrogate',
+          },
+        };
+        rejected++;
+        continue;
+      }
+
       const kind = entityKindOf(event.type);
       const key = `${kind}:${event.entityId}`;
       let group = groups.get(key);
@@ -150,31 +192,35 @@ export class TelemetryService {
     const receivedAt = Date.now();
 
     for (const group of groups.values()) {
-      const existing =
-        group.kind === 'run'
-          ? await this.repository.loadRun(group.entityId)
-          : await this.repository.loadStep(group.entityId);
+      const groupResults = await this.repository.withEntityLock(
+        group.kind,
+        group.entityId,
+        group.runId,
+        (existing) => {
+          let state = existing;
+          const seen = collectKnownEventIds(existing);
+          const outcomes: { index: number; result: IngestResult }[] = [];
 
-      let state = existing;
-      const seen = collectKnownEventIds(existing);
+          for (const { index, event } of group.items) {
+            if (seen.has(event.eventId)) {
+              outcomes.push({ index, result: { eventId: event.eventId, status: 'DUPLICATE' } });
+              continue;
+            }
+            seen.add(event.eventId);
+            state = mergeEvent(state, toMergeEvent(event, receivedAt));
+            outcomes.push({ index, result: { eventId: event.eventId, status: 'ACCEPTED' } });
+          }
 
-      for (const { index, event } of group.items) {
-        if (seen.has(event.eventId)) {
-          results[index] = { eventId: event.eventId, status: 'DUPLICATE' };
+          return { state, value: outcomes };
+        },
+      );
+
+      for (const { index, result } of groupResults) {
+        results[index] = result;
+        if (result.status === 'DUPLICATE') {
           duplicate++;
-          continue;
-        }
-        seen.add(event.eventId);
-        state = mergeEvent(state, toMergeEvent(event, receivedAt));
-        results[index] = { eventId: event.eventId, status: 'ACCEPTED' };
-        accepted++;
-      }
-
-      if (state !== undefined) {
-        if (group.kind === 'run') {
-          await this.repository.saveRun(group.entityId, state);
         } else {
-          await this.repository.saveStep(group.entityId, group.runId, state);
+          accepted++;
         }
       }
     }

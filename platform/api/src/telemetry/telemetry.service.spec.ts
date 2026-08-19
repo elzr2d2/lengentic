@@ -2,14 +2,22 @@ import { describe, expect, it } from 'vitest';
 import type { EntityMergeState } from './merge-rules';
 import { TelemetryService } from './telemetry.service';
 import type { TelemetryRepository } from './telemetry.repository';
+import type { EntityKind } from './event-mapping';
 
 /**
  * In-memory double for `TelemetryRepository`, keyed the same way `TelemetryService` groups
  * events (`kind:entityId`). Real enough to exercise idempotency and cross-event merge
  * folding without a database: the seam under test is what `TelemetryService` does with the
- * answers a repository gives it, not whether Prisma round-trips correctly (that is
- * `telemetry.repository.ts`'s own concern, exercised against the real schema by
+ * answers a repository gives it, not whether Prisma round-trips correctly, and not whether
+ * the real advisory lock actually serializes concurrent transactions (that is
+ * `telemetry.repository.ts`'s own concern, exercised against the real schema — and, for the
+ * F1 concurrency fix specifically, against real concurrent connections — by
  * `test/*.integration.spec.ts`, not `pnpm test`).
+ *
+ * `withEntityLock` here is a single-threaded stand-in: no real lock, since a JS test runner
+ * never actually interleaves two calls into this fake. It exists to give
+ * `TelemetryService.ingest` the same "load, fold, save, return the fold's value" contract
+ * the real repository provides.
  */
 function fakeRepository(): {
   repository: TelemetryRepository;
@@ -35,6 +43,28 @@ function fakeRepository(): {
       saveStepCalls++;
       steps.set(id, { runId, state });
       return Promise.resolve();
+    },
+    withEntityLock: async <T>(
+      kind: EntityKind,
+      entityId: string,
+      runId: string,
+      fold: (existing: EntityMergeState | undefined) => {
+        state: EntityMergeState | undefined;
+        value: T;
+      },
+    ): Promise<T> => {
+      const existing = kind === 'run' ? runs.get(entityId) : steps.get(entityId)?.state;
+      const { state, value } = fold(existing);
+      if (state !== undefined) {
+        if (kind === 'run') {
+          saveRunCalls++;
+          runs.set(entityId, state);
+        } else {
+          saveStepCalls++;
+          steps.set(entityId, { runId, state });
+        }
+      }
+      return value;
     },
   } as unknown as TelemetryRepository;
 

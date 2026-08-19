@@ -173,6 +173,56 @@ describe('mergeEvent — field precedence (MVP_PLAN_V3.md §12)', () => {
     expect(afterB.startEventId).toBe('evt-aaa');
   });
 
+  it("start fields: a winning-but-metadata-less start event does not blank a prior winner's metadata (tester regression: wholesale destroy)", () => {
+    const afterFirst = mergeEvent(
+      undefined,
+      startEvent({
+        eventId: 'evt-with-metadata',
+        occurredAt: '2026-08-18T10:00:00.000Z',
+        fields: { name: 'first', metadata: { tenant: 'acme' } },
+      }),
+    );
+
+    // Earlier occurredAt — wins the tie-break and becomes the new startEventId — but its own
+    // payload never carried metadata at all.
+    const afterEarlierNoMetadata = mergeEvent(
+      afterFirst,
+      startEvent({
+        eventId: 'evt-no-metadata',
+        occurredAt: '2026-08-18T09:00:00.000Z',
+        fields: { name: 'second' },
+      }),
+    );
+
+    expect(afterEarlierNoMetadata.startEventId).toBe('evt-no-metadata');
+    expect(afterEarlierNoMetadata.startFields).toEqual({
+      name: 'second',
+      metadata: { tenant: 'acme' },
+    });
+  });
+
+  it('start fields: a winning event that DOES carry a key overrides the prior value for that key, including explicit null', () => {
+    const afterFirst = mergeEvent(
+      undefined,
+      startEvent({
+        eventId: 'evt-a',
+        occurredAt: '2026-08-18T10:00:00.000Z',
+        fields: { name: 'a', parentStepId: 'parent-1' },
+      }),
+    );
+
+    const afterEarlierRoot = mergeEvent(
+      afterFirst,
+      startEvent({
+        eventId: 'evt-b',
+        occurredAt: '2026-08-18T09:00:00.000Z',
+        fields: { name: 'b', parentStepId: null },
+      }),
+    );
+
+    expect(afterEarlierRoot.startFields).toEqual({ name: 'b', parentStepId: null });
+  });
+
   it('start fields: equal occurredAt tie breaks on the lexicographically LESSER eventId, insertion order B-then-A', () => {
     const eventA = startEvent({
       eventId: 'evt-aaa',

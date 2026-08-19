@@ -227,14 +227,35 @@ export function mergeEvent(
     // but must NEVER be able to move status back toward RUNNING on an already-terminal
     // entity. If a future edit adds a `status` override here, `merge-rules.spec.ts`'s reopen
     // guard test goes red.
+    //
+    // `startFields` is a PRESENCE-BASED MERGE onto `base.startFields`, not a wholesale
+    // replace, when this event becomes the new winner. Rationale (tester-reported defect,
+    // 2026-08-19): a start event that legitimately wins the occurredAt tie-break (it is the
+    // new earliest-known start) but happens not to carry `metadata` must not blank metadata
+    // an earlier-processed, later-occurring event already contributed — the winning event's
+    // ABSENCE of a key is not evidence that key should revert to unknown; it only means this
+    // event did not speak to it. Keys the winning event DOES carry (including an explicit
+    // `null`, e.g. Step's `parentStepId`) still take precedence over the prior value, exactly
+    // as a wholesale replace would.
+    //
+    // This is deliberately NOT full per-key first-writer-wins (the mirror of the completion
+    // side's `completionFieldOrigins`): that would require persisting, per key, which start
+    // event's `occurredAt` currently owns it, so a field from a LOSING event (one that never
+    // becomes `startEventId`) can still be captured if no other event has supplied that key
+    // yet. Run/Step have no such column (only `startEventId`, one winner for the whole
+    // entity) and adding one is a schema.prisma change, out of this module's reach. The
+    // residual gap: a key ONLY ever supplied by a start event that loses the overall
+    // occurredAt contest is never captured, even if no other event supplies it either. Known
+    // and accepted, not silently different from what the merge already promises: `merge-rules
+    // .spec.ts` covers the fixed case (a winning-but-metadata-less event preserves a prior
+    // winner's metadata).
+    const startFields = replaceStart
+      ? structuredClone({ ...(base.startFields ?? {}), ...event.fields })
+      : base.startFields;
     return {
       ...base,
       startedAt: replaceStart ? event.occurredAt : base.startedAt,
-      // Deep-cloned so a caller mutating its own `event.fields` object — at ANY depth, not
-      // only its top-level keys — after this call returns can never retroactively change
-      // the state this function already returned: this module stays a pure function of its
-      // inputs at the moment it was called.
-      startFields: replaceStart ? structuredClone({ ...event.fields }) : base.startFields,
+      startFields,
       startEventId: replaceStart ? event.eventId : base.startEventId,
       lastEventAt,
     };
