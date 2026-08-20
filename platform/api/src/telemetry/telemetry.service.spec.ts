@@ -21,8 +21,16 @@ import type { EntityKind } from './event-mapping';
  *
  * `withEntityLock` here is a single-threaded stand-in: no real lock, since a JS test runner
  * never actually interleaves two calls into this fake. It exists to give
- * `TelemetryService.ingest` the same "load, fold, save, return the fold's value" contract
- * the real repository provides.
+ * `TelemetryService.ingest` the same "load, fold, save-and-record, return the fold's value"
+ * contract the real repository provides.
+ *
+ * `ledger` (F3, ADR 0009/0005 §1) is a SEPARATE map from `runs`/`steps`, keyed by `runId`,
+ * deliberately independent of entity-state provenance — mirroring the real
+ * `IngestedEvent` table rather than deriving "seen" from `startEventId`/`completionEventId`/
+ * `completionFieldOrigins`. It only ever grows via `newlyIngestedEventIds`, exactly the
+ * events the real repository would `createMany` into the ledger, so a repost of an event
+ * that never won any field on its entity is still remembered here — the shape the fake HAS
+ * to have for the F3 regression test below to be able to fail for the right reason.
  *
  * `failFor` (keyed `kind:entityId`, matching `TelemetryService`'s own grouping key) makes
  * ONE entity's `withEntityLock` call reject instead of folding/saving — the seam
@@ -33,11 +41,13 @@ function fakeRepository(options: { failFor?: Map<string, unknown> } = {}): {
   repository: TelemetryRepository;
   runs: Map<string, EntityMergeState>;
   steps: Map<string, { runId: string; state: EntityMergeState }>;
+  ledger: Map<string, Set<string>>;
   saveRunCalls: number;
   saveStepCalls: number;
 } {
   const runs = new Map<string, EntityMergeState>();
   const steps = new Map<string, { runId: string; state: EntityMergeState }>();
+  const ledger = new Map<string, Set<string>>();
   const failFor = options.failFor ?? new Map<string, unknown>();
   let saveRunCalls = 0;
   let saveStepCalls = 0;
@@ -59,8 +69,14 @@ function fakeRepository(options: { failFor?: Map<string, unknown> } = {}): {
       kind: EntityKind,
       entityId: string,
       runId: string,
-      fold: (existing: EntityMergeState | undefined) => {
+      eventIds: readonly string[],
+      _receivedAt: number,
+      fold: (
+        existing: EntityMergeState | undefined,
+        alreadyIngested: ReadonlySet<string>,
+      ) => {
         state: EntityMergeState | undefined;
+        newlyIngestedEventIds: readonly string[];
         value: T;
       },
     ): Promise<T> => {
@@ -69,7 +85,9 @@ function fakeRepository(options: { failFor?: Map<string, unknown> } = {}): {
         return Promise.reject(failure);
       }
       const existing = kind === 'run' ? runs.get(entityId) : steps.get(entityId)?.state;
-      const { state, value } = fold(existing);
+      const runLedger = ledger.get(runId) ?? new Set<string>();
+      const alreadyIngested = new Set(eventIds.filter((id) => runLedger.has(id)));
+      const { state, newlyIngestedEventIds, value } = fold(existing, alreadyIngested);
       if (state !== undefined) {
         if (kind === 'run') {
           saveRunCalls++;
@@ -79,6 +97,11 @@ function fakeRepository(options: { failFor?: Map<string, unknown> } = {}): {
           steps.set(entityId, { runId, state });
         }
       }
+      if (newlyIngestedEventIds.length > 0) {
+        const updated = ledger.get(runId) ?? new Set<string>();
+        for (const id of newlyIngestedEventIds) updated.add(id);
+        ledger.set(runId, updated);
+      }
       return Promise.resolve(value);
     },
   } as unknown as TelemetryRepository;
@@ -87,6 +110,7 @@ function fakeRepository(options: { failFor?: Map<string, unknown> } = {}): {
     repository,
     runs,
     steps,
+    ledger,
     get saveRunCalls() {
       return saveRunCalls;
     },
@@ -277,6 +301,49 @@ describe('TelemetryService.ingest — idempotency (§12: re-posting a known even
     expect(response.rejected).toBe(0);
     expect(runs.size).toBe(1);
     expect(runs.get('run-1')?.startedAt).toBe(before?.startedAt);
+  });
+
+  // F3 (ADR 0009, corrected A-7): the ledger-backed regression. `collectKnownEventIds`
+  // used to reconstruct "seen" from Run/Step's own provenance columns, which record only
+  // the WINNER of each merge contest — an event that loses (here: a later start event,
+  // beaten by `shouldReplaceStart`'s first-writer-wins-by-occurredAt rule) left no trace on
+  // the row and was misclassified ACCEPTED on every replay, forever
+  // (`.artifacts/evidence/2/tester-reverify/raw/f3.out` D2.2/D2.3). Expected value for this
+  // test is sourced from ADR 0009's Decision §1 verbatim ("A-7's `accepted: 0, duplicate: N`
+  // on a replayed batch... remain the required behaviour") and its Detection block ("must
+  // flip from `accepted:2, duplicate:2` to `accepted:0, duplicate:4`" for a 4-event batch) —
+  // not from this implementation's own arithmetic.
+  it('replaying a batch with a start event that LOST the first-writer-wins tie is DUPLICATE on replay, not ACCEPTED again (F3, ADR 0009)', async () => {
+    const { repository } = fakeRepository();
+    const service = new TelemetryService(repository);
+    // 'late-loser' occurs AFTER 'early-winner', so shouldReplaceStart rejects it — it never
+    // becomes startEventId and (being a start event) can win no completionFieldOrigins
+    // either. Under the old entity-state-derived `seen`, it is invisible on every replay.
+    const winner = runStartedEvent({
+      eventId: 'early-winner',
+      occurredAt: '2026-08-18T09:00:00.000Z',
+    });
+    const loser = runStartedEvent({
+      eventId: 'late-loser',
+      occurredAt: '2026-08-18T09:05:00.000Z',
+    });
+
+    const first = await service.ingest([winner, loser]);
+    expect(first.accepted).toBe(2);
+    expect(first.duplicate).toBe(0);
+
+    const second = await service.ingest([winner, loser]);
+
+    expect(second.accepted).toBe(0);
+    expect(second.duplicate).toBe(2);
+    expect(second.results[0]).toMatchObject({ eventId: 'early-winner', status: 'DUPLICATE' });
+    expect(second.results[1]).toMatchObject({ eventId: 'late-loser', status: 'DUPLICATE' });
+
+    // Stability, not just one-shot convergence — the D2.3 shape ADR 0009 names ("stable,
+    // not converging" was the BUG; a real fix stays converged on a third replay too).
+    const third = await service.ingest([winner, loser]);
+    expect(third.accepted).toBe(0);
+    expect(third.duplicate).toBe(2);
   });
 });
 

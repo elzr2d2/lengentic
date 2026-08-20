@@ -17,7 +17,7 @@ type StepRow = NonNullable<Awaited<ReturnType<PrismaClient['step']['findUnique']
 // by `PrismaService.client` (the top-level connection) and by the scoped client Prisma's
 // interactive `$transaction` hands its callback, so the same helpers serve `loadRun`/
 // `saveRun`/etc. AND `withEntityLock` without duplicating the row-mapping logic.
-type EntityClient = Pick<PrismaClient, 'run' | 'step'>;
+type EntityClient = Pick<PrismaClient, 'run' | 'step' | 'ingestedEvent'>;
 
 // Prisma 7's interactive-transaction callback parameter, recovered structurally for the same
 // reason as `RunRow`/`StepRow` above: `@lengentic/database` exports only `PrismaClient` as a
@@ -121,19 +121,37 @@ export class TelemetryRepository {
    * independently of the number of replicas) — a mutex only ever serializes writers inside
    * one process.
    *
-   * `fold` receives the entity's state as read AFTER the lock is acquired (so it observes
-   * every write a prior holder committed, not a snapshot taken before this request even
-   * started), and returns the state to persist (`undefined` to persist nothing — e.g. every
-   * event in the group was a duplicate) plus an arbitrary `value` the caller gets back. The
-   * whole load-fold-save round trip happens inside the same transaction as the lock, so it
+   * F3 fix (ADR 0009): `alreadyIngested` — the third argument `fold` receives — is read from
+   * the `IngestedEvent` ledger (ADR 0005 §1), not reconstructed from entity-state provenance.
+   * It answers "have I seen this eventId?" completely: every event this entity has EVER
+   * accepted is in there, winners and losers of a merge contest alike, unlike
+   * `startEventId`/`completionEventId`/`completionFieldOrigins`, which record only whichever
+   * event currently owns a field. The lookup is scoped to `eventIds` (the batch's own event
+   * ids for this group) and to `runId` (ADR 0005 §2 — `eventId` is unique per run, not
+   * globally, so a lookup that ignored `runId` could misclassify a genuinely new run's
+   * replayed seeded scenario as DUPLICATE).
+   *
+   * `fold` receives the entity's state and the ledger's answer as read AFTER the lock is
+   * acquired (so it observes every write a prior holder committed, not a snapshot taken
+   * before this request even started), and returns the state to persist (`undefined` to
+   * persist nothing — e.g. every event in the group was a duplicate), the `eventIds` to
+   * record in the ledger (the ones this fold actually accepted — never a duplicate's, which
+   * is already there), and an arbitrary `value` the caller gets back. The whole
+   * load-fold-save-record round trip happens inside the same transaction as the lock, so it
    * commits (releasing the lock) or the caller sees the transaction's rejection.
    */
   async withEntityLock<T>(
     kind: EntityKind,
     entityId: string,
     runId: string,
-    fold: (existing: EntityMergeState | undefined) => {
+    eventIds: readonly string[],
+    receivedAt: number,
+    fold: (
+      existing: EntityMergeState | undefined,
+      alreadyIngested: ReadonlySet<string>,
+    ) => {
       state: EntityMergeState | undefined;
+      newlyIngestedEventIds: readonly string[];
       value: T;
     },
   ): Promise<T> {
@@ -141,13 +159,17 @@ export class TelemetryRepository {
       await lockEntity(tx, kind, entityId);
       const existing =
         kind === 'run' ? await loadRunWith(tx, entityId) : await loadStepWith(tx, entityId);
-      const { state, value } = fold(existing);
+      const alreadyIngested = await loadIngestedEventIds(tx, runId, eventIds);
+      const { state, newlyIngestedEventIds, value } = fold(existing, alreadyIngested);
       if (state !== undefined) {
         if (kind === 'run') {
           await saveRunWith(tx, entityId, state);
         } else {
           await saveStepWith(tx, entityId, runId, state);
         }
+      }
+      if (newlyIngestedEventIds.length > 0) {
+        await recordIngestedEvents(tx, runId, newlyIngestedEventIds, new Date(receivedAt));
       }
       return value;
     });
@@ -175,6 +197,50 @@ async function lockEntity(
   entityId: string,
 ): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LOCK_NAMESPACE[kind]}::int, hashtext(${entityId}))`;
+}
+
+/**
+ * The ADR 0005 §1 ledger's read side (F3, ADR 0009): which of THIS batch's `eventIds`, for
+ * THIS run, have already been recorded as ingested — complete, unlike the entity-state
+ * provenance this replaces, because every accepted event is written here regardless of
+ * whether it goes on to win or lose its merge contest. Scoped to `runId` per ADR 0005 §2
+ * (`eventId` is unique per run, not globally). An empty `eventIds` short-circuits — an empty
+ * `IN ()` is either a Prisma-level error or a wasted round trip depending on driver, and a
+ * group with zero items never happens today, but the guard costs nothing.
+ */
+async function loadIngestedEventIds(
+  client: EntityClient,
+  runId: string,
+  eventIds: readonly string[],
+): Promise<ReadonlySet<string>> {
+  if (eventIds.length === 0) return new Set();
+  const rows = await client.ingestedEvent.findMany({
+    where: { runId, eventId: { in: [...eventIds] } },
+    select: { eventId: true },
+  });
+  return new Set(rows.map((row) => row.eventId));
+}
+
+/**
+ * The ledger's write side. `skipDuplicates: true` is a safety net, not the mechanism that
+ * prevents a double-record under concurrency — the advisory lock already serializes every
+ * writer for this `entityId`, and every `eventId` here belongs to exactly this call's
+ * `entityId` (one event updates exactly one entity), so two concurrent requests recording the
+ * same `eventId` is already excluded by the lock. What `skipDuplicates` actually guards is a
+ * caller passing an `eventId` `loadIngestedEventIds` did not have a chance to see yet — never
+ * expected on the path `TelemetryService.ingest` takes today, but a silent no-op is the safe
+ * failure mode if it ever happens, not a thrown, batch-aborting unique-constraint violation.
+ */
+async function recordIngestedEvents(
+  client: EntityClient,
+  runId: string,
+  eventIds: readonly string[],
+  receivedAt: Date,
+): Promise<void> {
+  await client.ingestedEvent.createMany({
+    data: eventIds.map((eventId) => ({ eventId, runId, receivedAt })),
+    skipDuplicates: true,
+  });
 }
 
 async function loadRunWith(

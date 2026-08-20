@@ -163,3 +163,36 @@ model Step {
   @@index([runId])
   @@index([parentStepId])
 }
+
+/// The dedup ledger — ADR 0005 §1, corrected into existence by ADR 0009 (F3). "Have I seen
+/// this eventId?" was previously reconstructed from Run/Step's own provenance columns
+/// (startEventId, completionEventId, completionFieldOrigins), which record winners only: an
+/// event that loses its merge contest leaves no trace on the row and was re-classified
+/// ACCEPTED on every replay, forever. This table answers the question directly and
+/// completely — every accepted event is recorded here, winners and losers alike — and is
+/// deliberately thin: `eventId`, `runId`, `receivedAt`, nothing else. ADR 0005 decision 1
+/// rejected a full event-payload ledger; this is not a source of truth for anything except
+/// "has this event already been ingested". Raw events remain unreplayable without a Phase 5
+/// migration — that cost is accepted, not paid here.
+model IngestedEvent {
+  /// Client-generated idempotency key (§11/§12). Unique per run, not globally — see `runId`
+  /// below — so never `@id` on its own.
+  eventId String @db.VarChar(128)
+
+  /// Same run-scoping reason as every other id in this file: ADR 0005 §2 requires
+  /// `(runId, eventId)`, not `eventId` alone, BECAUSE `MVP_PLAN_V3.md`'s `SeededIdGenerator`
+  /// produces identical eventIds by design across different runs (Phase 3/6 determinism). A
+  /// global unique key on `eventId` would misclassify a genuinely new run's replayed seeded
+  /// scenario as DUPLICATE — a Phase 3 failure manufactured by a Phase 2 index.
+  runId String @db.VarChar(128)
+
+  /// Server clock, the same single reading `TelemetryService.ingest` takes once per request
+  /// (`Run.receivedAt`'s neighbour, same reasoning: not `@default(now())`, so this stays a
+  /// value the caller controls rather than a second clock the merge has to reconcile).
+  receivedAt DateTime @db.Timestamptz(3)
+
+  /// Composite PK doubles as the ADR 0005 §2 uniqueness constraint — one index serves both
+  /// "is this a duplicate" (equality lookup) and "no two rows for the same (runId, eventId)"
+  /// (the constraint itself), so no separate `@@unique` is needed.
+  @@id([runId, eventId])
+}
