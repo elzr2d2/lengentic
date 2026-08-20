@@ -51,7 +51,9 @@ can hold it:
 5. **A deterministic script** — `scripts/check-*.ts`
 6. **Reviewer judgement** — and only here
 
-Rungs 1–5 are `pnpm gates`. Rung 6 costs a dispatch and a context window, so a rule that
+Rungs 1–5 are commands, and most of them are `pnpm gates` — `check:secrets` runs in the
+pre-commit ladder instead, and `check:isolation` at the phase gate. Rung 6 costs a
+dispatch and a context window, so a rule that
 lands there must say why the five above it could not hold it. That reason is in the
 **Enforced by** column, not in someone's memory.
 
