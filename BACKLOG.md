@@ -1537,3 +1537,15 @@ conservative. Counterevidence before acting: both were single-unit batches, and 
 then succeeded sequentially" may be the system working, not over-blocking — the detect
 heuristic cannot tell those apart. A human should read the ADR against the telemetry and
 either loosen nothing, tune the REPEATEDLY threshold, or record the verdict in the ADR.
+
+### Orphaned-Step events are silently re-attached instead of surfaced
+
+**Source:** the original p2.ingest-endpoint Tester attack (2026-08-19, deferred by Builder as
+out of the recovery's scope). **Trigger:** the packet that next touches
+`platform/api/src/telemetry/**` merge behavior, or Phase 2's wave gate review.
+
+A Step event whose `runId` matches no Run is silently attached anyway. `MVP_PLAN_V3.md` §12
+says orphans must be surfaced, not silently mis-attributed — the current behavior files
+telemetry under a run that may never exist, which poisons aggregation quietly. Fix wants a
+deliberate orphan policy (store-and-flag, or per-event result naming the orphan state),
+never a widened merge.
