@@ -18,7 +18,7 @@ export const envSchema = z.object({
    * historical aggregation (§39). Consumed from Phase 2 onward; validated from Phase 1 so
    * a deployment cannot be missing it later.
    */
-  STALE_RUN_THRESHOLD_MS: z.coerce.number().int().positive().default(900_000),
+  STALE_RUN_THRESHOLD_MS: z.coerce.number().int().positive().default(1_800_000),
 });
 
 export type Env = z.infer<typeof envSchema>;
