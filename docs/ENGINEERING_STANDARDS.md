@@ -315,6 +315,26 @@ future metrics rather than estimated — a fabricated measurement is worse than 
 the surface the change actually touched. **Experimental.** It is not a quality truth, no
 threshold attaches to it, and no gate reads it.
 
+## Future backlog boundary
+
+Five capabilities are named, scoped, and deliberately **not built**: an architecture
+intelligence view (heatmap), an agentic maintainability score, delayed decision outcome
+attribution, learned/adaptive engineering policies, and context lifecycle optimization.
+Each one, with the evidence it would need and the run count that reopens it, is in
+`BACKLOG.md` § _Provided as Engineering Standards §13 — Future Backlog (2026-08-20)_. They
+are listed here only so the boundary below has something to point at; the ideas live there.
+
+| ID    | Rule                                                                                                                                                                                                                             | Enforced by                                                                                                |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| FUT-1 | `[MUST]` No infrastructure exists solely for a future-backlog capability, and no current task expands to support one.                                                                                                            | Watchdog scope pass — telling preparation from speculation needs the packet's intent, which no script has. |
+| FUT-2 | `[MUST]` No metric derived from these is presented as causal from a before/after comparison, and high token usage alone is never reported as bad architecture.                                                                   | Reviewer — the claim is in prose, not in a type.                                                           |
+| FUT-3 | `[MUST]` No learned or adaptive policy weakens a security guarantee, a correctness contract, a data-integrity invariant, or an architecture boundary. Any policy change goes through the existing approval and escalation rules. | `CLAUDE.md` escalation triggers 2 and 4.                                                                   |
+| FUT-4 | `[MUST]` No composite score ships before the raw evidence it is derived from is exposed on its own.                                                                                                                              | Reviewer, at the packet that would introduce the score.                                                    |
+| FUT-5 | `[SHOULD]` Preserve evidence that is already cheap to keep, avoid decisions that needlessly block these capabilities, and record a missing prerequisite in `BACKLOG.md` when one is discovered.                                  | `update-backlog`.                                                                                          |
+
+A heuristic written by hand is a heuristic. It becomes learned behaviour when runs say so,
+and not before. The order is: instrument, observe, learn, productize.
+
 ## Adding or changing a standard
 
 1. Walk the ladder. Stop at the first rung that can hold the rule.

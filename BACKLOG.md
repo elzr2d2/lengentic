@@ -1552,8 +1552,9 @@ never a widened merge.
 
 ## Provided as Engineering Standards §13 — Future Backlog (2026-08-20)
 
-Five future capabilities handed to the session as a standards section, verbatim in
-`.artifacts/standards/2026-08-20-future-backlog-13.md`. All five are **out of scope now**;
+Five future capabilities handed to the session as a standards section. The boundary rules
+that go with them (FUT-1..FUT-5) are in `docs/ENGINEERING_STANDARDS.md` ## Future backlog
+boundary, which points back here for the ideas. All five are **out of scope now**;
 none may be prepared for with speculative abstractions. The section's own §13.6 entry format
 and §13.7 Watchdog boundary are process rules, not backlog items — they already match this
 file's entry shape and the `update-backlog` skill, and are not duplicated as entries.
