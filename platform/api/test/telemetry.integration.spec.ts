@@ -1,12 +1,20 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import type { Server } from 'node:http';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { Test, type TestingModule } from '@nestjs/testing';
+import { HttpAdapterHost } from '@nestjs/core';
+import type { INestApplication } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { ConfigService } from '@nestjs/config';
+import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { TelemetryRepository } from '../src/telemetry/telemetry.repository';
 import { TelemetryService } from '../src/telemetry/telemetry.service';
+import { AllExceptionsFilter } from '../src/common/all-exceptions.filter';
 import type { Env } from '../src/config/env.schema';
+import type { IngestResponse } from '@lengentic/shared';
 
 /**
  * Real-Postgres regression coverage for `p2.ingest-endpoint`, carried across two repair
@@ -368,8 +376,8 @@ describe('Telemetry ingestion against a real Postgres (integration)', () => {
     }, 30_000);
   });
 
-  describe('D2: a failing entity group is contained to that group', () => {
-    it('a Postgres-level failure (occurredAt year 0000, SQLSTATE 22008) on one entity does not discard the rest of the batch, and returns a per-event result for every event', async () => {
+  describe('D2 / ADR 0010: a bad occurredAt is an event-level rejection; a genuine persistence failure is a 5xx, never an event-level REJECTED', () => {
+    it('year-0000 occurredAt (would be Postgres SQLSTATE 22008) is caught event-level before it ever reaches a group — well-formed groups either side still commit', async () => {
       const { service, repository, prisma } = await newTrio(connectionString);
       try {
         const response = await service.ingest([
@@ -381,53 +389,87 @@ describe('Telemetry ingestion against a real Postgres (integration)', () => {
           runStartedEvent('d2-good-after'),
         ]);
 
-        // Every event gets a result — the batch is never lost because one group's
-        // transaction failed.
+        // Every event gets a result, and the response is a plain 200 — the year-0000 event
+        // never reaches persistence at all (ADR 0010 supersedes the PROCESSING_FAILED design
+        // tester findings T2/T3 rejected: this is now INVALID_PAYLOAD, event-level).
         expect(response.results).toHaveLength(3);
         expect(response.results[0]).toMatchObject({ status: 'ACCEPTED' });
         expect(response.results[1]).toMatchObject({ status: 'REJECTED' });
-        expect(response.results[1]?.error?.code).toBe('PROCESSING_FAILED');
+        expect(response.results[1]?.error?.code).toBe('INVALID_PAYLOAD');
         expect(response.results[2]).toMatchObject({ status: 'ACCEPTED' });
         expect(response.accepted).toBe(2);
         expect(response.rejected).toBe(1);
 
-        // The good groups actually persisted — including the one AFTER the failing group,
-        // proving a mid-batch failure does not abort groups still to come.
         expect((await repository.loadRun('d2-good-before'))?.startedAt).not.toBeNull();
         expect((await repository.loadRun('d2-good-after'))?.startedAt).not.toBeNull();
-        // The failing group's own transaction rolled back — nothing landed for it.
         expect(await repository.loadRun('d2-bad-year-zero')).toBeUndefined();
       } finally {
         await prisma.onModuleDestroy();
       }
     }, 30_000);
 
-    it('a failure INSIDE the fold itself (RangeError: structuredClone overflows on a ~3000-deep metadata object, before any Postgres call) is contained the same way', async () => {
+    it('1 malformed (year-0000) + 99 well-formed events for the SAME entity: the 99 persist as one row, only the malformed one is rejected (MVP_PLAN_V3.md:1611)', async () => {
+      const { service, repository, prisma } = await newTrio(connectionString);
+      try {
+        const entityId = 'd2-scale-run';
+        const events = Array.from({ length: 99 }, (_, i) =>
+          runStartedEvent(entityId, {
+            eventId: `${entityId}-s${i}`,
+            occurredAt: `2026-08-19T10:00:${String(i % 60).padStart(2, '0')}.000Z`,
+          }),
+        );
+        events.splice(
+          50,
+          0,
+          runCompletedEvent(entityId, {
+            eventId: `${entityId}-poison`,
+            occurredAt: '0000-01-01T00:00:00.000Z',
+          }),
+        );
+
+        const response = await service.ingest(events);
+
+        expect(response.accepted).toBe(99);
+        expect(response.rejected).toBe(1);
+        expect(response.results.find((r) => r.eventId === `${entityId}-poison`)).toMatchObject({
+          status: 'REJECTED',
+          error: { code: 'INVALID_PAYLOAD' },
+        });
+
+        const row = await repository.loadRun(entityId);
+        expect(row?.startedAt).not.toBeNull();
+      } finally {
+        await prisma.onModuleDestroy();
+      }
+    }, 30_000);
+
+    it('a failure INSIDE the fold itself (RangeError: structuredClone overflows on a ~3000-deep metadata object, before any Postgres call) throws — it is never an event-level REJECTED', async () => {
       const { service, repository, prisma } = await newTrio(connectionString);
       try {
         // Zod-legal: MetadataSchema is z.record(z.string(), z.unknown()) and never recurses
         // into the value's own shape, so this passes parseTelemetryEvent AND
         // containsUnsafeUnicode (both proven, by direct probe, not to overflow at this
-        // depth) — the RangeError is exclusive to structuredClone inside mergeEvent.
+        // depth) — the RangeError is exclusive to structuredClone inside mergeEvent, i.e.
+        // INSIDE the persistence transaction, not the event-level pre-checks T5 hardened.
         let deeplyNested: unknown = { v: 1 };
         for (let i = 0; i < 3000; i++) {
           deeplyNested = { child: deeplyNested };
         }
 
-        const response = await service.ingest([
-          runStartedEvent('d2-good-sibling'),
-          runStartedEvent('d2-bad-deep-metadata', {
-            eventId: 'd2-bad-deep-metadata-start',
-            payload: { workflowName: 'wf', workflowVersion: '1.0.0', metadata: deeplyNested },
-          }),
-        ]);
+        // `d2-good-sibling` is inserted first — Map iteration order is insertion order, so
+        // its group's transaction commits BEFORE the failing group is even attempted.
+        await expect(
+          service.ingest([
+            runStartedEvent('d2-good-sibling'),
+            runStartedEvent('d2-bad-deep-metadata', {
+              eventId: 'd2-bad-deep-metadata-start',
+              payload: { workflowName: 'wf', workflowVersion: '1.0.0', metadata: deeplyNested },
+            }),
+          ]),
+        ).rejects.toThrow();
 
-        expect(response.results).toHaveLength(2);
-        expect(response.results[0]).toMatchObject({ status: 'ACCEPTED' });
-        expect(response.results[1]).toMatchObject({ status: 'REJECTED' });
-        expect(response.results[1]?.error?.code).toBe('PROCESSING_FAILED');
-        expect(response.rejected).toBe(1);
-
+        // ADR 0010: durability is unaffected by what the (failed) response reported — the
+        // sibling's own transaction had already committed.
         expect((await repository.loadRun('d2-good-sibling'))?.startedAt).not.toBeNull();
         expect(await repository.loadRun('d2-bad-deep-metadata')).toBeUndefined();
       } finally {
@@ -504,4 +546,191 @@ describe('Telemetry ingestion against a real Postgres (integration)', () => {
       }
     }, 30_000);
   });
+});
+
+/**
+ * ADR 0010 (`docs/decisions/0010-infrastructure-failure-is-not-an-event-level-rejection.md`),
+ * tester findings T1/T4/T5, 2026-08-20 — proven through the REAL HTTP boundary (real Nest
+ * routing, the real `zodBody`/`IngestRequestSchema` pipe, the real `TelemetryService` and
+ * `TelemetryRepository`, the real `AllExceptionsFilter`, real supertest requests over a real
+ * `http.Server`), not by calling `TelemetryService` directly. The tester's own
+ * re-verification flagged that gap explicitly: "The committed integration suite drives `new
+ * TelemetryService(...)` directly — it never crosses the HTTP controller... which is where
+ * the HTTP-status findings come from."
+ *
+ * Deliberately NOT the full `AppModule` `health.integration.spec.ts` uses: `AppModule` wires
+ * `nestjs-pino`'s `LoggerModule`, and pino's `fast-safe-stringify` serializer independently
+ * stack-overflows (`RangeError` inside `decirc`) on a request this large even at `LOG_LEVEL`
+ * `fatal` — a pre-existing logging-infrastructure gap, not a regression this repair
+ * introduces or T1/T5 asks it to fix (`platform/api/src/app.module.ts`'s `LoggerModule` is
+ * unmodified, and no `PROCESSING_FAILED`-style catch swallows it — pino's own serializer
+ * throws before this test's assertions ever run). This module hand-assembles the same
+ * request pipeline `main.ts` builds (`ConfigModule`, `PrismaModule`, `TelemetryModule`,
+ * `configureBodyParser`, `AllExceptionsFilter`, the `v1` prefix) minus that one module, so
+ * the boundary under test — routing, validation, the service, the filter — is identical.
+ */
+describe('POST /v1/telemetry/events — ADR 0010 at the real HTTP boundary', () => {
+  let container: StartedPostgreSqlContainer;
+  let app: NestExpressApplication;
+  let moduleRef: TestingModule;
+
+  const httpServer = (a: INestApplication): Server => a.getHttpServer() as Server;
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer(POSTGRES_IMAGE).start();
+    const connectionString = container.getConnectionUri();
+
+    execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
+      cwd: DATABASE_DIR,
+      env: { ...process.env, DATABASE_URL: connectionString },
+      stdio: 'pipe',
+      shell: process.platform === 'win32',
+    });
+
+    process.env.DATABASE_URL = connectionString;
+    process.env.NODE_ENV = 'test';
+    process.env.LOG_LEVEL = 'fatal';
+
+    const [{ ConfigModule }, { PrismaModule }, { TelemetryModule }, { validateEnv }] =
+      await Promise.all([
+        import('@nestjs/config'),
+        import('../src/prisma/prisma.module'),
+        import('../src/telemetry/telemetry.module'),
+        import('../src/config/env.schema'),
+      ]);
+
+    moduleRef = await Test.createTestingModule({
+      imports: [
+        ConfigModule.forRoot({ isGlobal: true, cache: true, validate: validateEnv }),
+        PrismaModule,
+        TelemetryModule,
+      ],
+    }).compile();
+
+    app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
+    const { configureBodyParser } = await import('../src/common/configure-body-parser');
+    configureBodyParser(app);
+    app.useGlobalFilters(new AllExceptionsFilter(app.get(HttpAdapterHost).httpAdapter));
+    // Same prefix `main.ts` sets — without it the route is `/telemetry/events`, not
+    // `/v1/telemetry/events`, and every request below 404s before reaching the controller.
+    app.setGlobalPrefix('v1', { exclude: ['health'] });
+    await app.init();
+  }, 180_000);
+
+  afterAll(async () => {
+    await app?.close();
+    await container?.stop();
+  });
+
+  it('T5: a pathologically deep, Zod-legal metadata object never produces a 500 with zero per-event results — the poisoned event is REJECTED, a good sibling still lands, HTTP 200', async () => {
+    // Tester finding T5: depth is not a stable threshold (7000 escaped as a single event,
+    // 8000 was contained in a 2-event batch, >=9000 escaped every attempt). 15000 is
+    // comfortably past that observed range without being needlessly extreme — this proves
+    // the boundary holds, it does not need to find V8's absolute limit.
+    //
+    // The request body is built as a JSON STRING by plain iteration, not `JSON.stringify`
+    // on the deep object: `JSON.stringify` is itself a recursive walk, and so is
+    // supertest/superagent's own request serializer (`fast-safe-stringify`) — both overflow
+    // on this input for reasons that have nothing to do with `containsUnsafeUnicode`, the
+    // thing this test is actually proving. A regularly-shaped `{"child":...}` chain has a
+    // trivial closed-form text representation, so building it by string repetition sidesteps
+    // recursion entirely on the client side; the server still receives, and must still
+    // `JSON.parse`, a genuinely deep structure.
+    const depth = 15_000;
+    const deepMetadataJson = '{"child":'.repeat(depth) + '{"leaf":true}' + '}'.repeat(depth);
+    const goodEvent = {
+      eventId: 'http-t5-good-start',
+      schemaVersion: '1',
+      type: 'run.started',
+      entityId: 'http-t5-good',
+      runId: 'http-t5-good',
+      occurredAt: '2026-08-19T10:00:00.000Z',
+      payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+    };
+    const bodyJson =
+      `{"events":[${JSON.stringify(goodEvent)},` +
+      `{"eventId":"http-t5-bad-start","schemaVersion":"1","type":"run.started",` +
+      `"entityId":"http-t5-bad","runId":"http-t5-bad","occurredAt":"2026-08-19T10:00:00.000Z",` +
+      `"payload":{"workflowName":"wf","workflowVersion":"1.0.0","metadata":${deepMetadataJson}}}]}`;
+
+    const response = await request(httpServer(app))
+      .post('/v1/telemetry/events')
+      .set('Content-Type', 'application/json')
+      .send(bodyJson);
+    const body = response.body as IngestResponse;
+
+    expect(response.status).toBe(200);
+    expect(body.results).toHaveLength(2);
+    expect(body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+    expect(body.results[1]).toMatchObject({ status: 'REJECTED' });
+    expect(body.results[1]?.error?.code).toBe('INVALID_PAYLOAD');
+  }, 30_000);
+
+  it('T1: a genuine persistence failure (RangeError inside the fold) returns a sanitized 5xx body — no file path, no stack frame, no SQL code, no compiled source', async () => {
+    let deeplyNested: unknown = { v: 1 };
+    for (let i = 0; i < 3000; i++) {
+      deeplyNested = { child: deeplyNested };
+    }
+
+    const events = [
+      {
+        eventId: 'http-t1-bad-start',
+        schemaVersion: '1',
+        type: 'run.started',
+        entityId: 'http-t1-bad',
+        runId: 'http-t1-bad',
+        occurredAt: '2026-08-19T10:00:00.000Z',
+        payload: { workflowName: 'wf', workflowVersion: '1.0.0', metadata: deeplyNested },
+      },
+    ];
+
+    const response = await request(httpServer(app)).post('/v1/telemetry/events').send({ events });
+
+    expect(response.status).toBe(500);
+    // The ONLY shape AllExceptionsFilter ever sends for a 5xx: statusCode/error/message/
+    // path/timestamp, message replaced with the generic string — never the exception itself.
+    expect(response.body).toMatchObject({
+      statusCode: 500,
+      message: 'Internal server error',
+    });
+    const raw = JSON.stringify(response.body);
+    expect(raw).not.toMatch(/[A-Za-z]:\\\\/); // no Windows filesystem path
+    expect(raw).not.toMatch(/at .*:\d+:\d+/); // no stack frame
+    expect(raw).not.toMatch(/RangeError/);
+    expect(raw).not.toMatch(/telemetry\.repository/);
+    expect(raw).not.toMatch(/\b\d{5}\b/); // no bare 5-digit SQLSTATE-shaped code
+  }, 30_000);
+
+  it('T4: the database becoming unreachable mid-flight returns 503, not 200 — and the body is sanitized the same way', async () => {
+    const prisma = app.get(PrismaService);
+    // T4's own fixture: the table this service depends on disappears out from under it —
+    // the database itself stays up and reachable (unlike a dropped connection), which is
+    // exactly what made the pre-fix defect look like success: the wire response was 200.
+    await prisma.client.$executeRawUnsafe('ALTER TABLE "Run" RENAME TO "Run_hidden_by_test";');
+
+    try {
+      const events = [
+        {
+          eventId: 'http-t4-start',
+          schemaVersion: '1',
+          type: 'run.started',
+          entityId: 'http-t4-run',
+          runId: 'http-t4-run',
+          occurredAt: '2026-08-19T10:00:00.000Z',
+          payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+        },
+      ];
+
+      const response = await request(httpServer(app)).post('/v1/telemetry/events').send({ events });
+
+      expect(response.status).toBe(503);
+      expect(response.status).not.toBe(200);
+      expect(response.body).toMatchObject({ statusCode: 503, message: 'Internal server error' });
+      const raw = JSON.stringify(response.body);
+      expect(raw).not.toMatch(/P2021/);
+      expect(raw).not.toMatch(/does not exist/);
+    } finally {
+      await prisma.client.$executeRawUnsafe('ALTER TABLE "Run_hidden_by_test" RENAME TO "Run";');
+    }
+  }, 30_000);
 });

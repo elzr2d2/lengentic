@@ -1,3 +1,8 @@
+import {
+  InternalServerErrorException,
+  ServiceUnavailableException,
+  type HttpException,
+} from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import type { EntityMergeState } from './merge-rules';
 import { TelemetryService } from './telemetry.service';
@@ -18,8 +23,13 @@ import type { EntityKind } from './event-mapping';
  * never actually interleaves two calls into this fake. It exists to give
  * `TelemetryService.ingest` the same "load, fold, save, return the fold's value" contract
  * the real repository provides.
+ *
+ * `failFor` (keyed `kind:entityId`, matching `TelemetryService`'s own grouping key) makes
+ * ONE entity's `withEntityLock` call reject instead of folding/saving — the seam
+ * `TelemetryService`'s persistence-failure classification (ADR 0010) is tested through,
+ * without a real Prisma error ever crossing this boundary.
  */
-function fakeRepository(): {
+function fakeRepository(options: { failFor?: Map<string, unknown> } = {}): {
   repository: TelemetryRepository;
   runs: Map<string, EntityMergeState>;
   steps: Map<string, { runId: string; state: EntityMergeState }>;
@@ -28,6 +38,7 @@ function fakeRepository(): {
 } {
   const runs = new Map<string, EntityMergeState>();
   const steps = new Map<string, { runId: string; state: EntityMergeState }>();
+  const failFor = options.failFor ?? new Map<string, unknown>();
   let saveRunCalls = 0;
   let saveStepCalls = 0;
 
@@ -44,7 +55,7 @@ function fakeRepository(): {
       steps.set(id, { runId, state });
       return Promise.resolve();
     },
-    withEntityLock: async <T>(
+    withEntityLock: <T>(
       kind: EntityKind,
       entityId: string,
       runId: string,
@@ -53,6 +64,10 @@ function fakeRepository(): {
         value: T;
       },
     ): Promise<T> => {
+      const failure = failFor.get(`${kind}:${entityId}`);
+      if (failure !== undefined) {
+        return Promise.reject(failure);
+      }
       const existing = kind === 'run' ? runs.get(entityId) : steps.get(entityId)?.state;
       const { state, value } = fold(existing);
       if (state !== undefined) {
@@ -64,7 +79,7 @@ function fakeRepository(): {
           steps.set(entityId, { runId, state });
         }
       }
-      return value;
+      return Promise.resolve(value);
     },
   } as unknown as TelemetryRepository;
 
@@ -300,5 +315,192 @@ describe('TelemetryService.ingest — response shape', () => {
       'ACCEPTED',
       'DUPLICATE',
     ]);
+  });
+});
+
+// ADR 0010 (`docs/decisions/0010-infrastructure-failure-is-not-an-event-level-rejection.md`),
+// tester findings T1-T5, 2026-08-20.
+describe('TelemetryService.ingest — year-0000 occurredAt is an event-level rejection (T2/T3)', () => {
+  it('rejects only the year-0000 event; a well-formed sibling in the SAME entity group still persists', async () => {
+    const { repository, runs } = fakeRepository();
+    const service = new TelemetryService(repository);
+    const entityId = 'poison-run';
+
+    const response = await service.ingest([
+      runStartedEvent({ entityId, runId: entityId, eventId: 'good' }),
+      runCompletedEvent({
+        entityId,
+        runId: entityId,
+        eventId: 'poison',
+        occurredAt: '0000-01-01T00:00:00.000Z',
+      }),
+    ]);
+
+    expect(response.accepted).toBe(1);
+    expect(response.rejected).toBe(1);
+    expect(response.results[0]).toMatchObject({ status: 'ACCEPTED' });
+    expect(response.results[1]).toMatchObject({ status: 'REJECTED' });
+    expect(response.results[1]?.error?.code).toBe('INVALID_PAYLOAD');
+    // The group never even attempted to fold/persist the poison event — the well-formed
+    // start side is the ONLY thing in the saved state.
+    expect(runs.get(entityId)?.startedAt).not.toBeNull();
+    expect(runs.get(entityId)?.completedAt).toBeNull();
+  });
+
+  it('a good event elsewhere in the same batch is unaffected by a year-0000 sibling in a DIFFERENT entity group', async () => {
+    const { repository } = fakeRepository();
+    const service = new TelemetryService(repository);
+
+    const response = await service.ingest([
+      runStartedEvent({ entityId: 'before', runId: 'before' }),
+      runStartedEvent({
+        entityId: 'poison',
+        runId: 'poison',
+        eventId: 'poison-start',
+        occurredAt: '0000-06-15T00:00:00.000Z',
+      }),
+      runStartedEvent({ entityId: 'after', runId: 'after' }),
+    ]);
+
+    expect(response.results.map((r) => r.status)).toEqual(['ACCEPTED', 'REJECTED', 'ACCEPTED']);
+    expect(response.results[1]?.error?.code).toBe('INVALID_PAYLOAD');
+  });
+});
+
+describe('TelemetryService.ingest — a persistence failure aborts the whole response, never an event-level REJECTED (T1/T3/T4)', () => {
+  function fakePrismaError(name: string, code?: string): Error {
+    const error = new Error(`fake ${name} for classification testing`);
+    error.name = name;
+    if (code !== undefined) {
+      (error as unknown as { code: string }).code = code;
+    }
+    return error;
+  }
+
+  it('a known-dependency-unavailable Prisma error (table missing, P2021) throws ServiceUnavailableException (503)', async () => {
+    const failFor = new Map<string, unknown>([
+      ['run:down-run', fakePrismaError('PrismaClientKnownRequestError', 'P2021')],
+    ]);
+    const { repository } = fakeRepository({ failFor });
+    const service = new TelemetryService(repository);
+
+    const promise = service.ingest([runStartedEvent({ entityId: 'down-run', runId: 'down-run' })]);
+
+    await expect(promise).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await promise.catch((error: HttpException) => {
+      expect(error.getStatus()).toBe(503);
+    });
+  });
+
+  it('connection-refused (ECONNREFUSED) also classifies as ServiceUnavailableException (503)', async () => {
+    const failFor = new Map<string, unknown>([
+      ['run:refused-run', fakePrismaError('PrismaClientKnownRequestError', 'ECONNREFUSED')],
+    ]);
+    const { repository } = fakeRepository({ failFor });
+    const service = new TelemetryService(repository);
+
+    await expect(
+      service.ingest([runStartedEvent({ entityId: 'refused-run', runId: 'refused-run' })]),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+
+  it("an unclassified Prisma error (e.g. P2010, this service's own bad query) throws InternalServerErrorException (500)", async () => {
+    const failFor = new Map<string, unknown>([
+      ['run:bug-run', fakePrismaError('PrismaClientKnownRequestError', 'P2010')],
+    ]);
+    const { repository } = fakeRepository({ failFor });
+    const service = new TelemetryService(repository);
+
+    const promise = service.ingest([runStartedEvent({ entityId: 'bug-run', runId: 'bug-run' })]);
+
+    await expect(promise).rejects.toBeInstanceOf(InternalServerErrorException);
+    await promise.catch((error: HttpException) => {
+      expect(error.getStatus()).toBe(500);
+    });
+  });
+
+  it('a plain, non-Prisma error (e.g. a RangeError from inside the fold) also throws InternalServerErrorException (500)', async () => {
+    const failFor = new Map<string, unknown>([
+      ['run:overflow-run', new RangeError('Maximum call stack size exceeded')],
+    ]);
+    const { repository } = fakeRepository({ failFor });
+    const service = new TelemetryService(repository);
+
+    await expect(
+      service.ingest([runStartedEvent({ entityId: 'overflow-run', runId: 'overflow-run' })]),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+  });
+
+  it('never produces a PROCESSING_FAILED code or a REJECTED status for a persistence failure — the whole call rejects instead', async () => {
+    const failFor = new Map<string, unknown>([
+      ['run:fail-run', fakePrismaError('PrismaClientKnownRequestError', 'P2021')],
+    ]);
+    const { repository } = fakeRepository({ failFor });
+    const service = new TelemetryService(repository);
+
+    let thrown: unknown;
+    try {
+      await service.ingest([runStartedEvent({ entityId: 'fail-run', runId: 'fail-run' })]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ServiceUnavailableException);
+    expect(JSON.stringify(thrown)).not.toContain('PROCESSING_FAILED');
+  });
+
+  it('a group that already committed BEFORE the failing group stays committed, even though the response itself is a 5xx (durability vs what is reported)', async () => {
+    const failFor = new Map<string, unknown>([
+      ['run:second-fails', fakePrismaError('PrismaClientKnownRequestError', 'P2021')],
+    ]);
+    const { repository, runs } = fakeRepository({ failFor });
+    const service = new TelemetryService(repository);
+
+    await expect(
+      service.ingest([
+        runStartedEvent({ entityId: 'first-ok', runId: 'first-ok' }),
+        runStartedEvent({ entityId: 'second-fails', runId: 'second-fails' }),
+      ]),
+    ).rejects.toThrow();
+
+    // The FIRST group's own transaction had already completed by the time the SECOND
+    // group's `withEntityLock` rejected — its data is durable regardless of how this
+    // particular response turned out.
+    expect(runs.get('first-ok')?.startedAt).not.toBeNull();
+    expect(runs.has('second-fails')).toBe(false);
+  });
+});
+
+describe('TelemetryService.ingest — deep-metadata recursion is contained per-event, never an uncaught request failure (T5)', () => {
+  it('a pathologically deep, Zod-legal metadata object that overflows containsUnsafeUnicode rejects ONLY that event; a well-formed sibling in the same batch still lands', async () => {
+    const { repository, runs } = fakeRepository();
+    const service = new TelemetryService(repository);
+
+    // Real recursion, not a mock: containsUnsafeUnicode walks this the same way it would a
+    // real payload. Depth is deliberately large and unbounded-feeling on purpose — tester
+    // finding T5: "depth is not a stable threshold", so this proves the BOUNDARY holds
+    // rather than pinning to one number.
+    let deeplyNested: unknown = { leaf: true };
+    for (let i = 0; i < 200_000; i++) {
+      deeplyNested = { child: deeplyNested };
+    }
+
+    const response = await service.ingest([
+      runStartedEvent({ entityId: 'deep-sibling', runId: 'deep-sibling' }),
+      runStartedEvent({
+        entityId: 'deep-bad',
+        runId: 'deep-bad',
+        eventId: 'deep-bad-start',
+        payload: { workflowName: 'wf', workflowVersion: '1.0.0', metadata: deeplyNested },
+      }),
+    ]);
+
+    expect(response.results).toHaveLength(2);
+    expect(response.results[0]).toMatchObject({ status: 'ACCEPTED' });
+    expect(response.results[1]).toMatchObject({ status: 'REJECTED' });
+    expect(response.results[1]?.error?.code).toBe('INVALID_PAYLOAD');
+    expect(response.rejected).toBe(1);
+    expect(runs.get('deep-sibling')?.startedAt).not.toBeNull();
+    expect(runs.has('deep-bad')).toBe(false);
   });
 });

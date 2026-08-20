@@ -1,10 +1,19 @@
-import { Test } from '@nestjs/testing';
+﻿import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import type { Server } from 'node:http';
 import { INGEST_LIMITS, type IngestResponse } from '@lengentic/shared';
 import { TelemetryEventsController } from './telemetry.controller';
 import { TelemetryService } from './telemetry.service';
+
+/**
+ * Nest types `getHttpServer()` as `any`, which `no-unsafe-argument` rejects at the supertest
+ * call. The invariant is externally proven — the Express adapter's server IS an
+ * `http.Server` — so the assertion is made once here rather than at each call site (same
+ * pattern as `test/health.integration.spec.ts`'s `httpServer`).
+ */
+const httpServer = (app: INestApplication): Server => app.getHttpServer() as Server;
 
 /**
  * Wiring only: is the route actually `POST /telemetry/events` (main.ts's global `v1` prefix
@@ -62,7 +71,7 @@ describe('TelemetryEventsController', () => {
       payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
     };
 
-    const response = await request(app.getHttpServer())
+    const response = await request(httpServer(app))
       .post('/telemetry/events')
       .send({ events: [event] });
 
@@ -72,16 +81,14 @@ describe('TelemetryEventsController', () => {
   });
 
   it('rejects an empty events array at the request level with HTTP 400, before the service runs', async () => {
-    const response = await request(app.getHttpServer())
-      .post('/telemetry/events')
-      .send({ events: [] });
+    const response = await request(httpServer(app)).post('/telemetry/events').send({ events: [] });
 
     expect(response.status).toBe(400);
     expect(received).toBeUndefined();
   });
 
   it('rejects a request body missing the events field entirely with HTTP 400', async () => {
-    const response = await request(app.getHttpServer()).post('/telemetry/events').send({});
+    const response = await request(httpServer(app)).post('/telemetry/events').send({});
 
     expect(response.status).toBe(400);
     expect(received).toBeUndefined();
@@ -98,7 +105,7 @@ describe('TelemetryEventsController', () => {
       payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
     }));
 
-    const response = await request(app.getHttpServer()).post('/telemetry/events').send({ events });
+    const response = await request(httpServer(app)).post('/telemetry/events').send({ events });
 
     expect(response.status).toBe(400);
     expect(received).toBeUndefined();

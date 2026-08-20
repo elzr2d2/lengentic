@@ -261,17 +261,30 @@ function toDate(iso: string | null): Date | null {
   return iso === null ? null : new Date(iso);
 }
 
-// Prisma 7's generated `InputJsonValue` has no `undefined` member — `null` is the only
-// legal "no value" input for a nullable Json column. `unknown` is cast at this single edge
-// because it originates from `EntityMergeState`'s deliberately-opaque `fields` bag
-// (merge-rules.ts's own header: callers narrow it, not merge-rules itself).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function toJsonInput(value: unknown): any {
-  return value === undefined ? null : value;
+// The exact input type Prisma generates for a nullable Json column, recovered structurally
+// from `PrismaClient` itself (same technique as `RunRow`/`StepRow`/`TransactionClient`
+// above) rather than imported from `@prisma/client`/`**/generated/prisma/**`, which
+// `no-restricted-imports` forbids here (CLAUDE.md ## Types). `Run.metadata` and
+// `Step.metadata`/`completionFieldOrigins` are all nullable Json columns generated from the
+// same Prisma `Json?` scalar, so they share this one type. `undefined` is excluded because
+// Prisma 7's generated `InputJsonValue` has no `undefined` member — `null` is the only legal
+// "no value" input.
+type JsonColumnInput = Exclude<
+  NonNullable<Parameters<PrismaClient['run']['upsert']>[0]['create']>['metadata'],
+  undefined
+>;
+
+/**
+ * `value` originates from `EntityMergeState`'s deliberately-opaque `fields` bag
+ * (merge-rules.ts's own header: callers narrow it, not merge-rules itself), so this is the
+ * one place that bag is asserted into the shape Prisma's generated types require.
+ */
+function toJsonInput(value: unknown): JsonColumnInput {
+  return (value === undefined ? null : value) as JsonColumnInput;
 }
 
 function toRunStatus(status: MergeEntityStatus): RunRow['status'] {
-  return status as RunRow['status'];
+  return status;
 }
 
 function runRowToState(row: RunRow): EntityMergeState {
@@ -280,7 +293,7 @@ function runRowToState(row: RunRow): EntityMergeState {
 
   return {
     entityId: row.id,
-    status: row.status as MergeEntityStatus,
+    status: row.status,
     startedAt: row.startedAt ? row.startedAt.toISOString() : null,
     startFields: row.startedAt
       ? {
@@ -308,7 +321,7 @@ function stepRowToState(row: StepRow): EntityMergeState {
 
   return {
     entityId: row.id,
-    status: row.status as MergeEntityStatus,
+    status: row.status,
     startedAt: row.startedAt ? row.startedAt.toISOString() : null,
     startFields: row.startedAt
       ? {

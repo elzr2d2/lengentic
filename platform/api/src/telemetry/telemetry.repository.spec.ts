@@ -11,13 +11,38 @@ import type { PrismaService } from '../prisma/prisma.service';
  * here (that round trip against a live schema belongs to `test/*.integration.spec.ts`, not
  * `pnpm test`) — only what THIS repository sends it and reads back from it.
  */
+/**
+ * The one shape every test in this file actually inspects from an `upsert` call — not the
+ * full Prisma-generated input type (which would need the boundary this file, and
+ * `telemetry.repository.ts`, deliberately does not cross — CLAUDE.md ## Types). Typing the
+ * mock this way, instead of leaving `vi.fn()` untyped, is what turns `.mock.calls[0][0]`
+ * from `any` into a real type at every call site below.
+ */
+interface UpsertCallArgs {
+  readonly where: { readonly id: string };
+  readonly create: Record<string, unknown>;
+  readonly update: Record<string, unknown>;
+}
+
 function fakePrismaService(): {
   prisma: PrismaService;
-  run: { findUnique: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
-  step: { findUnique: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
+  run: {
+    findUnique: ReturnType<typeof vi.fn>;
+    upsert: ReturnType<typeof vi.fn<(args: UpsertCallArgs) => Promise<void>>>;
+  };
+  step: {
+    findUnique: ReturnType<typeof vi.fn>;
+    upsert: ReturnType<typeof vi.fn<(args: UpsertCallArgs) => Promise<void>>>;
+  };
 } {
-  const run = { findUnique: vi.fn(), upsert: vi.fn(() => Promise.resolve()) };
-  const step = { findUnique: vi.fn(), upsert: vi.fn(() => Promise.resolve()) };
+  const run = {
+    findUnique: vi.fn(),
+    upsert: vi.fn<(args: UpsertCallArgs) => Promise<void>>(() => Promise.resolve()),
+  };
+  const step = {
+    findUnique: vi.fn(),
+    upsert: vi.fn<(args: UpsertCallArgs) => Promise<void>>(() => Promise.resolve()),
+  };
   const prisma = { client: { run, step } } as unknown as PrismaService;
   return { prisma, run, step };
 }

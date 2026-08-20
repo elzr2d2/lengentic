@@ -1,6 +1,12 @@
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  ServiceUnavailableException,
+  type HttpException,
+} from '@nestjs/common';
 import {
   IdSchema,
   INGEST_ERROR_CODES,
@@ -13,7 +19,7 @@ import {
 import { entityKindOf, toMergeEvent, type EntityKind } from './event-mapping';
 import { mergeEvent, type EntityMergeState } from './merge-rules';
 import { TelemetryRepository } from './telemetry.repository';
-import { containsUnsafeUnicode } from './wire-sanitize';
+import { containsUnsafeUnicode, isPostgresUnrepresentableTimestamp } from './wire-sanitize';
 
 interface BatchItem {
   readonly index: number;
@@ -99,8 +105,78 @@ function collectKnownEventIds(state: EntityMergeState | undefined): Set<string> 
   return ids;
 }
 
+// ADR 0010 (`docs/decisions/0010-infrastructure-failure-is-not-an-event-level-rejection.md`):
+// a known infrastructure/dependency-unavailable condition is HTTP 503; every other
+// unexpected persistence failure is HTTP 500. `platform/api` cannot import Prisma's error
+// classes to `instanceof`-check them — `no-restricted-imports` blocks `@prisma/client` and
+// `**/generated/prisma/**` here (CLAUDE.md ## Types: "Prisma types are database-internal and
+// never cross a module boundary") — so this reads only the `.name`/`.code` string properties
+// every Prisma error exposes on the `Error` shape all JS errors already have.
+//
+// Confirmed live, 2026-08-20, against this project's own Postgres instance (a throwaway
+// database, migrated and torn down for the probe — `.artifacts/evidence/2/human-repair/`):
+//   - Run table renamed away (T4's own fixture)  -> PrismaClientKnownRequestError code P2021
+//   - connection refused (bad port)              -> PrismaClientKnownRequestError code ECONNREFUSED
+//   - interactive-transaction timeout (T1's lock-contention fixture, past Prisma's own
+//     5000ms transaction timeout) -> PrismaClientKnownRequestError code P2028
+//   - a query this service's own code got wrong (unknown column, via $queryRawUnsafe)
+//     -> PrismaClientKnownRequestError code P2010 — NOT a dependency-availability signal,
+//     classified 500 by omission below.
+const KNOWN_DEPENDENCY_UNAVAILABLE_CODES = new Set([
+  'ECONNREFUSED', // node-postgres's own code, passed through unwrapped by the driver adapter
+  'P2021', // table does not exist — the schema this process depends on is not there
+  'P2022', // column does not exist — same class as P2021
+  'P2024', // timed out fetching a new connection from the pool
+  'P2028', // transaction API error (an interactive transaction expired/timed out)
+]);
+
+const PRISMA_ERROR_NAMES = new Set([
+  'PrismaClientKnownRequestError',
+  'PrismaClientUnknownRequestError',
+  'PrismaClientInitializationError',
+  'PrismaClientRustPanicError',
+]);
+
+function errorCode(error: Error): string | undefined {
+  if (!('code' in error)) return undefined;
+  const code: unknown = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function isKnownDependencyUnavailable(error: unknown): boolean {
+  if (!(error instanceof Error) || !PRISMA_ERROR_NAMES.has(error.name)) return false;
+
+  // Initialization failures and Rust-side panics mean the client never had a usable
+  // connection to begin with — always a connectivity-level condition, no `.code` to check.
+  if (error.name !== 'PrismaClientKnownRequestError') return true;
+
+  const code = errorCode(error);
+  return (
+    code !== undefined && (KNOWN_DEPENDENCY_UNAVAILABLE_CODES.has(code) || /^P10\d\d$/.test(code))
+  );
+}
+
+/**
+ * `AllExceptionsFilter` already replaces any 5xx exception's message with the generic
+ * "Internal server error" string before it reaches the wire (`status >= 500` — true for
+ * both 503 and 500), so the message passed to these constructors below is server-side
+ * documentation only (visible in logs, never in the response body) — T1's sanitization
+ * lives in that filter, not here. This function's only externally-visible effect is which
+ * HTTP status the caller sees.
+ */
+function classifyPersistenceFailure(error: unknown): HttpException {
+  if (isKnownDependencyUnavailable(error)) {
+    return new ServiceUnavailableException(
+      'telemetry storage is temporarily unavailable; retry the batch',
+    );
+  }
+  return new InternalServerErrorException('telemetry batch could not be processed');
+}
+
 @Injectable()
 export class TelemetryService {
+  private readonly logger = new Logger(TelemetryService.name);
+
   constructor(private readonly repository: TelemetryRepository) {}
 
   /**
@@ -108,7 +184,13 @@ export class TelemetryService {
    *
    * 1. Event-level rejection (size, then schema, then wire-safety) never fails the batch —
    *    every raw event gets exactly one `IngestResult`, regardless of what happens to its
-   *    neighbours.
+   *    neighbours. The whole per-event stage (including the wire-safety checks below) runs
+   *    inside a per-event `try`/`catch` (tester finding T5, 2026-08-20): `containsUnsafeUnicode`
+   *    recurses over arbitrarily-deep, Zod-legal `metadata` (`MetadataSchema` is
+   *    `z.record(z.string(), z.unknown())` and never bounds nesting) and can overflow V8's
+   *    call stack at a depth that is not a stable threshold. A `RangeError` there rejects
+   *    only THAT event — it must never escape as an uncaught request-level 500 that loses
+   *    every other event's result too.
    * 2. Accepted events are grouped by entity (`kind:entityId`).
    * 3. Each group is folded and saved as ONE atomic unit via
    *    `TelemetryRepository.withEntityLock` (F1 fix, tester regression 2026-08-19): the
@@ -120,13 +202,23 @@ export class TelemetryService {
    *    each other, and a duplicate within a single batch is caught exactly like a duplicate
    *    across two requests. A group's final state is written once, after its whole group has
    *    folded — not once per event — so a 10-event batch for one Step is one upsert, not ten.
-   * 4. A group's transaction failing is CONTAINED to that group (tester finding D2,
-   *    2026-08-20): every other group's results — including groups already committed before
-   *    this one ran — still land in the response, and this group's own events still get a
-   *    result each (REJECTED), never silently dropped. See `PROCESSING_FAILED` below.
+   * 4. A group's transaction failing is an infrastructure/persistence failure, never an
+   *    event-level verdict (ADR 0010, superseding the `PROCESSING_FAILED` design tester
+   *    findings T1/T2/T3/T4 rejected 2026-08-20): `REJECTED` means the event itself is
+   *    invalid, and a failed persistence attempt proves nothing of the kind about the events
+   *    in that group — including, per T3, events this very request already knows are
+   *    `DUPLICATE`s of rows that exist. This method aborts the whole response with a
+   *    classified `HttpException` instead: groups already committed by an earlier iteration
+   *    of this loop stay committed (each is its own transaction), the failing group's own
+   *    transaction rolls back, and any group not yet reached is simply never attempted — the
+   *    caller gets one honest 5xx and retries the whole batch, safely, because retry safety
+   *    is dedup's job, not this endpoint's (F3, deferred to `p2.idempotency`, not reopened
+   *    here). A caller that DOES receive 200 now knows every event in the batch got a real
+   *    per-event verdict — that guarantee is the whole reason per-event results are worth
+   *    returning at all.
    */
   async ingest(rawEvents: readonly unknown[]): Promise<IngestResponse> {
-    const results: IngestResult[] = new Array(rawEvents.length);
+    const results = new Array<IngestResult>(rawEvents.length);
     let accepted = 0;
     let duplicate = 0;
     let rejected = 0;
@@ -135,60 +227,95 @@ export class TelemetryService {
     for (let index = 0; index < rawEvents.length; index++) {
       const raw = rawEvents[index];
 
-      if (serializedByteLength(raw) > INGEST_LIMITS.maxEventPayloadBytes) {
+      try {
+        if (serializedByteLength(raw) > INGEST_LIMITS.maxEventPayloadBytes) {
+          results[index] = {
+            eventId: readEventIdBestEffort(raw),
+            status: 'REJECTED',
+            error: {
+              code: INGEST_ERROR_CODES.EVENT_TOO_LARGE,
+              message: `event exceeds the maximum size of ${INGEST_LIMITS.maxEventPayloadBytes} bytes`,
+            },
+          };
+          rejected++;
+          continue;
+        }
+
+        const parsed = parseTelemetryEvent(raw);
+        if (!parsed.ok) {
+          results[index] = {
+            eventId: parsed.eventId,
+            status: 'REJECTED',
+            error: { code: parsed.code, message: parsed.message },
+          };
+          rejected++;
+          continue;
+        }
+
+        const event = parsed.event;
+
+        // F2 fix (tester regression, 2026-08-19): a U+0000 or lone-surrogate value passes
+        // every Zod schema (IdSchema/NameSchema accept both) but Postgres rejects it at the
+        // wire level. Reject event-level, exactly like EVENT_TOO_LARGE, before it ever
+        // reaches the repository. INVALID_PAYLOAD is the existing code that fits: this
+        // event's payload is not acceptable, the same category `parseTelemetryEvent`
+        // already uses for a Zod-shape failure.
+        if (containsUnsafeUnicode(event)) {
+          results[index] = {
+            eventId: event.eventId,
+            status: 'REJECTED',
+            error: {
+              code: INGEST_ERROR_CODES.INVALID_PAYLOAD,
+              message: 'event contains a null byte or an unpaired unicode surrogate',
+            },
+          };
+          rejected++;
+          continue;
+        }
+
+        // T2/T3 fix (tester finding, 2026-08-20): `occurredAt` is Zod-legal for every year
+        // `0000`-`9999`, but Postgres cannot store year `0000` (no year zero — see
+        // `wire-sanitize.ts`). Reject event-level, before this event ever reaches a group,
+        // so well-formed siblings in the SAME entity group still fold and persist — a
+        // Postgres-level failure at save time would poison the whole group's one shared row
+        // instead (one entity, one upsert).
+        if (isPostgresUnrepresentableTimestamp(event.occurredAt)) {
+          results[index] = {
+            eventId: event.eventId,
+            status: 'REJECTED',
+            error: {
+              code: INGEST_ERROR_CODES.INVALID_PAYLOAD,
+              message:
+                'event occurredAt names a date Postgres cannot store (year 0000 does not exist)',
+            },
+          };
+          rejected++;
+          continue;
+        }
+
+        const kind = entityKindOf(event.type);
+        const key = `${kind}:${event.entityId}`;
+        let group = groups.get(key);
+        if (!group) {
+          group = { kind, entityId: event.entityId, runId: event.runId, items: [] };
+          groups.set(key, group);
+        }
+        group.items.push({ index, event });
+      } catch (error) {
+        this.logger.warn(
+          { err: error, index },
+          'event-level validation failed unexpectedly; rejecting only this event',
+        );
         results[index] = {
           eventId: readEventIdBestEffort(raw),
           status: 'REJECTED',
           error: {
-            code: INGEST_ERROR_CODES.EVENT_TOO_LARGE,
-            message: `event exceeds the maximum size of ${INGEST_LIMITS.maxEventPayloadBytes} bytes`,
-          },
-        };
-        rejected++;
-        continue;
-      }
-
-      const parsed = parseTelemetryEvent(raw);
-      if (!parsed.ok) {
-        results[index] = {
-          eventId: parsed.eventId,
-          status: 'REJECTED',
-          error: { code: parsed.code, message: parsed.message },
-        };
-        rejected++;
-        continue;
-      }
-
-      const event = parsed.event;
-
-      // F2 fix (tester regression, 2026-08-19): a U+0000 or lone-surrogate value passes
-      // every Zod schema (IdSchema/NameSchema accept both) but Postgres rejects it at the
-      // wire level — an uncaught 500 that can leave earlier events in the SAME batch already
-      // persisted. Reject event-level, exactly like EVENT_TOO_LARGE, before it ever reaches
-      // the repository. INVALID_PAYLOAD is the existing code that fits: this event's payload
-      // is not acceptable, the same category `parseTelemetryEvent` already uses for a
-      // Zod-shape failure.
-      if (containsUnsafeUnicode(event)) {
-        results[index] = {
-          eventId: event.eventId,
-          status: 'REJECTED',
-          error: {
             code: INGEST_ERROR_CODES.INVALID_PAYLOAD,
-            message: 'event contains a null byte or an unpaired unicode surrogate',
+            message: 'event could not be validated',
           },
         };
         rejected++;
-        continue;
       }
-
-      const kind = entityKindOf(event.type);
-      const key = `${kind}:${event.entityId}`;
-      let group = groups.get(key);
-      if (!group) {
-        group = { kind, entityId: event.entityId, runId: event.runId, items: [] };
-        groups.set(key, group);
-      }
-      group.items.push({ index, event });
     }
 
     // One server clock reading for the whole request — every event this batch accepts was,
@@ -221,38 +348,17 @@ export class TelemetryService {
           },
         );
       } catch (error) {
-        // D2 containment (tester finding, 2026-08-20): this group's transaction rolled back
-        // (or never committed) — nothing for it was persisted, so ACCEPTED/DUPLICATE can
-        // never be determined and REJECTED is the only honest classification. What must NOT
-        // happen is this exception reaching the controller: that would discard every OTHER
-        // group's results too, including ones already committed by an earlier iteration of
-        // this very loop, and return zero per-event results for a batch this process
-        // partially processed (MVP_PLAN_V3.md §12: "a malformed event never rejects the
-        // whole batch"; every processed batch carries per-event results).
-        //
-        // Known triggers still live at the Postgres/Node boundary despite being Zod-legal
-        // input: `occurredAt` year 0000 (Postgres SQLSTATE 22008), a `metadata` object
-        // nested deep enough to overflow `structuredClone`'s call stack inside `mergeEvent`
-        // (RangeError), and lock contention past Prisma's transaction timeout. This service
-        // is not required to make any of those inputs succeed — only to report them as
-        // event-level results inside a 200 response instead of losing the batch.
-        //
-        // `PROCESSING_FAILED` is not one of `INGEST_ERROR_CODES` — `platform/shared` is
-        // outside this lane's `allowed_paths` — but `IngestResultErrorSchema.code` is
-        // `z.string()`, not the closed union, specifically so a caller-facing code can be
-        // added without ever failing an old SDK's parse (platform/shared/schema/ingest.ts).
-        const message = error instanceof Error ? error.message : String(error);
-        groupResults = group.items.map(({ index, event }) => ({
-          index,
-          result: {
-            eventId: event.eventId,
-            status: 'REJECTED',
-            error: {
-              code: 'PROCESSING_FAILED',
-              message: `could not persist ${group.kind} ${group.entityId}: ${message}`,
-            },
-          },
-        }));
+        // ADR 0010: full internal detail is logged here, server-side only — never returned
+        // to the caller. `classifyPersistenceFailure` decides 503 vs 500;
+        // `AllExceptionsFilter` (`platform/api/src/common/all-exceptions.filter.ts`) is what
+        // actually strips the message down to the generic "Internal server error" text on
+        // the wire for any status >= 500, so no stack, path, SQL code or compiled source
+        // from `error` below ever reaches the response body (tester finding T1).
+        this.logger.error(
+          { err: error, kind: group.kind, entityId: group.entityId },
+          'entity group failed to persist',
+        );
+        throw classifyPersistenceFailure(error);
       }
 
       for (const { index, result } of groupResults) {
