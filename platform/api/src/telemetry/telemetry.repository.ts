@@ -131,6 +131,11 @@ export class TelemetryRepository {
    * globally, so a lookup that ignored `runId` could misclassify a genuinely new run's
    * replayed seeded scenario as DUPLICATE).
    *
+   * `p2.run-liveness`: for a STEP group that accepts at least one event, this also advances
+   * the referenced Run's `lastEventAt` (`touchRunLiveness` below), inside the same
+   * transaction. That is a cross-entity effect the per-entity `mergeEvent` fold structurally
+   * cannot express, and leaving it out is what made a live, step-emitting run derive as STALE.
+   *
    * `fold` receives the entity's state and the ledger's answer as read AFTER the lock is
    * acquired (so it observes every write a prior holder committed, not a snapshot taken
    * before this request even started), and returns the state to persist (`undefined` to
@@ -169,6 +174,21 @@ export class TelemetryRepository {
         }
       }
       if (newlyIngestedEventIds.length > 0) {
+        // Run-scoped liveness (`p2.run-liveness`). A `step.*` event's ENTITY is the Step, so
+        // the fold above only ever advances the Step's own state — and Step has no
+        // `lastEventAt` column at all (schema.prisma:144: "liveness is a Run concept, and a
+        // step's aliveness question is really 'is its run stale'"). Without this, a workflow
+        // that is alive and emitting steps leaves `Run.lastEventAt` frozen at its last
+        // run-level event, derives as STALE past `STALE_RUN_THRESHOLD_MS` (§13), and is then
+        // "excluded from all historical aggregation" — a false positive that deletes real
+        // data from every downstream number.
+        //
+        // Gated on `newlyIngestedEventIds` — the events this fold ACCEPTED — so a step event
+        // the ADR 0005 §1 / ADR 0009 ledger already knows (a `DUPLICATE`) does not advance
+        // run liveness. A replayed batch must not be able to keep a dead run looking alive.
+        if (kind === 'step') {
+          await touchRunLiveness(tx, runId, new Date(receivedAt));
+        }
         await recordIngestedEvents(tx, runId, newlyIngestedEventIds, new Date(receivedAt));
       }
       return value;
@@ -240,6 +260,51 @@ async function recordIngestedEvents(
   await client.ingestedEvent.createMany({
     data: eventIds.map((eventId) => ({ eventId, runId, receivedAt })),
     skipDuplicates: true,
+  });
+}
+
+/**
+ * Advances one Run's `lastEventAt` to the server clock of an event that REFERENCES it but
+ * whose entity is a Step. Run liveness means "the server clock of the last event referencing
+ * this run", `step.*` events included — the competing reading (run-level events only) makes
+ * §13's own Definition-of-Done check "killing the script mid-run leaves a Run that derives as
+ * STALE" untestable, because under it any run longer than the threshold goes STALE with
+ * nothing killed.
+ *
+ * Three properties, all carried by the shape of this ONE statement rather than by a
+ * read-modify-write this function would have to serialize itself:
+ *
+ * - MONOTONIC. `lastEventAt: { lt: receivedAt }` is the guard `merge-rules.ts` expresses as
+ *   `Math.max` — the value can only ever move forward, so an out-of-order or late-arriving
+ *   step event whose request clock is older than what the row already holds is a no-op, not a
+ *   regression. Under concurrency Postgres re-evaluates that `WHERE` against the row version
+ *   the winning transaction committed (READ COMMITTED / EvalPlanQual), so two racing step
+ *   groups for the same run cannot leave the earlier of the two clocks behind.
+ * - NEVER CREATES A RUN. `updateMany` matches zero rows and does nothing when the run has not
+ *   been seen yet. An orphan step must not conjure a Run shell — schema.prisma is explicit
+ *   that Step has NO foreign key to Run precisely because "a stub `Run` cannot be conjured:
+ *   the workflow fields live only on the start payload". Nothing here changes that: the
+ *   step's own row still lands, and the run's row appears only when a real `run.*` event
+ *   creates it.
+ * - ATOMIC WITH THE LEDGER. It runs inside the caller's transaction, alongside the
+ *   `IngestedEvent` write, so a group whose transaction rolls back has neither recorded its
+ *   events as ingested nor advanced run liveness. Doing this in a second transaction after
+ *   the group committed would leave the opposite failure available: a retry sees `DUPLICATE`,
+ *   skips the fold, and the liveness bump the first attempt lost is never made again.
+ *
+ * Deliberately NOT part of the `mergeEvent` fold: that reducer is per-entity and pure
+ * (merge-rules.ts's own header), and a Step's state has nowhere to put a Run's column. The
+ * cross-entity effect belongs to the unit that owns persisting one group's events, which is
+ * `withEntityLock`.
+ */
+async function touchRunLiveness(
+  client: EntityClient,
+  runId: string,
+  receivedAt: Date,
+): Promise<void> {
+  await client.run.updateMany({
+    where: { id: runId, lastEventAt: { lt: receivedAt } },
+    data: { lastEventAt: receivedAt },
   });
 }
 
