@@ -47,6 +47,15 @@ function fakePrismaService(): {
   return { prisma, run, step };
 }
 
+/** The one shape the run-liveness tests inspect from a `run.updateMany` call. */
+interface RunUpdateManyArgs {
+  readonly where: {
+    readonly id: string;
+    readonly lastEventAt?: { readonly lt: Date };
+  };
+  readonly data: { readonly lastEventAt: Date };
+}
+
 interface IngestedEventFindManyArgs {
   readonly where: { readonly runId: string; readonly eventId: { readonly in: string[] } };
   readonly select: { readonly eventId: true };
@@ -69,11 +78,17 @@ interface IngestedEventCreateManyArgs {
 function fakeTransactionalPrismaService(
   options: {
     existingRun?: unknown;
+    existingStep?: unknown;
     alreadyIngestedRows?: ReadonlyArray<{ eventId: string }>;
   } = {},
 ): {
   prisma: PrismaService;
-  run: { findUnique: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
+  run: {
+    findUnique: ReturnType<typeof vi.fn>;
+    upsert: ReturnType<typeof vi.fn>;
+    updateMany: ReturnType<typeof vi.fn<(args: RunUpdateManyArgs) => Promise<{ count: number }>>>;
+  };
+  step: { findUnique: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
   ingestedEvent: {
     findMany: ReturnType<typeof vi.fn<(args: IngestedEventFindManyArgs) => Promise<unknown[]>>>;
     createMany: ReturnType<typeof vi.fn<(args: IngestedEventCreateManyArgs) => Promise<unknown>>>;
@@ -82,9 +97,12 @@ function fakeTransactionalPrismaService(
   const run = {
     findUnique: vi.fn(() => Promise.resolve(options.existingRun ?? null)),
     upsert: vi.fn(() => Promise.resolve()),
+    updateMany: vi.fn<(args: RunUpdateManyArgs) => Promise<{ count: number }>>(() =>
+      Promise.resolve({ count: 1 }),
+    ),
   };
   const step = {
-    findUnique: vi.fn(() => Promise.resolve(null)),
+    findUnique: vi.fn(() => Promise.resolve(options.existingStep ?? null)),
     upsert: vi.fn(() => Promise.resolve()),
   };
   const ingestedEvent = {
@@ -103,7 +121,7 @@ function fakeTransactionalPrismaService(
     $transaction: vi.fn((callback: (tx: unknown) => Promise<unknown>) => callback(tx)),
   };
   const prisma = { client } as unknown as PrismaService;
-  return { prisma, run, ingestedEvent };
+  return { prisma, run, step, ingestedEvent };
 }
 
 function baseState(overrides: Partial<EntityMergeState> = {}): EntityMergeState {
@@ -373,5 +391,105 @@ describe('TelemetryRepository.withEntityLock — IngestedEvent ledger (F3, ADR 0
     }));
 
     expect(ingestedEvent.createMany).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `p2.run-liveness`. A `step.*` event's ENTITY is the Step, so the per-entity fold can only
+ * ever advance the Step's state — and Step has no `lastEventAt` column at all
+ * (schema.prisma:144: "liveness is a Run concept"). Before this fix, a run emitting nothing
+ * but steps left `Run.lastEventAt` frozen at its last run-level event and derived as STALE
+ * (§13) while genuinely alive, which "excludes it from all historical aggregation".
+ *
+ * Reproduced first through the real ingestion path against a real Postgres
+ * (`.artifacts/evidence/2/run-liveness/01-red-reproduction.txt`: `Run.lastEventAt` stayed at
+ * the `run.started` clock, 299ms behind the step that followed it). This file pins the seam
+ * that fix lives at — WHAT `withEntityLock` sends the client — because `pnpm test` must keep
+ * working with no database at all (`vitest.config.mts`'s own header).
+ */
+describe('TelemetryRepository.withEntityLock — run liveness for step events (p2.run-liveness)', () => {
+  it('advances the run row to this request receivedAt when a step group accepts an event', async () => {
+    const { prisma, run } = fakeTransactionalPrismaService();
+    const repository = new TelemetryRepository(prisma);
+
+    await repository.withEntityLock('step', 'step-1', 'run-1', ['evt-a'], 7_000, () => ({
+      state: baseState({ entityId: 'step-1', lastEventAt: 7_000 }),
+      newlyIngestedEventIds: ['evt-a'],
+      value: undefined,
+    }));
+
+    expect(run.updateMany).toHaveBeenCalledTimes(1);
+    const call = run.updateMany.mock.calls[0]![0];
+    expect(call.where.id).toBe('run-1');
+    expect(call.data.lastEventAt).toEqual(new Date(7_000));
+  });
+
+  it('guards the advance so it can only move forward — the update is conditional on the stored value being older', async () => {
+    // Monotonicity is `merge-rules.ts`'s `Math.max`, expressed as a WHERE clause so the
+    // database enforces it against whatever a concurrent writer committed rather than
+    // against a value this process read earlier. `merge-rules.spec.ts:579` pins the same
+    // invariant on the run-event side.
+    const { prisma, run } = fakeTransactionalPrismaService();
+    const repository = new TelemetryRepository(prisma);
+
+    await repository.withEntityLock('step', 'step-1', 'run-1', ['evt-a'], 7_000, () => ({
+      state: baseState({ entityId: 'step-1' }),
+      newlyIngestedEventIds: ['evt-a'],
+      value: undefined,
+    }));
+
+    const call = run.updateMany.mock.calls[0]![0];
+    expect(call.where.lastEventAt).toEqual({ lt: new Date(7_000) });
+  });
+
+  it('does NOT advance run liveness when every step event in the group was a duplicate', async () => {
+    // ADR 0009 / ADR 0005 §1. A replayed batch must not be able to keep a dead run looking
+    // alive: the ledger already knows this eventId, the fold accepts nothing, and liveness
+    // must not move.
+    const { prisma, run, ingestedEvent } = fakeTransactionalPrismaService({
+      alreadyIngestedRows: [{ eventId: 'evt-a' }],
+    });
+    const repository = new TelemetryRepository(prisma);
+
+    await repository.withEntityLock('step', 'step-1', 'run-1', ['evt-a'], 9_000, (existing) => ({
+      state: existing,
+      newlyIngestedEventIds: [],
+      value: undefined,
+    }));
+
+    expect(run.updateMany).not.toHaveBeenCalled();
+    expect(ingestedEvent.createMany).not.toHaveBeenCalled();
+  });
+
+  it('never creates a Run row for an orphan step — the advance is an update, never an upsert', async () => {
+    // schema.prisma is explicit that Step has NO foreign key to Run because "a stub `Run`
+    // cannot be conjured: the workflow fields live only on the start payload". A step whose
+    // run has not been seen yet must still land, and must leave the Run table untouched.
+    const { prisma, run, step } = fakeTransactionalPrismaService();
+    const repository = new TelemetryRepository(prisma);
+
+    await repository.withEntityLock('step', 'step-1', 'orphan-run', ['evt-a'], 7_000, () => ({
+      state: baseState({ entityId: 'step-1' }),
+      newlyIngestedEventIds: ['evt-a'],
+      value: undefined,
+    }));
+
+    expect(run.upsert).not.toHaveBeenCalled();
+    // The step's own row is still written exactly as before.
+    expect(step.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a run group alone — its own fold already owns lastEventAt, so no second write', async () => {
+    const { prisma, run } = fakeTransactionalPrismaService();
+    const repository = new TelemetryRepository(prisma);
+
+    await repository.withEntityLock('run', 'run-1', 'run-1', ['evt-a'], 7_000, () => ({
+      state: baseState(),
+      newlyIngestedEventIds: ['evt-a'],
+      value: undefined,
+    }));
+
+    expect(run.updateMany).not.toHaveBeenCalled();
+    expect(run.upsert).toHaveBeenCalledTimes(1);
   });
 });
