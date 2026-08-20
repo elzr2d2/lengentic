@@ -1635,3 +1635,63 @@ reconstruction cost. Goal is to minimize context degradation and needless fresh-
 startup at the same time. The dumbzone detector and the `session-handoff` skill are today's
 hand-written heuristic and are enough for now. Already ruled out: shipping a new heuristic
 and calling it learned behavior without the runs to back it.
+
+## Discovered upgrading the engineering standards layer (2026-08-20)
+
+### Mutation testing (Stryker) — evaluated, not installed
+
+**Source:** the standards upgrade, 2026-08-20. Evaluated against the tree rather than
+adopted from the prompt that named it. **Trigger:** when `platform/analysis-engine` has
+
+> = 40 tests, or when a false green survives a phase gate and the manual mutation check
+> would have caught it. Either one, whichever comes first.
+
+`TEST-6` — a test that cannot fail is not a test — is real and currently held by the manual
+mutation check in the `test-at-seams` skill plus `pnpm check:integrity`'s
+`false-green-assertion` BLOCK rule. Stryker would make it a measured score instead of a
+practice. Deferred on cost, not on doubt: a full Stryker run re-executes the suite once per
+surviving mutant, which at this suite size costs more wall-clock than the phase gate it
+would sit inside, and the surface where a false green is fatal — the analyzers — is small
+enough to check by hand today. Already ruled out: setting a mutation-score threshold before
+a tool measures one, and running mutation testing on every change rather than risk-based.
+
+### Cyclomatic complexity is unbounded in `scripts/**`
+
+**Source:** measured during the standards upgrade — `complexity` at 10 reports 38 functions
+across the harness, the worst two at 61 (`scripts/lanes.ts:955`, `:1338`), against 4 in
+`platform/**` with a maximum of 14. **Trigger:** the next packet that substantially edits
+`scripts/lanes.ts`, or a diagnosis whose root cause is a branch inside one of those two
+functions.
+
+`DESIGN-3` binds `platform/**` and `playground/**` at 15 and deliberately exempts the
+harness, because a limit that fails the build on landing is a limit nobody keeps. The
+functions are dispatch and gate logic — wide switches over well-typed unions, which is the
+shape complexity metrics punish most and read worst. Splitting them is its own work with
+its own regression risk and wants a reproduction, not a metric. Already ruled out: setting
+the harness limit at 61 so it passes, which measures nothing.
+
+### No unit test pins the API's client-safe error message
+
+**Source:** verifying the `[MUST]` rows in `docs/ENGINEERING_STANDARDS.md` had real
+enforcers — `ERR-4` (no stack trace, secret, or internal identifier in a response body) had
+none that `pnpm test` runs. **Trigger:** the next packet touching
+`platform/api/src/common/**`, or Phase 2's wave gate.
+
+`clientSafeMessage` in `all-exceptions.filter.ts` is exercised only by
+`test/health.integration.spec.ts`, which needs Docker and is not part of `pnpm test`. The
+rule is therefore unenforced in the gate that actually runs on every commit. A unit test
+over the filter's mapping — including the internal-error path, which is the one that leaks
+— closes it and costs almost nothing. Already ruled out: moving the integration test into
+`pnpm test`, which would make the default suite need a Docker daemon.
+
+### `noUnusedLocals` is off, so dead exports are invisible
+
+**Source:** the same enforcer sweep. **Trigger:** bundle it with the next `tsconfig.base.json`
+change; not worth a packet of its own.
+
+`@typescript-eslint/no-unused-vars` catches unused locals inside a module, but nothing
+detects an exported symbol that no longer has a consumer — the hardening lane's
+"is anything unreachable?" question has no tool behind it. `noUnusedLocals` /
+`noUnusedParameters` are the cheap half; the export half needs `knip` or equivalent, which
+is a dependency decision, not a config flag. Already ruled out: adding the dependency in a
+standards pass, where it would arrive with no measured violation behind it.

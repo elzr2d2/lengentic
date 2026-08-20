@@ -848,7 +848,7 @@ export async function validateHandoff(
     return { ok: false, errors: [`missing schema: ${schemaPath}`], status: null };
   }
   const lib = (await import(libPath)) as { validate: (v: unknown, s: object) => string[] };
-  errors.push(...lib.validate(handoff, JSON.parse(readFileSync(schemaPath, 'utf8'))));
+  errors.push(...lib.validate(handoff, JSON.parse(readFileSync(schemaPath, 'utf8')) as object));
 
   const h = handoff as Record<string, unknown>;
   const status = typeof h?.status === 'string' ? h.status : null;
@@ -1065,7 +1065,7 @@ export function checkEvidence(
   const tests = isRecord(h.tests) ? h.tests : null;
   const ranTests = commands.some((c) => TEST_COMMAND.test(c));
   if (tests) {
-    const count = (k: string): number => (typeof tests[k] === 'number' ? (tests[k] as number) : 0);
+    const count = (k: string): number => (typeof tests[k] === 'number' ? tests[k] : 0);
     const discovered = count('discovered');
     const accounted = count('passed') + count('failed') + count('skipped');
     if (discovered !== accounted) {
@@ -1611,7 +1611,7 @@ async function main(): Promise<void> {
     }
 
     case 'selftest': {
-      const mod = (await import('./lanes/selftest.ts')) as { run: () => Promise<number> };
+      const mod = await import('./lanes/selftest.ts');
       process.exit(await mod.run());
       break;
     }
@@ -1698,6 +1698,12 @@ function probeTargets(p: ProbeSpec): ProbeTarget[] {
     }
     case 'manual':
       return [{ path: p.evidence, label: `manual ${p.evidence}`, evidence: true }];
+    case 'script':
+    case 'cmd':
+      return [];
+    // Kinds arrive from graph.json, so a malformed one is reachable at runtime even though
+    // the union says otherwise. The cases above are named rather than left to this default
+    // so that ADDING a probe kind fails lint instead of silently landing here.
     default:
       return [];
   }

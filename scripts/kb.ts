@@ -736,7 +736,11 @@ function main(): void {
       }
       if (json) {
         console.log(
-          JSON.stringify(found, (k, v) => (k === 'tf' || k === 'tokens' ? undefined : v), 2),
+          JSON.stringify(
+            found,
+            (k: string, v: unknown) => (k === 'tf' || k === 'tokens' ? undefined : v),
+            2,
+          ),
         );
         break;
       }

@@ -106,6 +106,19 @@ and the API both import it; types are derived with `z.infer`.
 Prisma types are database-internal and never cross a module boundary. No Prisma model is
 ever returned from a controller. Map explicitly at the persistence edge.
 
+Both rules are now mechanical: `no-prisma-in-the-wire-contract` in dependency-cruiser, and
+a `no-restricted-imports` block for the generated client, which the cruiser cannot see.
+
+## Standards
+
+`docs/ENGINEERING_STANDARDS.md` is the standards SSOT — how code here is written, rule by
+rule, each one carrying the command that enforces it or the role that owns the judgement
+and why no command can. It is not loaded by default; read it when you are about to write
+code, or when you want to know whether a rule is mechanical before spending review on it.
+
+Nothing in it is restated here or in an agent prompt. If you find the same rule in two
+places, one of them is wrong and the other is `docs/ENGINEERING_STANDARDS.md`.
+
 ## Verification
 
 Mechanical checks are tooling, not agents. Never ask an agent to verify something a script

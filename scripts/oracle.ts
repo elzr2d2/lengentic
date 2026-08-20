@@ -100,9 +100,9 @@ export interface Resolved extends Node {
   wave: number;
 }
 
-export const graph: Graph = JSON.parse(
+export const graph = JSON.parse(
   readFileSync(join(ROOT, 'scripts/oracle/graph.json'), 'utf8'),
-);
+) as Graph;
 
 // ── probes ────────────────────────────────────────────────────────────────────────────
 
@@ -133,7 +133,9 @@ function runProbe(p: ProbeSpec): boolean {
       return !existsSync(join(ROOT, p.path));
 
     case 'script': {
-      const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+      const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+        scripts?: Record<string, string>;
+      };
       return Boolean(pkg.scripts?.[p.name]);
     }
 

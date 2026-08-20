@@ -57,7 +57,7 @@ function clientSafeMessage(exception: unknown, status: number): string {
     const payload = exception.getResponse();
     if (typeof payload === 'string') return payload;
     if (typeof payload === 'object' && payload !== null && 'message' in payload) {
-      const { message } = payload as { message: unknown };
+      const { message } = payload;
       return Array.isArray(message) ? message.join('; ') : String(message);
     }
     return exception.message;

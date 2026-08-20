@@ -4,6 +4,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { HttpAdapterHost } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import type { Server } from 'node:http';
 import { AllExceptionsFilter } from '../src/common/all-exceptions.filter';
 import { PrismaService } from '../src/prisma/prisma.service';
 
@@ -23,6 +24,13 @@ import { PrismaService } from '../src/prisma/prisma.service';
  */
 
 const POSTGRES_IMAGE = 'postgres:17.6-alpine';
+
+/**
+ * Nest types `getHttpServer()` as `any`, which `no-unsafe-argument` rejects at the supertest
+ * call. The invariant is externally proven — the Express adapter's server IS an
+ * `http.Server` — so the assertion is made once here rather than at each call site.
+ */
+const httpServer = (app: INestApplication): Server => app.getHttpServer() as Server;
 
 describe('GET /health (integration)', () => {
   let container: StartedPostgreSqlContainer;
@@ -60,7 +68,7 @@ describe('GET /health (integration)', () => {
   });
 
   it('returns 200 and reports the database up', async () => {
-    const response = await request(app.getHttpServer()).get('/health');
+    const response = await request(httpServer(app)).get('/health');
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
@@ -78,7 +86,7 @@ describe('GET /health (integration)', () => {
     await prisma.client.$disconnect();
     await container.stop();
 
-    const response = await request(app.getHttpServer()).get('/health');
+    const response = await request(httpServer(app)).get('/health');
 
     expect(response.status).toBe(503);
     expect(response.body).toMatchObject({

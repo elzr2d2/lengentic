@@ -19,6 +19,10 @@ doubles.
   dependencies, any open decision that gates it, and the plan section verbatim. It is the
   brief; you do not need the whole plan.
 - `CLAUDE.md` — architecture rules, type rules, product-claim wording.
+- `docs/ENGINEERING_STANDARDS.md` — how code here is written. Read the section you are
+  about to write in, not the file. Most of it is enforced by `pnpm lint` and
+  `pnpm check:boundaries`, which fail before review ever sees the change; what is worth
+  your attention is the `[MUST]` rows whose enforcer is a person.
 - `CONTEXT.md` — name variables, functions, files, and tests in the project's language.
 - `tdd` skill — red before green, one vertical slice at a time, tests only at agreed seams.
 - `codebase-design` skill — when the shape of an interface is the question.
