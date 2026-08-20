@@ -9,7 +9,6 @@
     "task_id",
     "status",
     "commit",
-    "changed_files",
     "validation",
     "acceptance_criteria",
     "assumptions",
@@ -38,7 +37,7 @@
       "type": "string"
     },
     "changed_files": {
-      "description": "Repository-relative paths, verbatim from `git diff --name-only`. Not a summary — the integrator re-checks these against allowed_paths.",
+      "description": "OPTIONAL — machine-derivable. When omitted, `pnpm lanes handoff` derives the list from the commit via `git diff-tree` and checks ownership against that ground truth. When provided, it is still cross-checked against the commit in both directions. Provide it only when there is something the commit cannot say.",
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
@@ -197,7 +196,6 @@
         "required": ["evidence"],
         "properties": {
           "commit": { "minLength": 7 },
-          "changed_files": { "minItems": 1 },
           "acceptance_criteria": {
             "properties": { "unverified": { "maxItems": 0 } }
           },

@@ -1,12 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "The single source of truth for WHICH agents run and WHY. MVP_PLAN_V3.md §9 forbids running Architect, Validator and Reviewer after every minor edit; this file is that rule made mechanical. `pnpm oracle packet` and `pnpm lanes decide` both read it, so the routing policy has one definition instead of one per prompt.",
+  "$comment": "The single source of truth for WHICH agents run and WHEN they run. MVP_PLAN_V3.md §9 forbids running Architect, Validator and Reviewer after every minor edit; this file is that rule made mechanical. `pnpm oracle packet` and `pnpm lanes decide` both read it, so the routing policy has one definition instead of one per prompt.",
 
-  "$capabilitiesComment": "Capabilities, not agent names. Each list is preference-ordered and resolved to the FIRST agent file that exists under .claude/agents/. That is how this repository tolerates two legitimate role shapes at once: MVP_PLAN_V3.md §21 merges running and adversarial testing into `validator`, while `runner.md` and `tester.md` split them. Resolving by capability means neither shape creates a second owner for the same responsibility.",
+  "$capabilitiesComment": "Capabilities, not agent names. Each list is preference-ordered and resolved to the FIRST agent file that exists under .claude/agents/. That is how this repository tolerates two legitimate role shapes at once: MVP_PLAN_V3.md §21 merges running and adversarial testing into `validator`, while `runner.md` and `tester.md` split them. Resolving by capability means neither shape creates a second owner for the same responsibility. `execute` (Runner) is in no class chain: deterministic commands are run directly by the Coordinator or the Builder, and Runner is dispatched only when its activation condition fires.",
   "capabilities": {
     "architecture": ["architect"],
     "implement": ["builder"],
     "execute": ["runner", "validator"],
+    "validate": ["validator"],
     "adversarial-test": ["tester", "validator"],
     "review": ["reviewer"],
     "integrity-scan": ["watchdog"],
@@ -14,41 +15,60 @@
     "retrospective": ["reflector"]
   },
 
-  "$classesComment": "Change class decides the agent chain. Agents are conditional tools, not a mandatory pipeline — a deterministic rename that runs the full chain pays four dispatches to learn what `pnpm gates` already knew.",
+  "$classesComment": "Change class decides the agent chain, and the LIFECYCLE POINT decides when each link runs. `perPacket` runs once per work packet; `perWave` runs once at the wave gate, over the wave's combined diff; `perPhase` runs once at the phase gate; `conditional` runs only when its entry in activationConditions fires. The onFailure path is not a per-class list: an unclear reproduced failure routes to the `diagnosis` class (Diagnostician → Builder → revalidate), per activationConditions.diagnose. A capability listed nowhere for a class does not run for that class.",
   "classes": {
     "mechanical": {
-      "required": ["implement", "execute"],
-      "optional": ["review"],
-      "rationale": "Deterministic and non-behavioral — a rename, a config move, a doc correction. The gates decide it. Nothing here has an oracle to falsify."
+      "perPacket": ["implement"],
+      "perWave": [],
+      "perPhase": [],
+      "conditional": ["review"],
+      "rationale": "Deterministic and non-behavioral — a rename, a config move, a doc correction. The deterministic checks decide it. Nothing here has an oracle to falsify, so no Validator, no Reviewer and no Tester unless explicitly triggered."
     },
     "feature": {
-      "required": ["implement", "execute", "review"],
-      "optional": ["integrity-scan"],
-      "rationale": "Normal implementation against a settled contract. Review catches the coupling that tooling cannot express."
+      "perPacket": ["implement"],
+      "perWave": ["review"],
+      "perPhase": [],
+      "conditional": ["validate", "integrity-scan"],
+      "rationale": "Normal implementation against a settled contract. Review catches the coupling that tooling cannot express — once per wave, over the combined diff. Validator fires only when observable behavior changed (which usually means the class should have been `behavior`)."
     },
     "behavior": {
-      "required": ["implement", "execute", "adversarial-test", "review"],
-      "optional": ["integrity-scan"],
-      "rationale": "Externally visible behavior, assertions, fixtures or the test oracle changed. Adversarial validation is required precisely here — this is where a green that lies gets written."
+      "perPacket": ["implement"],
+      "perWave": ["validate"],
+      "perPhase": ["review", "adversarial-test"],
+      "conditional": ["integrity-scan"],
+      "rationale": "Externally visible behavior, assertions, fixtures or the test oracle changed. One Validator per wave over the combined diff — this is where a green that lies gets written. Reviewer and Tester run at the phase gate: Tester is expensive independent falsification and is never per packet (tester.md states it; this file enforces it)."
     },
     "contract": {
-      "required": ["architecture", "implement", "execute", "review", "integrity-scan"],
-      "optional": ["adversarial-test"],
-      "rationale": "Wire schema, shared interface, migration, or another shared write surface. Everything downstream inherits the mistake, so this is the one class that is worth the full chain."
+      "perPacket": ["implement", "validate", "review", "integrity-scan"],
+      "perWave": [],
+      "perPhase": [],
+      "conditional": ["architecture", "adversarial-test"],
+      "rationale": "Wire schema, shared interface, migration, or another shared write surface. Everything downstream inherits the mistake, so the contract is validated and reviewed per node, BEFORE the next lane builds on it. Architect fires only when the interface decision is genuinely unsettled — a contract packet whose decisions are already recorded in docs/decisions/ or the plan does not pay for an Architect dispatch. Tester only if risk warrants."
     },
     "diagnosis": {
-      "required": ["diagnose", "implement", "execute"],
-      "optional": ["review"],
-      "rationale": "A reproduced failure whose cause is not obvious. Diagnostician evidences the cause and Builder applies the bounded fix — a fix applied before the cause is understood is a guess, and a guess that turns green is the worst outcome available."
+      "perPacket": ["diagnose", "implement"],
+      "perWave": [],
+      "perPhase": [],
+      "conditional": ["review"],
+      "rationale": "A reproduced failure whose cause is not obvious. Diagnostician evidences the cause and Builder applies the bounded fix, then the fix is revalidated by the narrowest deterministic command that exercises it — a fix applied before the cause is understood is a guess, and a guess that turns green is the worst outcome available."
     }
   },
 
-  "$activationComment": "When an OPTIONAL capability actually fires. An optional agent that runs unconditionally is a required agent with worse documentation.",
+  "$activationComment": "When a CONDITIONAL capability actually fires. An optional agent that runs unconditionally is a required agent with worse documentation. `pnpm lanes decide` applies the one condition that is mechanically checkable: a `contract` unit with an open decision gets `architecture` added to its per-packet chain; everything else here is judged by the Coordinator against the listed conditions.",
   "activationConditions": {
+    "execute": [
+      "output is long or noisy enough to swamp the calling context",
+      "the same command set must be re-run repeatedly",
+      "raw verbatim capture must be isolated from an expensive session"
+    ],
+    "validate": [
+      "a feature packet changed observable behavior after all",
+      "a repair landed and the narrow revalidation needs adversarial edge cases, not just the failing command"
+    ],
     "adversarial-test": [
-      "expected behavior, assertions, fixtures or a test oracle changed",
-      "a new externally visible behavior was added",
-      "failure classification changed"
+      "a phase gate covering behavior or contract changes",
+      "an analyzer, an oracle, or other high-risk logic where a false green kills the product",
+      "a repair of a serious false-green defect, where independence from the fixing session matters"
     ],
     "integrity-scan": [
       "the diff touches test files and product files together",
@@ -60,24 +80,16 @@
       "a reproduced failure survived one bounded repair attempt"
     ],
     "architecture": [
+      "an open decision in scripts/oracle/graph.json names this packet",
       "two readings of the plan lead to materially different work",
-      "the change defines an interface other code will be built against"
+      "the packet defines a NEW shared interface no settled decision record (docs/decisions/, the plan, the charter) already covers"
     ],
     "retrospective": [
-      "the same mistake pattern has recurred at least twice",
-      "a batch of lanes has completed and its telemetry is on disk"
+      "the same mistake pattern has recurred across at least two completed slices or milestones — never after a single wave, and never mid-implementation"
     ]
   },
 
-  "$reviewCadenceComment": "WHEN the `review` capability fires, which is a different question from whether it is required. CONTEXT.md states the rule — 'Validate per wave; review per phase' — and this file used to contradict it by making `review` a per-node step in four of five classes. Per-node review is what let three findings about `p2.sdk-core` and `p2.ingest-endpoint` hold `p2.shared-schema` RED: every gate inherited the whole downstream design. Cadence does not change the class chains above; a class that does not require `review` still does not get one.",
-  "reviewCadence": {
-    "default": "wave",
-    "$defaultComment": "One review per wave, over the wave's whole diff, after every lane in the wave has committed and `pnpm lanes check` has passed for each. Reviewing the wave together is also strictly more informative than reviewing its lanes apart — cross-lane coupling is only visible in the combined diff.",
-    "perNodeClasses": ["contract"],
-    "$perNodeClassesComment": "The one exception. A wire schema, shared interface or migration is inherited by everything downstream, so its mistakes are the expensive ones and are worth catching before the next lane builds on them. Everything else waits for the wave gate.",
-    "findingOwnership": "review-diff#5",
-    "$findingOwnershipComment": "Every finding is tagged `this-node`, a `<node-id>`, or `plan`. Only `this-node` blocks the gate; `<node-id>` findings are filed to BACKLOG.md with their trigger and become that node's acceptance criteria. This is what bounds a review — without it, per-wave review would simply move the unbounded gate one level up."
-  },
+  "$reviewCadenceComment": "Review cadence is DERIVED from the class lifecycle above, not declared twice: `review` in perPacket means per-node review (only `contract` — its mistakes are inherited downstream, so review lands before the next lane builds on it); `review` in perWave means one review at the wave gate over the combined diff; `review` in perPhase means one review at the phase gate; `review` only in conditional means no review unless triggered. CONTEXT.md's rule — validate per wave, review per phase — is the behavior-class row. Finding ownership at any review: review-diff#5 — every finding is tagged `this-node`, a `<node-id>`, or `plan`; only `this-node` blocks the gate; `<node-id>` findings are filed to BACKLOG.md with their trigger. That bound is what keeps a wave or phase review from becoming an unbounded gate.",
 
   "$responsibilitiesComment": "Disjoint by construction. Watchdog and Reviewer are the pair most often collapsed into one call, and collapsing them is how boundary violations get argued about as style. Watchdog answers 'is this allowed'; Reviewer answers 'is this good'. Neither answer substitutes for the other, and `pnpm lanes selftest` asserts the two sets stay disjoint.",
   "responsibilities": {
@@ -104,7 +116,7 @@
     "reflector": ["token-usage", "coordination-overhead", "rework", "process-change"]
   },
 
-  "$controlPlaneComment": "MVP_PLAN_V3.md §9: 'The main Claude Code session is the Coordinator. Do not create a coordinator agent.' Conductor and Integrator are therefore roles the main session holds, not agent files. Creating either as an agent would put a subagent in charge of dispatching subagents, and the session that owns the human approval gate would no longer be the session that sees the work.",
+  "$controlPlaneComment": "MVP_PLAN_V3.md §9: 'The main Claude Code session is the Coordinator. Do not create a coordinator agent.' Conductor and Integrator are therefore roles the main session holds, not agent files. Creating either as an agent would put a subagent in charge of dispatching subagents, and the session that owns the escalation triggers would no longer be the session that sees the work. Progression itself is decided by `pnpm flow next`, not by prose: LLMs implement and diagnose; code controls progression.",
   "controlPlane": {
     "conductor": "main-session",
     "integrator": "main-session",

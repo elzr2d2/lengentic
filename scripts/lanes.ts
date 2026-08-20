@@ -35,12 +35,15 @@ import { createLogger, evidenceIdFor, type Logger } from './lib/log.ts';
 import {
   describeProbe,
   graph,
+  lifecycleOf,
   loadActivation,
+  perPacketCaps,
   resolveGraph,
   resolveRoles,
-  reviewIsPerNode,
+  reviewLifecycle,
   type ProbeSpec,
   type Resolved,
+  type ReviewLifecycle,
 } from './oracle.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -111,27 +114,34 @@ export interface LaneEntry {
   allowed_paths: string[];
   forbidden_paths: string[];
   validation: string[];
+  /** The per-packet chain — who runs for this packet itself, in order. */
   required_agents: string[];
+  /** Conditional agents: run only when their activationConditions entry fires. */
   optional_agents: string[];
-  /** Where this lane's review runs — `per-node` only for reviewCadence.perNodeClasses. */
-  review_cadence: 'per-node' | 'wave';
+  /** Where this lane's review runs, derived from the class lifecycle. */
+  review_cadence: ReviewLifecycle;
   /** Batch members that must stop if this one fails. Everything else keeps going. */
   halts_if_failed: string[];
   independent_of: string[];
 }
 
 /**
- * `reviewCadence` from `.claude/rules/agent-activation.json`, applied to one batch. Lanes in
- * `per_node` keep their per-node review (their class is inherited downstream). Every other
- * lane is reviewed **once**, at the wave gate, over the wave's combined diff — a per-node
- * review there is what let findings about one node hold another node's gate RED.
- * `wave_review_required` is true when any wave-cadence lane's class lists `review` as
- * required; that one review must run after every lane has committed, before integration.
+ * The class lifecycles from `.claude/rules/agent-activation.json`, applied to one batch.
+ * Lanes in `per_node` keep their per-node review (their class is inherited downstream).
+ * `wave` lanes are reviewed **once** at the wave gate over the wave's combined diff; `phase`
+ * lanes once at the phase gate — a per-node review there is what let findings about one node
+ * hold another node's gate RED. `wave_gate_agents` / `phase_gate_agents` are every agent any
+ * lane's class puts at that gate (review, validate, adversarial-test), each running once
+ * over the combined diff, after every lane has committed.
  */
 export interface ReviewCadence {
   per_node: string[];
   wave: string[];
+  phase: string[];
+  none: string[];
   wave_review_required: boolean;
+  wave_gate_agents: string[];
+  phase_gate_agents: string[];
 }
 
 export interface Decision {
@@ -442,19 +452,29 @@ export function evaluate(units: Unit[], policy: Policy, repo: RepoState): Decisi
 
 function reviewCadenceFor(units: Unit[]): ReviewCadence {
   const activation = loadActivation();
-  const per_node: string[] = [];
-  const wave: string[] = [];
-  let required = false;
+  const buckets: Record<ReviewLifecycle, string[]> = {
+    'per-node': [],
+    wave: [],
+    phase: [],
+    none: [],
+  };
+  const waveCaps = new Set<string>();
+  const phaseCaps = new Set<string>();
   for (const u of units) {
-    if (reviewIsPerNode(u.changeClass ?? '', activation)) {
-      per_node.push(u.task_id);
-      continue;
-    }
-    wave.push(u.task_id);
-    const rule = u.changeClass ? activation.classes[u.changeClass] : undefined;
-    if (rule?.required.includes('review')) required = true;
+    buckets[reviewLifecycle(u.changeClass ?? '', activation)].push(u.task_id);
+    const rule = u.changeClass ? lifecycleOf(u.changeClass, activation) : null;
+    for (const c of rule?.perWave ?? []) waveCaps.add(c);
+    for (const c of rule?.perPhase ?? []) phaseCaps.add(c);
   }
-  return { per_node: per_node.sort(), wave: wave.sort(), wave_review_required: required };
+  return {
+    per_node: buckets['per-node'].sort(),
+    wave: buckets.wave.sort(),
+    phase: buckets.phase.sort(),
+    none: buckets.none.sort(),
+    wave_review_required: waveCaps.has('review'),
+    wave_gate_agents: resolveRoles([...waveCaps].sort(), activation),
+    phase_gate_agents: resolveRoles([...phaseCaps].sort(), activation),
+  };
 }
 
 function names(units: Unit[]): string {
@@ -554,24 +574,24 @@ export function dependents(unit: Unit, units: Unit[]): string[] {
 
 function laneEntry(u: Unit, units: Unit[]): LaneEntry {
   const activation = loadActivation();
-  const rule = u.changeClass ? activation.classes[u.changeClass] : undefined;
+  const rule = u.changeClass ? lifecycleOf(u.changeClass, activation) : null;
   // A missing or unmapped changeClass used to fall through to an empty required_agents /
   // optional_agents pair — a packet with no validation chain, silently. Hard error instead:
   // ten graph nodes hit exactly this before every one of them was classified.
-  if (!rule) {
+  if (!rule || !u.changeClass) {
     throw new Error(
       `unit "${u.task_id}" has no usable changeClass (got ${JSON.stringify(u.changeClass)}) — ` +
         'add one of mechanical|feature|behavior|contract|diagnosis to its graph node so the ' +
         'agent chain is not silently empty',
     );
   }
-  // reviewCadence, enforced mechanically: outside `perNodeClasses` the `review` capability
-  // is stripped from the per-node chain and surfaced once at the Decision level instead. A
-  // chain this function prints is a chain that gets dispatched, so this is where the rule
-  // either binds or stays prose.
-  const perNodeReview = reviewIsPerNode(u.changeClass ?? '', activation);
-  const requiredCaps = perNodeReview ? rule.required : rule.required.filter((c) => c !== 'review');
-  const optionalCaps = perNodeReview ? rule.optional : rule.optional.filter((c) => c !== 'review');
+  // The lifecycle is enforced mechanically: only the class's perPacket bucket reaches the
+  // dispatched chain — wave-gate and phase-gate agents surface once at the Decision level
+  // instead. A chain this function prints is a chain that gets dispatched, so this is where
+  // the rule either binds or stays prose. Architect joins a contract chain only when an open
+  // decision gates the unit; a settled contract does not pay for an Architect dispatch.
+  const requiredCaps = perPacketCaps(u.changeClass, u.open_decisions.length, activation);
+  const optionalCaps = rule.conditional.filter((c) => !requiredCaps.includes(c));
   const halts = dependents(u, units);
   return {
     task_id: u.task_id,
@@ -583,7 +603,7 @@ function laneEntry(u: Unit, units: Unit[]): LaneEntry {
     validation: u.validation_commands,
     required_agents: resolveRoles(requiredCaps, activation),
     optional_agents: resolveRoles(optionalCaps, activation),
-    review_cadence: perNodeReview ? 'per-node' : 'wave',
+    review_cadence: reviewLifecycle(u.changeClass, activation),
     halts_if_failed: halts,
     independent_of: units
       .map((o) => o.task_id)
@@ -603,10 +623,10 @@ export interface IntegrationStep {
 }
 
 /**
- * Integration is sequential in dependency order, and the full suite runs **once**, after
- * the last lane. Running `gates:full` per lane would pay `check:isolation` — a whole
- * install and build in a temp checkout — once per lane to answer a question that only has
- * one answer per batch.
+ * Integration is sequential in dependency order, and the repository-wide gate runs **once**,
+ * after the last lane — the wave gate's deterministic tier. `pnpm gates:full` does not run
+ * here at all: `check:isolation` — a whole install and build in a temp checkout — answers a
+ * question with one answer per phase, so it runs at the phase gate and in CI, never per wave.
  */
 export function integrationPlan(order: string[], units: Unit[]): IntegrationStep[] {
   const byId = new Map(units.map((u) => [u.task_id, u]));
@@ -643,8 +663,8 @@ export function integrationPlan(order: string[], units: Unit[]): IntegrationStep
     order: n,
     task_id: null,
     gate: 'BATCH-FINAL',
-    commands: ['pnpm gates:full'],
-    note: 'Once, after the whole batch. This is the intended point for the full suite.',
+    commands: ['pnpm gates'],
+    note: 'Once, after the whole batch — the wave gate. gates:full (isolation) belongs to the phase gate and CI, not to every wave.',
   });
   return steps;
 }
@@ -832,7 +852,32 @@ export async function validateHandoff(
 
   const h = handoff as Record<string, unknown>;
   const status = typeof h?.status === 'string' ? h.status : null;
-  const changed = Array.isArray(h?.changed_files) ? (h.changed_files as string[]) : [];
+  // `changed_files` is machine-derivable from the commit, so an agent may omit it entirely
+  // (absent, not empty) and the gate derives ground truth from `git diff-tree`. A provided
+  // list is still cross-checked against the commit — a self-report is allowed, never trusted.
+  const claimed = Array.isArray(h?.changed_files) ? (h.changed_files as string[]) : null;
+  let ownershipFiles = claimed ?? [];
+  let derived = false;
+
+  if (status === 'DONE' && opts.checkCommit) {
+    const sha = typeof h?.commit === 'string' ? h.commit : '';
+    if (!git(['cat-file', '-e', `${sha}^{commit}`]).ok) {
+      errors.push(`commit "${sha}" does not resolve to a commit in this repository`);
+    } else {
+      const actual = git(['diff-tree', '--no-commit-id', '--name-only', '-r', sha]);
+      if (actual.ok) {
+        ownershipFiles = actual.out.split('\n').filter(Boolean).map(normalise);
+        derived = true;
+      }
+      if (claimed !== null) errors.push(...checkChangedFiles(sha, claimed));
+    }
+  }
+  if (status === 'DONE' && !derived && claimed === null) {
+    errors.push(
+      'changed_files is absent and no resolvable commit was available to derive it from — ' +
+        'a DONE lane names its commit',
+    );
+  }
 
   if (unit) {
     if (h?.task_id !== unit.task_id) {
@@ -840,22 +885,15 @@ export async function validateHandoff(
         `task_id "${String(h?.task_id)}" does not match the dispatched unit "${unit.task_id}"`,
       );
     }
-    const verdict = checkOwnership(changed, unit.allowed_paths, unit.forbidden_paths);
+    const verdict = checkOwnership(ownershipFiles, unit.allowed_paths, unit.forbidden_paths);
     for (const v of verdict.violations) {
-      errors.push(`changed_files: ${v.file} — ${v.reason} (${v.rule})`);
+      errors.push(
+        `changed_files${derived ? ' (derived from the commit)' : ''}: ${v.file} — ${v.reason} (${v.rule})`,
+      );
     }
   }
 
   errors.push(...checkEvidence(h, status, unit?.acceptance_criteria ?? []));
-
-  if (status === 'DONE' && opts.checkCommit) {
-    const sha = typeof h?.commit === 'string' ? h.commit : '';
-    if (!git(['cat-file', '-e', `${sha}^{commit}`]).ok) {
-      errors.push(`commit "${sha}" does not resolve to a commit in this repository`);
-    } else {
-      errors.push(...checkChangedFiles(sha, changed));
-    }
-  }
   return { ok: errors.length === 0, errors, status };
 }
 
@@ -1186,7 +1224,13 @@ export function renderDecision(d: Decision): string {
   out.push(...yamlList(d.review_cadence.per_node, '      '));
   out.push('    wave:');
   out.push(...yamlList(d.review_cadence.wave, '      '));
+  out.push('    phase:');
+  out.push(...yamlList(d.review_cadence.phase, '      '));
+  out.push('    none:');
+  out.push(...yamlList(d.review_cadence.none, '      '));
   out.push(`    wave_review_required: ${d.review_cadence.wave_review_required}`);
+  out.push(`    wave_gate_agents: [${d.review_cadence.wave_gate_agents.join(', ')}]`);
+  out.push(`    phase_gate_agents: [${d.review_cadence.phase_gate_agents.join(', ')}]`);
   out.push('  lanes:');
   if (d.lanes.length === 0) out.push('    []');
   for (const l of d.lanes) {
@@ -1304,12 +1348,17 @@ async function main(): Promise<void> {
       let ids: string[];
       if (cmd === 'wave') {
         const outcome = waveOutcome(args[0]);
+        // Machine-readable states, so no caller ever parses prose or infers state from a
+        // generic exit code: ERROR is exit 1; PHASE_COMPLETE is exit 0 and not a failure.
         if (outcome.kind === 'error') {
-          console.error(outcome.message);
+          if (json) console.log(JSON.stringify({ action: 'ERROR', reason: outcome.message }));
+          else console.error(outcome.message);
           process.exit(1);
         }
         if (outcome.kind === 'complete') {
-          console.log(outcome.message);
+          if (json) {
+            console.log(JSON.stringify({ action: 'PHASE_COMPLETE', phase: Number(args[0]) }));
+          } else console.log(outcome.message);
           process.exit(0);
         }
         ids = outcome.ids;
@@ -1736,15 +1785,19 @@ function changedFiles(base: string | undefined): string[] {
 
 function advice(d: Decision, ids: string[]): string {
   const rc = d.review_cadence;
-  const review = rc.wave_review_required
-    ? `Review: ONCE per wave, over the wave's combined diff${
-        rc.per_node.length > 0
-          ? `; per-node only for ${rc.per_node.join(', ')}`
-          : ' — never per node'
-      }.`
-    : rc.per_node.length > 0
-      ? `Review: per-node for ${rc.per_node.join(', ')} only; no wave review required.`
-      : 'Review: no lane class requires review.';
+  const parts: string[] = [];
+  if (rc.wave_gate_agents.length > 0) {
+    parts.push(
+      `Wave gate, once over the combined diff: ${rc.wave_gate_agents.join(', ')} + pnpm gates.`,
+    );
+  } else {
+    parts.push('Wave gate: pnpm gates only — no agent required by any lane class.');
+  }
+  if (rc.phase_gate_agents.length > 0) {
+    parts.push(`Deferred to the phase gate: ${rc.phase_gate_agents.join(', ')}.`);
+  }
+  if (rc.per_node.length > 0) parts.push(`Per-node review only for ${rc.per_node.join(', ')}.`);
+  const review = parts.join(' ');
   if (d.eligible) {
     return [
       `PARALLEL approved for ${ids.length} lanes at concurrency ${d.max_concurrency}.`,

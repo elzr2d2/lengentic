@@ -48,7 +48,14 @@ import {
   type RepoState,
   type Unit,
 } from '../lanes.ts';
-import { loadActivation, resolveRoles, verificationBlock, type Resolved } from '../oracle.ts';
+import {
+  lifecycleOf,
+  loadActivation,
+  resolveRoles,
+  reviewLifecycle,
+  verificationBlock,
+  type Resolved,
+} from '../oracle.ts';
 import {
   colorsEnabled,
   createLogger,
@@ -355,40 +362,60 @@ export async function run(): Promise<number> {
     );
   });
 
-  scenario(9, 'Tester is skipped for a deterministic non-behavioral change', () => {
+  scenario(9, 'a mechanical packet is Builder-only — no Validator, Reviewer or Tester', () => {
     const activation = loadActivation();
-    const rule = activation.classes.mechanical;
+    const rule = lifecycleOf('mechanical', activation);
     if (!rule) return 'no `mechanical` class in agent-activation.json';
-    const required = resolveRoles(rule.required, activation);
-    const optional = resolveRoles(rule.optional, activation);
-    const adversarial = resolveRoles(['adversarial-test'], activation);
+    const packet = resolveRoles(rule.perPacket, activation);
+    const gates = resolveRoles([...rule.perWave, ...rule.perPhase], activation);
     return (
       expect(
-        !required.some((r) => adversarial.includes(r)),
-        `adversarial testing must not be required for a mechanical change; got ${required.join(',')}`,
+        packet.join(',') === 'builder',
+        `a mechanical packet dispatches builder and nothing else; got ${packet.join(',')}`,
       ) ??
       expect(
-        !optional.some((r) => adversarial.includes(r)),
-        `adversarial testing must not even be optional for a mechanical change; got ${optional.join(',')}`,
+        gates.length === 0,
+        `a mechanical class puts no agent at any gate; got ${gates.join(',')}`,
       ) ??
-      expect(required.includes('builder'), 'builder must still own the edit')
+      expect(
+        !rule.conditional.includes('adversarial-test'),
+        'adversarial testing must not even be conditional for a mechanical change',
+      )
     );
   });
 
-  scenario(10, 'Tester activates when behavior or the test oracle changes', () => {
-    const activation = loadActivation();
-    const rule = activation.classes.behavior;
-    if (!rule) return 'no `behavior` class in agent-activation.json';
-    const required = resolveRoles(rule.required, activation);
-    const adversarial = resolveRoles(['adversarial-test'], activation);
-    const conditions = activation.activationConditions?.['adversarial-test'] ?? [];
-    return (
-      expect(
-        adversarial.every((r) => required.includes(r)),
-        `adversarial testing must be required for a behavior change; got ${required.join(',')}`,
-      ) ?? expect(conditions.length > 0, 'adversarial-test must document when it fires')
-    );
-  });
+  scenario(
+    10,
+    'behavior: Validator at the wave gate, Tester and Reviewer at the phase gate',
+    () => {
+      const activation = loadActivation();
+      const rule = lifecycleOf('behavior', activation);
+      if (!rule) return 'no `behavior` class in agent-activation.json';
+      const packet = resolveRoles(rule.perPacket, activation);
+      const wave = resolveRoles(rule.perWave, activation);
+      const phase = resolveRoles(rule.perPhase, activation);
+      const conditions = activation.activationConditions?.['adversarial-test'] ?? [];
+      return (
+        expect(
+          packet.join(',') === 'builder',
+          `per packet only builder runs for behavior; got ${packet.join(',')}`,
+        ) ??
+        expect(
+          wave.includes('validator'),
+          `validator must sit at the wave gate; got ${wave.join(',')}`,
+        ) ??
+        expect(
+          phase.includes('tester') && phase.includes('reviewer'),
+          `tester and reviewer belong to the phase gate; got ${phase.join(',')}`,
+        ) ??
+        expect(
+          !packet.includes('tester') && !wave.includes('tester'),
+          'tester never runs per packet or per wave',
+        ) ??
+        expect(conditions.length > 0, 'adversarial-test must document when it fires')
+      );
+    },
+  );
 
   scenario(11, 'Watchdog and Reviewer produce distinct decisions', () => {
     const activation = loadActivation();
@@ -414,13 +441,23 @@ export async function run(): Promise<number> {
     );
   });
 
-  scenario(13, 'the final full validation runs only at the intended integration point', () => {
+  scenario(13, 'the wave gate runs `pnpm gates` once; gates:full never runs per wave', () => {
     const units = [unit({ task_id: 'alpha' }), unit({ task_id: 'beta', depends_on: ['alpha'] })];
     const steps = integrationPlan(dependencyOrder(units), units);
     const full = steps.filter((s) => s.commands.includes('pnpm gates:full'));
+    const waveGate = steps.filter(
+      (s) => s.gate === 'BATCH-FINAL' && s.commands.includes('pnpm gates'),
+    );
     const last = steps[steps.length - 1];
     return (
-      expect(full.length === 1, `expected exactly one gates:full step, got ${full.length}`) ??
+      expect(
+        full.length === 0,
+        `gates:full belongs to the phase gate and CI, not the wave; found ${full.length} step(s)`,
+      ) ??
+      expect(
+        waveGate.length === 1,
+        `expected exactly one wave-gate gates step, got ${waveGate.length}`,
+      ) ??
       expect(last?.gate === 'BATCH-FINAL', `expected BATCH-FINAL last, got ${last?.gate}`) ??
       expect(
         steps.filter((s) => s.gate === 'PRE-INTEGRATION').length === 2,
@@ -1401,44 +1438,54 @@ export async function run(): Promise<number> {
     },
   );
 
-  scenario(45, 'review runs once per wave; only perNodeClasses keep a per-node review', () => {
+  scenario(45, 'review cadence is derived from the class lifecycle and enforced per lane', () => {
     const activation = loadActivation();
-    const perNodeClasses = activation.reviewCadence?.perNodeClasses ?? [];
     const reviewer = resolveRoles(['review'], activation);
     const d = decide([
       unit({ task_id: 'alpha', changeClass: 'behavior', allowed_paths: ['a/**'] }),
       unit({ task_id: 'beta', changeClass: 'contract', allowed_paths: ['b/**'] }),
+      unit({ task_id: 'gamma', changeClass: 'feature', allowed_paths: ['c/**'] }),
     ]);
     const alpha = d.lanes.find((l) => l.task_id === 'alpha');
     const beta = d.lanes.find((l) => l.task_id === 'beta');
+    const gamma = d.lanes.find((l) => l.task_id === 'gamma');
     return (
       expect(
-        perNodeClasses.includes('contract'),
-        'agent-activation.json must keep contract in perNodeClasses',
+        reviewLifecycle('contract', activation) === 'per-node',
+        'contract must keep its per-node review',
       ) ??
       expect(
-        alpha?.review_cadence === 'wave',
-        `a behavior lane must review per wave; got ${alpha?.review_cadence}`,
+        alpha?.review_cadence === 'phase',
+        `a behavior lane reviews at the phase gate; got ${alpha?.review_cadence}`,
+      ) ??
+      expect(
+        gamma?.review_cadence === 'wave',
+        `a feature lane reviews at the wave gate; got ${gamma?.review_cadence}`,
       ) ??
       expect(
         alpha !== undefined && !alpha.required_agents.some((a) => reviewer.includes(a)),
-        `reviewer must be stripped from a wave-cadence chain; got ${alpha?.required_agents.join(',')}`,
+        `reviewer must be stripped from a non-per-node chain; got ${alpha?.required_agents.join(',')}`,
       ) ??
       expect(
-        beta?.review_cadence === 'per-node',
-        `a contract lane must keep per-node review; got ${beta?.review_cadence}`,
-      ) ??
-      expect(
-        beta !== undefined && beta.required_agents.some((a) => reviewer.includes(a)),
+        beta?.review_cadence === 'per-node' &&
+          beta.required_agents.some((a) => reviewer.includes(a)),
         `a contract chain must keep its reviewer; got ${beta?.required_agents.join(',')}`,
       ) ??
       expect(
-        d.review_cadence.wave.includes('alpha') && d.review_cadence.per_node.includes('beta'),
+        d.review_cadence.phase.includes('alpha') &&
+          d.review_cadence.per_node.includes('beta') &&
+          d.review_cadence.wave.includes('gamma'),
         `decision-level cadence lists are wrong: ${JSON.stringify(d.review_cadence)}`,
       ) ??
       expect(
         d.review_cadence.wave_review_required,
-        'a wave containing a review-requiring class must require one wave review',
+        'a wave containing a feature lane requires one wave review',
+      ) ??
+      expect(
+        d.review_cadence.wave_gate_agents.includes('validator') &&
+          d.review_cadence.phase_gate_agents.includes('tester') &&
+          d.review_cadence.phase_gate_agents.includes('reviewer'),
+        `gate agents are wrong: wave=${d.review_cadence.wave_gate_agents.join(',')} phase=${d.review_cadence.phase_gate_agents.join(',')}`,
       )
     );
   });
@@ -1469,6 +1516,84 @@ export async function run(): Promise<number> {
         complete === undefined || complete.message.startsWith('PHASE_COMPLETE'),
         'a finished phase must announce itself as PHASE_COMPLETE',
       )
+    );
+  });
+
+  scenario(47, 'a feature packet dispatches Builder alone and never a Tester', () => {
+    const activation = loadActivation();
+    const rule = lifecycleOf('feature', activation);
+    if (!rule) return 'no `feature` class in agent-activation.json';
+    const packet = resolveRoles(rule.perPacket, activation);
+    const everywhere = resolveRoles(
+      [...rule.perPacket, ...rule.perWave, ...rule.perPhase, ...rule.conditional],
+      activation,
+    );
+    const d = decide([
+      unit({ task_id: 'alpha', changeClass: 'feature', allowed_paths: ['a/**'] }),
+      unit({ task_id: 'beta', changeClass: 'feature', allowed_paths: ['b/**'] }),
+    ]);
+    const alpha = d.lanes.find((l) => l.task_id === 'alpha');
+    return (
+      expect(
+        packet.join(',') === 'builder',
+        `a feature packet dispatches builder alone; got ${packet.join(',')}`,
+      ) ??
+      expect(!everywhere.includes('tester'), 'tester appears nowhere in the feature lifecycle') ??
+      expect(
+        alpha?.required_agents.join(',') === 'builder',
+        `the dispatched chain must be builder only; got ${alpha?.required_agents.join(',')}`,
+      )
+    );
+  });
+
+  scenario(48, 'Architect fires for a contract only when a decision is genuinely open', () => {
+    const settled = decide([
+      unit({ task_id: 'alpha', changeClass: 'contract', allowed_paths: ['a/**'] }),
+      unit({ task_id: 'beta', allowed_paths: ['b/**'] }),
+    ]).lanes.find((l) => l.task_id === 'alpha');
+    const ambiguous = decide([
+      unit({
+        task_id: 'alpha',
+        changeClass: 'contract',
+        allowed_paths: ['a/**'],
+        open_decisions: ['OD-X'],
+      }),
+      unit({ task_id: 'beta', allowed_paths: ['b/**'] }),
+    ]).lanes.find((l) => l.task_id === 'alpha');
+    return (
+      expect(
+        settled !== undefined && !settled.required_agents.includes('architect'),
+        `a settled contract must not dispatch an Architect; got ${settled?.required_agents.join(',')}`,
+      ) ??
+      expect(
+        settled?.optional_agents.includes('architect') === true,
+        'architect stays available as a conditional for a settled contract',
+      ) ??
+      expect(
+        ambiguous?.required_agents[0] === 'architect',
+        `an open decision must put Architect first in the chain; got ${ambiguous?.required_agents.join(',')}`,
+      )
+    );
+  });
+
+  scenario(49, 'Runner is conditional: no class lifecycle dispatches it', () => {
+    const activation = loadActivation();
+    const offenders: string[] = [];
+    for (const cls of Object.keys(activation.classes)) {
+      const rule = lifecycleOf(cls, activation);
+      if (!rule) continue;
+      const dispatched = resolveRoles(
+        [...rule.perPacket, ...rule.perWave, ...rule.perPhase],
+        activation,
+      );
+      if (dispatched.includes('runner')) offenders.push(cls);
+    }
+    const conditions = activation.activationConditions?.execute ?? [];
+    return (
+      expect(
+        offenders.length === 0,
+        `runner must never be a lifecycle-dispatched agent; found in: ${offenders.join(',')}`,
+      ) ?? expect(conditions.length > 0, 'execute must document when Runner actually fires')
     );
   });
 
