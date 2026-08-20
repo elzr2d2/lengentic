@@ -48,8 +48,9 @@ export default tseslint.config(
   },
 
   {
-    // The spike is a CLI. Writing to stdout is its entire job.
-    files: ['spike/**/*.ts', 'scripts/**/*.ts'],
+    // The spike is a CLI. Writing to stdout is its entire job. Package build scripts
+    // (platform/*/scripts/*.mjs) are the same kind of thing.
+    files: ['spike/**/*.ts', 'scripts/**/*.ts', 'platform/*/scripts/**/*.mjs'],
     rules: { 'no-console': 'off' },
   },
 
@@ -78,7 +79,7 @@ export default tseslint.config(
     // Plain-JS Node scripts: hooks and config. typescript-eslint turns `no-undef` off for
     // .ts files because the compiler already does it better, but these are not compiled,
     // so the globals have to be declared.
-    files: ['.claude/hooks/**/*.mjs', '*.config.js', '*.cjs'],
+    files: ['.claude/hooks/**/*.mjs', 'platform/*/scripts/**/*.mjs', '*.config.js', '*.cjs'],
     languageOptions: {
       globals: {
         process: 'readonly',

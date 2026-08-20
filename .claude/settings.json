@@ -48,18 +48,6 @@
         ]
       }
     ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node .claude/hooks/format-changed.mjs",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
     "SubagentStop": [
       {
         "hooks": [

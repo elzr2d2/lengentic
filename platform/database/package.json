@@ -20,8 +20,8 @@
     "db:migrate:deploy": "prisma migrate deploy",
     "db:reset": "prisma migrate reset --force",
     "db:seed": "prisma db seed",
-    "build": "prisma generate && tsc -p tsconfig.json",
-    "typecheck": "prisma generate && tsc --noEmit -p tsconfig.json",
+    "build": "node scripts/build-if-changed.mjs",
+    "typecheck": "node scripts/build-if-changed.mjs",
     "test": "node -e \"process.stdout.write('no unit tests in @lengentic/database\\n')\""
   },
   "dependencies": {

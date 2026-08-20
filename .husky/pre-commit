@@ -2,8 +2,7 @@
 
 set -e
 
-# Secret detection before commit — OD-6 / MVP_PLAN_V3.md:1534. Runs before
-# gates:full (minutes) so a staged credential fails fast, without waiting on
-# the rest of the gate ladder.
-pnpm tsx scripts/check-secrets.ts
-pnpm gates:full
+# Staged-scope gate ladder — secrets, format+re-stage, lint, affected-package
+# typecheck/test, harness selftests when the harness is staged. gates:full moved
+# to the phase gate and CI (harness-throughput item 5).
+pnpm tsx scripts/precommit.ts
