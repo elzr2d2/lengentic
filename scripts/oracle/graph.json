@@ -577,24 +577,34 @@
     },
     {
       "id": "p2.idempotency",
-      "risk": "medium",
+      "risk": "high",
       "changeClass": "behavior",
       "validate": ["pnpm test", "pnpm gates"],
       "own": {
-        "allowed": ["platform/api/src/**"]
+        "allowed": [
+          "platform/api/src/**",
+          "platform/database/prisma/**",
+          "platform/database/src/**"
+        ]
       },
       "phase": 2,
       "lane": "persistence",
-      "title": "Idempotent upsert on eventId; DUPLICATE is a success",
+      "title": "Idempotent upsert on eventId; DUPLICATE is a success — owns the ADR 0005 §1 dedup ledger",
       "owner": "builder",
       "needs": ["p2.ingest-endpoint"],
       "probes": [
         {
           "kind": "grep",
+          "dir": "platform/database/prisma",
+          "pattern": "model IngestedEvent"
+        },
+        {
+          "kind": "grep",
           "dir": "platform/api/src",
           "pattern": "DUPLICATE"
         }
-      ]
+      ],
+      "note": "Owns F3 — re-laned here by human decision 2026-08-20 after the p2.ingest-endpoint Tester ruled it BLOCKED naming platform/database/prisma/schema.prisma (.artifacts/evidence/2/tester-reverify/README.md). ADR 0005 §1's dedup table was never built: `seen` is reconstructed from entity-state provenance (startEventId, completionEventId, completionFieldOrigins), so any event that wins no contest leaves no trace and re-posts ACCEPTED forever — replay of a 4-event batch returns accepted:2 duplicate:2, stably (raw/f3.out D2.2/D2.3). This node's allowed_paths were widened to platform/database/prisma/** for exactly that migration, closing BACKLOG 'ADR 0005's dedup table has no lane that can write it'; p2.ingest-endpoint's boundary was NOT widened. The `model IngestedEvent` probe is the mechanical block: phase 2 cannot reach its wave-2 gate, and therefore cannot reach ADVANCE_PHASE, until the ledger exists. risk:high and the schema.prisma sharedWriteSurface both force this node to run alone. Contract correction: docs/decisions/0009."
     },
     {
       "id": "p2.sdk-core",

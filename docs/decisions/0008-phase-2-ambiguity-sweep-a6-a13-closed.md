@@ -2,7 +2,7 @@
 number: 0008
 title: Ambiguity sweep items A-6 through A-13 are closed; Phase 2 framing may not reopen them
 date: 2026-08-19
-status: accepted
+status: accepted; §A-7 superseded by 0009
 ---
 
 Closes the remainder of the 14-item ambiguity sweep from Phase 2 framing
@@ -35,6 +35,11 @@ sweep flagged — a `SeededClock` making equal-`occurredAt` ties the normal case
 absorbed by `0007` (ties break on `eventId`).
 
 ### A-7 — the `duplicate` counter is real, never dead code
+
+> **SUPERSEDED by `docs/decisions/0009` (2026-08-20).** The last sentence below —
+> "`p2.ingest-endpoint` implements it" — was falsified against live Postgres: a replayed
+> 4-event batch returns `accepted: 2, duplicate: 2`, stably. The requirement stands; the
+> claim that shipped code satisfies it does not. Read `0009` before citing this item.
 
 Reading 1. A replayed batch returns `accepted: 0, duplicate: N` with per-event `DUPLICATE`
 results. `0005` Detection already requires the test to "assert the per-event `DUPLICATE`
@@ -106,7 +111,8 @@ databases.
 
 - A-6/A-8: contract tests on `platform/shared/schema` fail on any format or literal drift.
 - A-7: the idempotency test asserts per-event `DUPLICATE` statuses; an implementation that
-  re-accepts a replay turns it red.
+  re-accepts a replay turns it red. **It did — see `0009` Detection, which replaces this
+  line with the losing-event replay fixture.**
 - A-10: an SDK test must show a `400` is not retried and a transport failure is, within the
   finite budget. If `p2.sdk-core` ships without that test, its handoff cannot verify §16's
   Retrying criterion.

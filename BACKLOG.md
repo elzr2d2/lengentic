@@ -1328,6 +1328,15 @@ table) — either widen that node's `allowed_paths` to include `platform/databas
 or split a small schema-only sub-node it depends on. Decide before that packet is dispatched,
 not while it is running.
 
+**RESOLVED 2026-08-20** — first option taken, by human decision under trigger 3.
+`p2.idempotency`'s `own.allowed` now includes `platform/database/prisma/**` and
+`platform/database/src/**`, `risk` is `high`, and a `model IngestedEvent` probe blocks the
+node until the ledger exists. This item predicted the failure correctly but was reached from
+the other end: the gap surfaced first as defect F3 on `p2.ingest-endpoint`, whose Tester
+ruled `BLOCKED` naming `schema.prisma` rather than widening its own boundary. Ruling
+`.artifacts/evidence/2/f3-ruling.md`; contract correction `docs/decisions/0009`, which
+supersedes `0008` §A-7.
+
 ### `Run`/`Step` have one `metadata` column but two independently-resolved merge bags
 
 **Source:** Reviewer finding S-C on `p2.prisma-run-step` lane commit `ce2b8f5`, 2026-08-19.
