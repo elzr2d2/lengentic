@@ -216,6 +216,62 @@ trigger 4 — it stops and asks, whatever this table says.
 | PERF-1 | `[MUST]`   | No speculative optimization. Correctness, then clarity, then a measurement, then the optimization.                                              | Reviewer    |
 | PERF-2 | `[SHOULD]` | An algorithmic explosion is a finding even without a benchmark: a query per row, an unbounded accumulation, a repeated expensive recomputation. | Reviewer    |
 
+## REFAC — continuous micro-refactoring
+
+Product work drives refactoring; refactoring does not drive product work. Whenever code is
+touched for real product work, the code that was touched is left slightly better than it
+was found — and nothing else is touched. Owned by **Builder** while implementing and
+**Reviewer** at the gate.
+
+| ID      | Class      | Rule                                                                                                                                                                                                                         | Enforced by                                                                                                                         |
+| ------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| REFAC-1 | `[MUST]`   | Code directly touched by a change is left compliant with this document where the fix is local and behaviour-preserving. Where it is not, the violation is recorded in `BACKLOG.md` and the product work continues.           | **Reviewer** — whether a fix is local needs the packet's intent. `update-backlog` for the other branch.                             |
+| REFAC-2 | `[MUST]`   | A refactor preserves externally observable behaviour unless the active packet requires the behaviour to change. Preservation is shown by the focused tests and the packet validation command, run before and after.          | The focused suite at the tier the change earns (table below). A change that cannot show it is a behaviour change and routes as one. |
+| REFAC-3 | `[MUST]`   | A refactor stays inside the blast radius of the work: the function, its module, adjacent code the change needs to be clean, and the tests covering that behaviour. Cross-package refactoring is never routine.               | **Watchdog** scope pass + the lane's `allowed_paths` (`pnpm lanes check <id>`)                                                      |
+| REFAC-4 | `[MUST]`   | Debt discovered by a refactor is recorded, not followed. One micro-refactor never opens a second.                                                                                                                            | `update-backlog`; **Reviewer** flags a cascade in the diff                                                                          |
+| REFAC-5 | `[SHOULD]` | Order: make the behaviour work, get the evidence green, micro-refactor, re-run the focused validation, commit. A preparatory refactor comes first only when the existing structure makes the change unsafe, and stays small. | **Reviewer**                                                                                                                        |
+| REFAC-6 | `[SHOULD]` | The smallest diff that gets the same improvement wins: one function over one module, one module over one package.                                                                                                            | **Reviewer**                                                                                                                        |
+| REFAC-7 | `[AVOID]`  | Refactoring only because a cleaner abstraction is imaginable. A new abstraction still has to pass the anti-overengineering gate above.                                                                                       | `DESIGN-1` + the five questions                                                                                                     |
+
+### What a micro-refactor is
+
+Rename a misleading name; extract a repeated domain rule; delete dead code the change
+exposed; replace an `any` or an unnecessary cast with a real type or a narrowing; flatten a
+deep conditional; add a guard clause; split an overloaded function; remove duplication
+inside the touched module; make a side effect explicit; improve error propagation; replace
+an unclear boolean parameter; move validation to the correct boundary; tighten an interface
+the touched code uses; fix an obvious async or Promise handling defect; improve a test that
+cannot discriminate the behaviour being changed.
+
+### What is not one
+
+Rewriting a service, migrating a pattern across the repository, introducing a new
+repository/service/factory hierarchy, replacing a library, renaming dozens of files,
+restructuring several modules, redesigning a public API, replacing the persistence
+architecture, mass style conversion, "apply SOLID to the project", "clean up all the
+TypeScript issues", or changing unrelated tests. Each of those is its own justified work
+packet, and it is filed, not performed.
+
+### Which violations get fixed in passing
+
+- **`[MUST]` in touched code** — fix it when the fix is local and behaviour-preserving.
+  Otherwise `BACKLOG.md`.
+- **`[SHOULD]` in touched code** — only when the change is trivial and local.
+- **`[AVOID]` in touched code** — never a reason on its own. Improve it only when the
+  current change already benefits.
+
+This is what keeps a new standard from becoming a licence for repository-wide cleanup.
+
+### What Reviewer flags, and what it does not
+
+Flags: touched code made materially worse; a local `[MUST]` left behind with no reason
+given; complexity the change introduced; an obvious small cleanup skipped where it directly
+reduced risk.
+
+Does not flag: unrelated legacy code, repository-wide consistency outside the diff,
+improvements that would need a larger refactor, or a theoretical `DESIGN` win with no
+current benefit. Those are `BACKLOG.md` entries, not gate findings.
+
 ---
 
 ## Adaptive validation: how much gate a change earns
