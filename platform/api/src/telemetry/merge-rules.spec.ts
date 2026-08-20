@@ -173,6 +173,58 @@ describe('mergeEvent — field precedence (MVP_PLAN_V3.md §12)', () => {
     expect(afterB.startEventId).toBe('evt-aaa');
   });
 
+  it("start fields: a winning-but-metadata-less start event WHOLESALE REPLACES the prior winner's fields, including dropping metadata it never carried (D3: wholesale replace, not presence-merge, is what stays order-independent)", () => {
+    const afterFirst = mergeEvent(
+      undefined,
+      startEvent({
+        eventId: 'evt-with-metadata',
+        occurredAt: '2026-08-18T10:00:00.000Z',
+        fields: { name: 'first', metadata: { tenant: 'acme' } },
+      }),
+    );
+
+    // Earlier occurredAt — wins the tie-break and becomes the new startEventId — but its own
+    // payload never carried metadata at all. A prior attempt merged this event's fields onto
+    // the previous winner's (presence-based merge) so `metadata` survived; that design was
+    // reverted (tester finding D3) because the merge depended on which event this process
+    // happened to fold in first, not only on the event SET. Wholesale replace is the
+    // deliberately lossy, deterministic alternative: the winner's own fields are the whole
+    // answer.
+    const afterEarlierNoMetadata = mergeEvent(
+      afterFirst,
+      startEvent({
+        eventId: 'evt-no-metadata',
+        occurredAt: '2026-08-18T09:00:00.000Z',
+        fields: { name: 'second' },
+      }),
+    );
+
+    expect(afterEarlierNoMetadata.startEventId).toBe('evt-no-metadata');
+    expect(afterEarlierNoMetadata.startFields).toEqual({ name: 'second' });
+  });
+
+  it('start fields: a winning event that DOES carry a key overrides the prior value for that key, including explicit null', () => {
+    const afterFirst = mergeEvent(
+      undefined,
+      startEvent({
+        eventId: 'evt-a',
+        occurredAt: '2026-08-18T10:00:00.000Z',
+        fields: { name: 'a', parentStepId: 'parent-1' },
+      }),
+    );
+
+    const afterEarlierRoot = mergeEvent(
+      afterFirst,
+      startEvent({
+        eventId: 'evt-b',
+        occurredAt: '2026-08-18T09:00:00.000Z',
+        fields: { name: 'b', parentStepId: null },
+      }),
+    );
+
+    expect(afterEarlierRoot.startFields).toEqual({ name: 'b', parentStepId: null });
+  });
+
   it('start fields: equal occurredAt tie breaks on the lexicographically LESSER eventId, insertion order B-then-A', () => {
     const eventA = startEvent({
       eventId: 'evt-aaa',
@@ -190,6 +242,89 @@ describe('mergeEvent — field precedence (MVP_PLAN_V3.md §12)', () => {
 
     expect(afterA.startFields).toEqual({ name: 'aaa' });
     expect(afterA.startEventId).toBe('evt-aaa');
+  });
+
+  it('start fields: D3 regression — same two-event set (metadata-carrying loses to an earlier metadata-less start), both arrival orders drop metadata identically', () => {
+    const withMetadata = startEvent({
+      eventId: 'evt-a',
+      occurredAt: '2026-08-18T10:00:05.000Z',
+      fields: { name: 'a', metadata: { from: 'a' } },
+    });
+    const noMetadataEarlier = startEvent({
+      eventId: 'evt-b',
+      occurredAt: '2026-08-18T10:00:03.000Z',
+      fields: { name: 'b' },
+    });
+
+    const aThenB = mergeEvent(mergeEvent(undefined, withMetadata), noMetadataEarlier);
+    const bThenA = mergeEvent(mergeEvent(undefined, noMetadataEarlier), withMetadata);
+
+    expect(aThenB.startFields).toEqual({ name: 'b' });
+    expect(bThenA.startFields).toEqual({ name: 'b' });
+    expect(aThenB.startEventId).toBe('evt-b');
+    expect(bThenA.startEventId).toBe('evt-b');
+  });
+
+  it('start fields: D3 regression — exact occurredAt tie, metadata-less event has the lesser eventId and wins the tie, both arrival orders agree', () => {
+    const withMetadata = startEvent({
+      eventId: 'evt-z',
+      occurredAt: '2026-08-18T10:00:03.000Z',
+      fields: { name: 'z', metadata: { from: 'z' } },
+    });
+    const noMetadataTieWinner = startEvent({
+      eventId: 'evt-a',
+      occurredAt: '2026-08-18T10:00:03.000Z',
+      fields: { name: 'a' },
+    });
+
+    const zThenA = mergeEvent(mergeEvent(undefined, withMetadata), noMetadataTieWinner);
+    const aThenZ = mergeEvent(mergeEvent(undefined, noMetadataTieWinner), withMetadata);
+
+    expect(zThenA.startFields).toEqual({ name: 'a' });
+    expect(aThenZ.startFields).toEqual({ name: 'a' });
+  });
+
+  it("start fields: D3 — three-event set holds over all six permutations, mirroring the completion side's T-D", () => {
+    const s1 = startEvent({
+      eventId: 'evt-s1',
+      occurredAt: '2026-08-18T10:00:05.000Z',
+      fields: { name: 's1', metadata: { from: 's1' } },
+    });
+    const s2 = startEvent({
+      eventId: 'evt-s2',
+      occurredAt: '2026-08-18T10:00:03.000Z',
+      fields: { name: 's2' },
+    });
+    const s3 = startEvent({
+      eventId: 'evt-s3',
+      occurredAt: '2026-08-18T10:00:03.000Z',
+      fields: { name: 's3', metadata: { from: 's3' } },
+    });
+
+    const permutations: MergeEvent[][] = [
+      [s1, s2, s3],
+      [s1, s3, s2],
+      [s2, s1, s3],
+      [s2, s3, s1],
+      [s3, s1, s2],
+      [s3, s2, s1],
+    ];
+
+    for (const permutation of permutations) {
+      const final = permutation.reduce<EntityMergeState | undefined>(
+        (state, event) => mergeEvent(state, event),
+        undefined,
+      );
+
+      // s2 and s3 tie at occurredAt 10:00:03; 's2' < 's3' lexicographically, so s2's eventId
+      // wins the tie. s2 also has the earliest occurredAt overall, so s2 is the entity's
+      // overall start winner regardless of processing order — and since s2's own fields
+      // never carried metadata, the final startFields drop it (wholesale replace), for
+      // EVERY permutation.
+      expect(final?.startEventId).toBe('evt-s2');
+      expect(final?.startedAt).toBe('2026-08-18T10:00:03.000Z');
+      expect(final?.startFields).toEqual({ name: 's2' });
+    }
   });
 
   it('completion fields: last writer wins by occurredAt, not arrival order', () => {
