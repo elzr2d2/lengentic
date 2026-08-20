@@ -1853,3 +1853,63 @@ them as a defect in its own code and start editing working source.
 before `lint` in the `gates` chain; or give `@lengentic/database` a `prepare`/`postinstall`
 build; or have `lint` depend on the package build in the task graph. Whichever is chosen must
 keep `pnpm gates` working with the engineering harness deleted (`CLAUDE.md ## Commands`).
+
+---
+
+## Discovered in the p2.run-liveness repair (2026-08-21)
+
+### Lane schema isolation is a no-op: `?schema=` is dropped, so every parallel lane writes to `public`
+
+**Source:** `p2.run-liveness` Builder, 2026-08-21, hitting
+`relation "public.IngestedEvent" does not exist` (P2021 / SQLSTATE 42P01) inside a worktree
+whose `.env` said `?schema=lane_p2_run_liveness`. Confirmed by the Coordinator at
+`platform/database/src/index.ts:23`.
+**Trigger:** **before the next wave that dispatches two or more lanes touching Postgres.**
+This is not a "someday" entry — it is a precondition for parallel dispatch, and Phases 4, 5b
+and 6 all have DB-touching lanes that `pnpm lanes decide` will happily run in parallel.
+
+`pnpm lanes worktrees <id...>` prints, for every lane:
+
+```text
+# R9 — isolated Postgres schema so this lane and any sibling lane never share
+# a write surface on the same database instance:
+… DATABASE_URL=postgresql://…/lengentic?schema=lane_<id>
+```
+
+The `schema` query parameter has **no runtime effect** under Prisma 7 + `@prisma/adapter-pg`.
+`node-postgres` does not understand it, and the adapter is constructed without one:
+
+```ts
+// platform/database/src/index.ts:23
+const adapter = new PrismaPg({ connectionString: config.connectionString });
+```
+
+`PrismaPg` takes the schema as a **second argument** (`new PrismaPg({ connectionString },
+{ schema })`), not from the URL. So the generated client keeps resolving to `public`, and
+every lane that believes it has a private schema is reading and writing the _shared_ one.
+
+**Why this is worse than a broken feature.** `pnpm lanes decide` passes R9 ("no conflicting
+migration, lockfile, global config or other shared write surface") partly on the strength of
+this isolation. The mechanism that makes R9 true is inert, so R9's PASS is currently an
+unverified claim for any batch with two DB lanes — a green that lies about _dispatch safety_
+rather than about code. Two parallel lanes running `db:migrate` or an integration suite would
+truncate each other's tables and each would read the interference as a flaky test.
+
+Nothing has actually collided yet: every parallel wave so far has had at most one lane
+touching Postgres. That is luck, not design.
+
+**Workaround used, deliberately not committed:** the Builder sidestepped it with a throwaway
+_database_ (`lane_p2_run_liveness_db`) rather than a schema, and touched no committed file.
+
+**Fix, not yet decided between two shapes.** Either (a) thread `schema` through
+`createDatabaseClient` into `PrismaPg`'s second argument and keep parsing it out of
+`DATABASE_URL`, so the printed instructions become true; or (b) drop the schema pretence from
+`scripts/lanes.ts` and print a per-lane **database** instead, which is what actually isolates
+under this adapter. (b) is less code and cannot be silently re-broken by an adapter upgrade;
+(a) keeps one Postgres database and matches what the comments already claim. Whichever is
+chosen needs a test that _fails_ when isolation regresses — the entire cost of this entry is
+that nothing asserted the isolation worked.
+
+Closes when two lanes can concurrently run the API integration suite against the same
+Postgres instance without seeing each other's rows, proven by a test that goes red if the
+isolation is removed.
