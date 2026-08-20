@@ -1705,3 +1705,30 @@ detects an exported symbol that no longer has a consumer — the hardening lane'
 `noUnusedParameters` are the cheap half; the export half needs `knip` or equivalent, which
 is a dependency decision, not a config flag. Already ruled out: adding the dependency in a
 standards pass, where it would arrive with no measured violation behind it.
+
+## Discovered in the p2.ingest-endpoint human-directed repair (2026-08-20)
+
+### `EVENT_LEVEL_ERROR_CODES` cannot detect the drift its own comment forbids
+
+**Source:** the attempt-2 Tester driving the contract directly —
+`.artifacts/evidence/2/tester-reverify-attempt-2/raw/wire-contract.txt`, and
+`docs/decisions/0010` Consequences. **Trigger:** the next packet that owns
+`platform/shared/schema/**`, or any review that finds a second undeclared code on the wire.
+
+`platform/shared/schema/ingest.ts:30-36` says of `EVENT_LEVEL_ERROR_CODES`: "Derived from
+`INGEST_ERROR_CODES` itself, so this list cannot drift from the codes it classifies." The
+derivation is real, but `IngestEventResult.code` is `z.string()`, so a code in neither list
+parses fine and reaches the wire unnoticed. Not hypothetical: a Builder invented
+`PROCESSING_FAILED`, shipped it through the wire contract, and passed `pnpm gates` with it —
+no mechanical check in the repo could see it. The Tester found it only by importing the
+schema and asking.
+
+The fix is to narrow `code` from `z.string()` to the union the constants already define, so
+an undeclared code fails to parse. Deferred because it is a wire-contract change on a surface
+`p2.ingest-endpoint` does not own, raised mid-repair on a lane already under repair for a
+false green — precisely the shape `docs/decisions/0009` refused to widen for. Already ruled
+out: admitting `PROCESSING_FAILED` to the list to make the drift legal (rejected by the human
+by name, `docs/decisions/0010`), and leaving the comment standing while it is untrue.
+
+Closes when `code` is a closed union and a test asserts an undeclared code fails
+`IngestResponseSchema.parse`.

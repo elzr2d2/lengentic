@@ -75,14 +75,15 @@ item to name how much data.
 
 ## Index
 
-| #                                                              | Decision                                                | Date       | Status                            |
-| -------------------------------------------------------------- | ------------------------------------------------------- | ---------- | --------------------------------- |
-| [0001](0001-nine-agent-roster.md)                              | Nine agents, not the plan's four                        | 2026-08-16 | accepted                          |
-| [0002](0002-sequential-is-the-default.md)                      | Sequential default; unknown counts as false             | 2026-08-16 | accepted                          |
-| [0003](0003-contextkey-is-caller-computed.md)                  | The caller computes `contextKey`                        | 2026-08-16 | accepted                          |
-| [0004](0004-no-tester-at-the-5a-gate.md)                       | No Tester at the 5a gate; a spec instead                | 2026-08-16 | accepted                          |
-| [0005](0005-phase-2-wire-contract-gaps.md)                     | Four wire-contract gaps at the P2 frontier              | 2026-08-18 | accepted                          |
-| [0006](0006-oversized-event-is-an-event-level-rejection.md)    | Oversized event rejects event-level, not the batch      | 2026-08-18 | accepted                          |
-| [0007](0007-equal-occurredat-ties-break-on-eventid.md)         | Equal-`occurredAt` ties break on `eventId`              | 2026-08-18 | accepted                          |
-| [0008](0008-phase-2-ambiguity-sweep-a6-a13-closed.md)          | Sweep items A-6..A-13 closed; not reopenable in framing | 2026-08-19 | accepted; §A-7 superseded by 0009 |
-| [0009](0009-a7-corrected-duplicate-is-entity-state-derived.md) | A-7 corrected; the dedup ledger is `p2.idempotency`'s   | 2026-08-20 | accepted                          |
+| #                                                                      | Decision                                                | Date       | Status                            |
+| ---------------------------------------------------------------------- | ------------------------------------------------------- | ---------- | --------------------------------- |
+| [0001](0001-nine-agent-roster.md)                                      | Nine agents, not the plan's four                        | 2026-08-16 | accepted                          |
+| [0002](0002-sequential-is-the-default.md)                              | Sequential default; unknown counts as false             | 2026-08-16 | accepted                          |
+| [0003](0003-contextkey-is-caller-computed.md)                          | The caller computes `contextKey`                        | 2026-08-16 | accepted                          |
+| [0004](0004-no-tester-at-the-5a-gate.md)                               | No Tester at the 5a gate; a spec instead                | 2026-08-16 | accepted                          |
+| [0005](0005-phase-2-wire-contract-gaps.md)                             | Four wire-contract gaps at the P2 frontier              | 2026-08-18 | accepted                          |
+| [0006](0006-oversized-event-is-an-event-level-rejection.md)            | Oversized event rejects event-level, not the batch      | 2026-08-18 | accepted                          |
+| [0007](0007-equal-occurredat-ties-break-on-eventid.md)                 | Equal-`occurredAt` ties break on `eventId`              | 2026-08-18 | accepted                          |
+| [0008](0008-phase-2-ambiguity-sweep-a6-a13-closed.md)                  | Sweep items A-6..A-13 closed; not reopenable in framing | 2026-08-19 | accepted; §A-7 superseded by 0009 |
+| [0009](0009-a7-corrected-duplicate-is-entity-state-derived.md)         | A-7 corrected; the dedup ledger is `p2.idempotency`'s   | 2026-08-20 | accepted                          |
+| [0010](0010-infrastructure-failure-is-not-an-event-level-rejection.md) | Infra failure is 503/500, never event-level `REJECTED`  | 2026-08-20 | accepted                          |
