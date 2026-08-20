@@ -120,6 +120,10 @@ export class TelemetryService {
    *    each other, and a duplicate within a single batch is caught exactly like a duplicate
    *    across two requests. A group's final state is written once, after its whole group has
    *    folded — not once per event — so a 10-event batch for one Step is one upsert, not ten.
+   * 4. A group's transaction failing is CONTAINED to that group (tester finding D2,
+   *    2026-08-20): every other group's results — including groups already committed before
+   *    this one ran — still land in the response, and this group's own events still get a
+   *    result each (REJECTED), never silently dropped. See `PROCESSING_FAILED` below.
    */
   async ingest(rawEvents: readonly unknown[]): Promise<IngestResponse> {
     const results: IngestResult[] = new Array(rawEvents.length);
@@ -192,33 +196,71 @@ export class TelemetryService {
     const receivedAt = Date.now();
 
     for (const group of groups.values()) {
-      const groupResults = await this.repository.withEntityLock(
-        group.kind,
-        group.entityId,
-        group.runId,
-        (existing) => {
-          let state = existing;
-          const seen = collectKnownEventIds(existing);
-          const outcomes: { index: number; result: IngestResult }[] = [];
+      let groupResults: { index: number; result: IngestResult }[];
+      try {
+        groupResults = await this.repository.withEntityLock(
+          group.kind,
+          group.entityId,
+          group.runId,
+          (existing) => {
+            let state = existing;
+            const seen = collectKnownEventIds(existing);
+            const outcomes: { index: number; result: IngestResult }[] = [];
 
-          for (const { index, event } of group.items) {
-            if (seen.has(event.eventId)) {
-              outcomes.push({ index, result: { eventId: event.eventId, status: 'DUPLICATE' } });
-              continue;
+            for (const { index, event } of group.items) {
+              if (seen.has(event.eventId)) {
+                outcomes.push({ index, result: { eventId: event.eventId, status: 'DUPLICATE' } });
+                continue;
+              }
+              seen.add(event.eventId);
+              state = mergeEvent(state, toMergeEvent(event, receivedAt));
+              outcomes.push({ index, result: { eventId: event.eventId, status: 'ACCEPTED' } });
             }
-            seen.add(event.eventId);
-            state = mergeEvent(state, toMergeEvent(event, receivedAt));
-            outcomes.push({ index, result: { eventId: event.eventId, status: 'ACCEPTED' } });
-          }
 
-          return { state, value: outcomes };
-        },
-      );
+            return { state, value: outcomes };
+          },
+        );
+      } catch (error) {
+        // D2 containment (tester finding, 2026-08-20): this group's transaction rolled back
+        // (or never committed) — nothing for it was persisted, so ACCEPTED/DUPLICATE can
+        // never be determined and REJECTED is the only honest classification. What must NOT
+        // happen is this exception reaching the controller: that would discard every OTHER
+        // group's results too, including ones already committed by an earlier iteration of
+        // this very loop, and return zero per-event results for a batch this process
+        // partially processed (MVP_PLAN_V3.md §12: "a malformed event never rejects the
+        // whole batch"; every processed batch carries per-event results).
+        //
+        // Known triggers still live at the Postgres/Node boundary despite being Zod-legal
+        // input: `occurredAt` year 0000 (Postgres SQLSTATE 22008), a `metadata` object
+        // nested deep enough to overflow `structuredClone`'s call stack inside `mergeEvent`
+        // (RangeError), and lock contention past Prisma's transaction timeout. This service
+        // is not required to make any of those inputs succeed — only to report them as
+        // event-level results inside a 200 response instead of losing the batch.
+        //
+        // `PROCESSING_FAILED` is not one of `INGEST_ERROR_CODES` — `platform/shared` is
+        // outside this lane's `allowed_paths` — but `IngestResultErrorSchema.code` is
+        // `z.string()`, not the closed union, specifically so a caller-facing code can be
+        // added without ever failing an old SDK's parse (platform/shared/schema/ingest.ts).
+        const message = error instanceof Error ? error.message : String(error);
+        groupResults = group.items.map(({ index, event }) => ({
+          index,
+          result: {
+            eventId: event.eventId,
+            status: 'REJECTED',
+            error: {
+              code: 'PROCESSING_FAILED',
+              message: `could not persist ${group.kind} ${group.entityId}: ${message}`,
+            },
+          },
+        }));
+      }
 
       for (const { index, result } of groupResults) {
         results[index] = result;
         if (result.status === 'DUPLICATE') {
           duplicate++;
+        } else if (result.status === 'REJECTED') {
+          rejected++;
         } else {
           accepted++;
         }

@@ -228,30 +228,39 @@ export function mergeEvent(
     // entity. If a future edit adds a `status` override here, `merge-rules.spec.ts`'s reopen
     // guard test goes red.
     //
-    // `startFields` is a PRESENCE-BASED MERGE onto `base.startFields`, not a wholesale
-    // replace, when this event becomes the new winner. Rationale (tester-reported defect,
-    // 2026-08-19): a start event that legitimately wins the occurredAt tie-break (it is the
-    // new earliest-known start) but happens not to carry `metadata` must not blank metadata
-    // an earlier-processed, later-occurring event already contributed — the winning event's
-    // ABSENCE of a key is not evidence that key should revert to unknown; it only means this
-    // event did not speak to it. Keys the winning event DOES carry (including an explicit
-    // `null`, e.g. Step's `parentStepId`) still take precedence over the prior value, exactly
-    // as a wholesale replace would.
+    // `startFields` is a WHOLESALE REPLACE by the winning event's own fields — never merged
+    // with whatever `base.startFields` happened to hold already. That residue-merge design
+    // (a prior attempt: "presence-based merge onto base.startFields", meant to stop a
+    // metadata-less winner from blanking a prior winner's metadata) was reverted by fresh
+    // independent verification (tester finding D3, 2026-08-20): merging onto
+    // `base.startFields` makes the result depend on which OTHER start events this process
+    // happened to fold in before the eventual winner arrived — exactly the arrival-order
+    // dependence ADR 0007's Consequences forbid ("a pure function of the event set...
+    // replaying a batch cannot change an answer" — for both sides of the merge, not only
+    // completion). Proof: the same event set, submitted in different orders or split across
+    // different request boundaries, persisted two different `metadata` values under the
+    // presence-merge design (`.artifacts/evidence/2/tester-reverify/raw/order.json`,
+    // `bonus.mjs`).
     //
-    // This is deliberately NOT full per-key first-writer-wins (the mirror of the completion
-    // side's `completionFieldOrigins`): that would require persisting, per key, which start
-    // event's `occurredAt` currently owns it, so a field from a LOSING event (one that never
-    // becomes `startEventId`) can still be captured if no other event has supplied that key
-    // yet. Run/Step have no such column (only `startEventId`, one winner for the whole
-    // entity) and adding one is a schema.prisma change, out of this module's reach. The
-    // residual gap: a key ONLY ever supplied by a start event that loses the overall
-    // occurredAt contest is never captured, even if no other event supplies it either. Known
-    // and accepted, not silently different from what the merge already promises: `merge-rules
-    // .spec.ts` covers the fixed case (a winning-but-metadata-less event preserves a prior
-    // winner's metadata).
-    const startFields = replaceStart
-      ? structuredClone({ ...(base.startFields ?? {}), ...event.fields })
-      : base.startFields;
+    // Wholesale replace restores order-independence CHEAPLY: the winner itself is already a
+    // pure function of the event set (`shouldReplaceStart`'s total order — earliest
+    // `occurredAt`, tie-break the lesser `eventId` — is a min-reduction, associative and
+    // commutative regardless of processing order). Once the winner is fixed, its own
+    // `fields` is the ONLY input to `startFields` — nothing carried over from any other
+    // event, winning or losing, so there is nothing left for arrival order to disturb.
+    //
+    // Known, accepted trade-off (documented, not silently different from what §12 promises):
+    // a key ONLY ever supplied by a start event that is not the overall winner (whether it
+    // lost outright or won an earlier round before a still-earlier event displaced it) is
+    // never captured, even if the eventual winner never speaks to that key either — the same
+    // "lossy but deterministic" shape the pre-presence-merge implementation had. Recovering
+    // the lost keys would need per-key first-writer-wins provenance — the mirror of
+    // `completionFieldOrigins` — persisted so it survives a reload between requests. Run/Step
+    // have no such column (only `startEventId`, one winner for the whole entity) and adding
+    // one is a schema.prisma change, out of this module's reach (`platform/api/src/**`, this
+    // lane's `allowed_paths`). `merge-rules.spec.ts` proves the CURRENT contract instead: the
+    // same event set produces an identical `startFields` across every permutation tried.
+    const startFields = replaceStart ? structuredClone({ ...event.fields }) : base.startFields;
     return {
       ...base,
       startedAt: replaceStart ? event.occurredAt : base.startedAt,
