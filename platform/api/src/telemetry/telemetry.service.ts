@@ -17,7 +17,7 @@ import {
   type TelemetryEvent,
 } from '@lengentic/shared';
 import { entityKindOf, toMergeEvent, type EntityKind } from './event-mapping';
-import { mergeEvent, type EntityMergeState } from './merge-rules';
+import { mergeEvent } from './merge-rules';
 import { TelemetryRepository } from './telemetry.repository';
 import {
   containsUnsafeUnicode,
@@ -66,48 +66,6 @@ function serializedByteLength(raw: unknown): number {
     // parseTelemetryEvent's own shape checks reject them on the next line.
     return 0;
   }
-}
-
-/**
- * Every `eventId` this entity has already recorded, start or completion side. Used for
- * idempotency (§12: "Re-posting a known eventId is a no-op").
- *
- * NOT exact for the start side (tester-corrected, 2026-08-19 — this comment previously
- * claimed it was). `startEventId` is the sole persisted start-side winner: only the ONE
- * start event that currently wins the first-writer-wins occurredAt contest is remembered.
- * Any OTHER start event this entity has ever seen — one that loses that contest, whether
- * because a genuinely earlier event already exists or because of the ADR-0007-mirrored
- * eventId tie-break — leaves no trace anywhere on the row and is NOT in this set. Reposting
- * such an event is still safe (merge-rules.ts is pure and entities are upserted by
- * entityId, so it can never create a second row or error) but is misclassified `ACCEPTED`
- * a second time instead of `DUPLICATE`. Unlike the completion-side gap below, this is not a
- * narrow edge case — it is every losing start event, which closing for real needs a
- * persisted per-start-event (or per-start-field) ledger schema.prisma does not have today
- * (only `startEventId`, one winner for the whole entity — contrast `completionFieldOrigins`,
- * which gives the completion side partial multi-winner tracking). Adding that column is a
- * schema.prisma change, outside `platform/api/src/**`, this lane's `allowed_paths`.
- *
- * For the completion side this also walks `completionFieldOrigins`, not just
- * `completionEventId` — a completion event can win an individual field's provenance
- * (ADR 0007 §3) without becoming the entity's overall `completionEventId`, and that event's
- * `eventId` must still count as "seen" or a repost of it would be misclassified `ACCEPTED`
- * instead of `DUPLICATE`.
- *
- * Known gap, accepted rather than blocking (no dedup ledger table exists — see
- * `docs/decisions/0005-phase-2-wire-contract-gaps.md` decision 1 — and adding one is outside
- * `platform/api/src/**`, this lane's `allowed_paths`): a completion event that wins NEITHER
- * `completionEventId` NOR any field origin (an empty-`fields` event whose `occurredAt` loses
- * every comparison) leaves no trace on the row. Reposting it is still safe — merge-rules.ts
- * is pure, so it resolves identically and never creates a new row or an error — but it would
- * be classified `ACCEPTED` a second time rather than `DUPLICATE`.
- */
-function collectKnownEventIds(state: EntityMergeState | undefined): Set<string> {
-  const ids = new Set<string>();
-  if (!state) return ids;
-  if (state.startEventId !== null) ids.add(state.startEventId);
-  if (state.completionEventId !== null) ids.add(state.completionEventId);
-  for (const origin of Object.values(state.completionFieldOrigins)) ids.add(origin.eventId);
-  return ids;
 }
 
 // ADR 0010 (`docs/decisions/0010-infrastructure-failure-is-not-an-event-level-rejection.md`):
@@ -259,11 +217,14 @@ export class TelemetryService {
    *    load, the `mergeEvent` fold IN BATCH ORDER, and the save all happen inside a single
    *    Postgres transaction guarded by an advisory lock on that entity, so a concurrent
    *    request touching the same `entityId` cannot interleave its own read-modify-write and
-   *    silently discard this one's contribution. Within the fold, an entity's persisted
-   *    state seeds `seen`/`state` — so two events for the same entity in one request observe
-   *    each other, and a duplicate within a single batch is caught exactly like a duplicate
-   *    across two requests. A group's final state is written once, after its whole group has
-   *    folded — not once per event — so a 10-event batch for one Step is one upsert, not ten.
+   *    silently discard this one's contribution. Within the fold, the `IngestedEvent` ledger
+   *    (ADR 0005 §1 / ADR 0009, F3) seeds `seen` and the entity's persisted state seeds
+   *    `state` — so two events for the same entity in one request observe each other, and a
+   *    duplicate within a single batch is caught exactly like a duplicate across two
+   *    requests, whether or not the repeated event ever won a merge contest. A group's final
+   *    state is written once, after its whole group has folded — not once per event — so a
+   *    10-event batch for one Step is one upsert, not ten (and, symmetrically, one
+   *    `IngestedEvent.createMany`, not ten single-row inserts).
    * 4. A group's transaction failing is an infrastructure/persistence failure, never an
    *    event-level verdict (ADR 0010, superseding the `PROCESSING_FAILED` design tester
    *    findings T1/T2/T3/T4 rejected 2026-08-20): `REJECTED` means the event itself is
@@ -274,10 +235,12 @@ export class TelemetryService {
    *    of this loop stay committed (each is its own transaction), the failing group's own
    *    transaction rolls back, and any group not yet reached is simply never attempted — the
    *    caller gets one honest 5xx and retries the whole batch, safely, because retry safety
-   *    is dedup's job, not this endpoint's (F3, deferred to `p2.idempotency`, not reopened
-   *    here). A caller that DOES receive 200 now knows every event in the batch got a real
-   *    per-event verdict — that guarantee is the whole reason per-event results are worth
-   *    returning at all.
+   *    is the `IngestedEvent` ledger's job, not this endpoint's (F3, ADR 0009 — the ledger
+   *    read/write lives inside `TelemetryRepository.withEntityLock`, so a group whose
+   *    transaction never committed never recorded any of its events as ingested either). A
+   *    caller that DOES receive 200 now knows every event in the batch got a real per-event
+   *    verdict — that guarantee is the whole reason per-event results are worth returning at
+   *    all.
    */
   async ingest(rawEvents: readonly unknown[]): Promise<IngestResponse> {
     const results = new Array<IngestResult>(rawEvents.length);
@@ -417,9 +380,12 @@ export class TelemetryService {
           group.kind,
           group.entityId,
           group.runId,
-          (existing) => {
+          group.items.map((item) => item.event.eventId),
+          receivedAt,
+          (existing, alreadyIngested) => {
             let state = existing;
-            const seen = collectKnownEventIds(existing);
+            const seen = new Set(alreadyIngested);
+            const newlyIngestedEventIds: string[] = [];
             const outcomes: { index: number; result: IngestResult }[] = [];
 
             for (const { index, event } of group.items) {
@@ -428,11 +394,12 @@ export class TelemetryService {
                 continue;
               }
               seen.add(event.eventId);
+              newlyIngestedEventIds.push(event.eventId);
               state = mergeEvent(state, toMergeEvent(event, receivedAt));
               outcomes.push({ index, result: { eventId: event.eventId, status: 'ACCEPTED' } });
             }
 
-            return { state, value: outcomes };
+            return { state, newlyIngestedEventIds, value: outcomes };
           },
         );
       } catch (error) {

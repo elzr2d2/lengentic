@@ -47,6 +47,65 @@ function fakePrismaService(): {
   return { prisma, run, step };
 }
 
+interface IngestedEventFindManyArgs {
+  readonly where: { readonly runId: string; readonly eventId: { readonly in: string[] } };
+  readonly select: { readonly eventId: true };
+}
+
+interface IngestedEventCreateManyArgs {
+  readonly data: ReadonlyArray<{ eventId: string; runId: string; receivedAt: Date }>;
+  readonly skipDuplicates: true;
+}
+
+/**
+ * `withEntityLock`'s own seam: `$transaction` here just invokes its callback synchronously
+ * with a `tx` object built from the SAME `run`/`step`/`ingestedEvent` doubles the top-level
+ * client exposes (real Prisma scopes a transaction client separately; that distinction does
+ * not matter to anything this file asserts — `telemetry.repository.ts`'s header comment
+ * already says the real lock/transaction semantics are `test/*.integration.spec.ts`'s job).
+ * `$executeRaw` is a no-op stub — the advisory lock's SQL text is not this seam's concern
+ * either.
+ */
+function fakeTransactionalPrismaService(
+  options: {
+    existingRun?: unknown;
+    alreadyIngestedRows?: ReadonlyArray<{ eventId: string }>;
+  } = {},
+): {
+  prisma: PrismaService;
+  run: { findUnique: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
+  ingestedEvent: {
+    findMany: ReturnType<typeof vi.fn<(args: IngestedEventFindManyArgs) => Promise<unknown[]>>>;
+    createMany: ReturnType<typeof vi.fn<(args: IngestedEventCreateManyArgs) => Promise<unknown>>>;
+  };
+} {
+  const run = {
+    findUnique: vi.fn(() => Promise.resolve(options.existingRun ?? null)),
+    upsert: vi.fn(() => Promise.resolve()),
+  };
+  const step = {
+    findUnique: vi.fn(() => Promise.resolve(null)),
+    upsert: vi.fn(() => Promise.resolve()),
+  };
+  const ingestedEvent = {
+    findMany: vi.fn<(args: IngestedEventFindManyArgs) => Promise<unknown[]>>(() =>
+      Promise.resolve([...(options.alreadyIngestedRows ?? [])]),
+    ),
+    createMany: vi.fn<(args: IngestedEventCreateManyArgs) => Promise<unknown>>(() =>
+      Promise.resolve({ count: 0 }),
+    ),
+  };
+  const tx = { run, step, ingestedEvent, $executeRaw: vi.fn(() => Promise.resolve()) };
+  const client = {
+    run,
+    step,
+    ingestedEvent,
+    $transaction: vi.fn((callback: (tx: unknown) => Promise<unknown>) => callback(tx)),
+  };
+  const prisma = { client } as unknown as PrismaService;
+  return { prisma, run, ingestedEvent };
+}
+
 function baseState(overrides: Partial<EntityMergeState> = {}): EntityMergeState {
   return {
     entityId: 'run-1',
@@ -226,5 +285,93 @@ describe('TelemetryRepository.saveStep', () => {
     expect(call.create.receivedAt).toBeInstanceOf(Date);
     expect(call.update).not.toHaveProperty('receivedAt');
     expect(call.update).not.toHaveProperty('runId');
+  });
+});
+
+// F3 (ADR 0009, ADR 0005 §1): the ledger plumbing `withEntityLock` adds around the existing
+// load-fold-save round trip. The seam under test is what THIS repository sends to and reads
+// from `client.ingestedEvent` — not the real advisory lock or the real transaction boundary
+// (`test/*.integration.spec.ts`'s job, per this file's header comment).
+describe('TelemetryRepository.withEntityLock — IngestedEvent ledger (F3, ADR 0009)', () => {
+  it("scopes the ledger lookup to this runId and this batch's eventIds", async () => {
+    const { prisma, ingestedEvent } = fakeTransactionalPrismaService();
+    const repository = new TelemetryRepository(prisma);
+
+    await repository.withEntityLock(
+      'run',
+      'run-1',
+      'run-1',
+      ['a', 'b'],
+      1_000,
+      (existing, seen) => ({
+        state: undefined,
+        newlyIngestedEventIds: [],
+        value: { existing, seen },
+      }),
+    );
+
+    expect(ingestedEvent.findMany).toHaveBeenCalledTimes(1);
+    const call = ingestedEvent.findMany.mock.calls[0]![0];
+    expect(call.where).toEqual({ runId: 'run-1', eventId: { in: ['a', 'b'] } });
+  });
+
+  it('passes fold exactly the eventIds the ledger already has recorded, as a Set', async () => {
+    const { prisma } = fakeTransactionalPrismaService({
+      alreadyIngestedRows: [{ eventId: 'a' }],
+    });
+    const repository = new TelemetryRepository(prisma);
+
+    const seenSets: ReadonlySet<string>[] = [];
+    await repository.withEntityLock(
+      'run',
+      'run-1',
+      'run-1',
+      ['a', 'b'],
+      1_000,
+      (_existing, seen) => {
+        seenSets.push(seen);
+        return { state: undefined, newlyIngestedEventIds: [], value: undefined };
+      },
+    );
+
+    expect(seenSets).toHaveLength(1);
+    expect(seenSets[0]).toEqual(new Set(['a']));
+  });
+
+  it('records every eventId fold reports as newly ingested, winners and losers of the merge alike', async () => {
+    const { prisma, ingestedEvent } = fakeTransactionalPrismaService();
+    const repository = new TelemetryRepository(prisma);
+
+    await repository.withEntityLock('run', 'run-1', 'run-1', ['winner', 'loser'], 5_000, () => ({
+      state: baseState(),
+      // Both accepted this fold, regardless of which one the merge itself preferred —
+      // exactly the F3 gap: the OLD code derived this list from entity-state provenance
+      // (winners only), this repository is handed the list directly instead.
+      newlyIngestedEventIds: ['winner', 'loser'],
+      value: undefined,
+    }));
+
+    expect(ingestedEvent.createMany).toHaveBeenCalledTimes(1);
+    const call = ingestedEvent.createMany.mock.calls[0]![0];
+    expect(call.skipDuplicates).toBe(true);
+    expect(call.data).toEqual([
+      { eventId: 'winner', runId: 'run-1', receivedAt: new Date(5_000) },
+      { eventId: 'loser', runId: 'run-1', receivedAt: new Date(5_000) },
+    ]);
+  });
+
+  it('does not call createMany when every event in the group was a duplicate', async () => {
+    const { prisma, ingestedEvent } = fakeTransactionalPrismaService({
+      alreadyIngestedRows: [{ eventId: 'a' }],
+    });
+    const repository = new TelemetryRepository(prisma);
+
+    await repository.withEntityLock('run', 'run-1', 'run-1', ['a'], 1_000, () => ({
+      state: undefined,
+      newlyIngestedEventIds: [],
+      value: undefined,
+    }));
+
+    expect(ingestedEvent.createMany).not.toHaveBeenCalled();
   });
 });
