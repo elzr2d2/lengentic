@@ -1549,3 +1549,89 @@ says orphans must be surfaced, not silently mis-attributed — the current behav
 telemetry under a run that may never exist, which poisons aggregation quietly. Fix wants a
 deliberate orphan policy (store-and-flag, or per-event result naming the orphan state),
 never a widened merge.
+
+## Provided as Engineering Standards §13 — Future Backlog (2026-08-20)
+
+Five future capabilities handed to the session as a standards section, verbatim in
+`.artifacts/standards/2026-08-20-future-backlog-13.md`. All five are **out of scope now**;
+none may be prepared for with speculative abstractions. The section's own §13.6 entry format
+and §13.7 Watchdog boundary are process rules, not backlog items — they already match this
+file's entry shape and the `update-backlog` skill, and are not duplicated as entries.
+
+Every one of these is an "instrument first, learn later" item, so each trigger below names a
+run count. The counts are first-pass numbers chosen here, not given by the source section;
+move them deliberately rather than letting them drift.
+
+### Architecture Intelligence View (agent architecture heatmap)
+
+**Source:** Engineering Standards §13.1, provided 2026-08-20 (Architect + Product/UI).
+**Trigger:** after Phase 5b ships and >= 30 real runs with per-step telemetry are in the
+store — earlier, every cell of the heatmap would be one sample.
+
+Overlay the module/dependency graph with agent execution telemetry and engineering
+violations: fan-out, circularity, co-change, token/context cost per module, repair-loop
+frequency, failed gates, mutation survivors, failure hotspots. Goal is to find modules that
+are expensive or unsafe for an agent to change. Deferred because the graph exists
+(`dependency-cruiser`, `scripts/oracle/graph.json`) but the run telemetry to overlay does
+not yet. Already ruled out: reading high token usage alone as bad architecture, and
+presenting any correlation here as causation.
+
+### Agentic Maintainability Score
+
+**Source:** Engineering Standards §13.2, provided 2026-08-20 (Reflector + Analysis Engine).
+**Trigger:** not before the §13.1 view exposes raw per-module evidence, and not before
+
+> = 50 runs spanning at least two model/workflow versions.
+
+A repository/module-level signal for how hard it is for an agent to change something safely.
+Candidate inputs: Context Surface Ratio (files/modules read divided by files/modules
+changed), repair iterations, repeated context reconstruction, gate failure rate, regression
+rate, tokens and time per successful change. Deferred because a composite score invented
+before the data is an arbitrary static formula that then looks authoritative. Already ruled
+out: shipping the score before the raw evidence, and any formula that cannot separate task
+complexity from architecture complexity or account for model/workflow version differences.
+
+### Delayed decision outcome attribution
+
+**Source:** Engineering Standards §13.3, provided 2026-08-20 (Decision Intelligence +
+Reflector). **Trigger:** once `docs/decisions/` holds >= 10 ADRs whose affected scope is
+machine-readable and >= 20 runs post-date the oldest of them.
+
+Connect an engineering/architecture decision to outcomes observed in later runs — e.g. an
+adapter boundary followed by lower context per task and fewer repair loops, or a shared
+mutable store followed by more race failures and retries. Makes strategic decisions
+measurable over time instead of only recorded. Any future record must retain decision ID,
+timestamp/version, affected scope, rationale, expected outcome, observed metrics,
+confidence/limitations, and known confounders. Already ruled out: claiming causal impact
+from a simple before/after comparison. This is the engineering-side twin of the product's
+counterfactual problem — LenGentic does not observe counterfactuals here either.
+
+### Learned / adaptive engineering policies
+
+**Source:** Engineering Standards §13.4, provided 2026-08-20 (Decision Intelligence +
+Reflector). **Trigger:** only after attribution (§13.3) exists, and only for a policy class
+with >= 20 observations of the same class.
+
+Use accumulated run evidence to recommend different thresholds or validation policies —
+complexity threshold, mutation-testing scope, gate selection, context-reset threshold,
+fan-out warning, model-specific validation. Both directions are in scope: recommend stronger
+hardening for a class where mutation testing keeps finding real gaps, and recommend
+re-examining a costly gate with near-zero unique findings that other evidence already
+catches. Already ruled out: autonomously weakening security guarantees, correctness
+contracts, data-integrity invariants, or architecture boundaries — every learned policy
+change goes through the existing approval and escalation rules. Related and live today:
+ADR-0002's Detection clause, whose first firing is the open entry above.
+
+### Context lifecycle optimization (CONTINUE / COMPACT / HANDOFF / RESET / SPAWN_FRESH)
+
+**Source:** Engineering Standards §13.5, provided 2026-08-20 (Orchestrator + Reflector).
+**Trigger:** after the dumbzone detector has emitted >= 40 decision points with the outcome
+of each recorded, so a learned rule can be scored against the current heuristic.
+
+Learn when an agent should continue, compact, hand off, reset, or spawn fresh, from context
+size, task transition, repeated reads, repeated failed edits, repair-loop count,
+contradictory decisions, tokens since the last successful checkpoint, and context
+reconstruction cost. Goal is to minimize context degradation and needless fresh-agent
+startup at the same time. The dumbzone detector and the `session-handoff` skill are today's
+hand-written heuristic and are enough for now. Already ruled out: shipping a new heuristic
+and calling it learned behavior without the runs to back it.
