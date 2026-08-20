@@ -1732,3 +1732,39 @@ by name, `docs/decisions/0010`), and leaving the comment standing while it is un
 
 Closes when `code` is a closed union and a test asserts an undeclared code fails
 `IngestResponseSchema.parse`.
+
+### Survive an unhandled rejection from the driver: the API process must not exit on a killed connection
+
+**Source:** F-4 of the `p2.ingest-endpoint` human-directed repair Tester report,
+`.artifacts/evidence/2/tester-human-repair/README.md:188` (raw:
+`raw/killconn-C.txt`, `raw/api-crash-killA/B/C.log`). Deferred by human decision 2026-08-20
+under `CLAUDE.md` trigger 3. **Trigger:** the packet that owns API bootstrap/lifecycle
+(`platform/api/src/main.ts` and the Nest bootstrap surface), or any hardening pass on
+process resilience.
+
+Hold the advisory lock for an entity externally, POST for that entity so the request blocks
+inside its interactive transaction, wait past Prisma's 5000 ms transaction timeout, then
+`pg_terminate_backend` the API's blocked backend. The request returns `500` with
+`resultsField=ABSENT` — and then the whole API process exits. Reproduction 3/3 whenever the
+kill lands after 5000 ms. The rejection is `Error: Connection terminated unexpectedly`,
+raised by Prisma's transaction-timeout timer attempting a `ROLLBACK` on the dead connection
+(`@prisma/client@7.9.1` → `@prisma/adapter-pg@7.9.1` → `pg@8.23.0`); it is never attached to
+the request promise chain, so Node exits on it.
+
+Two things are wrong and only the first is ours. **(a)** No process-level
+`unhandledRejection` guard exists, so any library rejection outside a request chain is fatal.
+**(b)** The 500 should arguably be a 503 — but that is moot while the process is dead.
+
+Deferred because the crash originates inside `@prisma/client`'s own timer and not in
+`platform/api/src/telemetry/**`, which is the only surface `p2.ingest-endpoint` owns. Fixing
+it there would mean widening the lane to API bootstrap on a packet that has already failed
+twice, and the guard belongs to the process, not to one endpoint.
+
+Note `docs/decisions/0010`'s four-case table is written as exhaustive over _responses_, and
+this is a fifth condition that produces no response at all. That record was not amended: the
+human ruled the case out of its frame rather than into it. Whoever closes this should decide
+whether ADR 0010 gains a row or a neighbour record is written.
+
+Closes when a `pg_terminate_backend` during an in-flight transaction leaves the API process
+alive and serving, proven by a live-Postgres test that re-runs `raw/killconn2.mjs`'s recipe
+and then asserts `GET /health` still answers.
