@@ -1,0 +1,424 @@
+import type {
+  TelemetryEventEnvelope,
+  TelemetryEventOf,
+  TelemetryEventType,
+} from '@lengentic/shared';
+
+import { BoundedQueue } from './bounded-queue';
+import { resolveConfig, type ResolvedTelemetryConfig, type TelemetryConfig } from './config';
+import {
+  describeError,
+  type TelemetryDiagnostic,
+  type TelemetryDiagnosticCode,
+} from './diagnostics';
+import { buildEnvelope, checkEnvelope } from './events';
+import { createRun, type EventRecorder, type RunHandle, type StartRunInput } from './handles';
+import { newId } from './ids';
+import type { CancelTimer } from './scheduler';
+import type { TransportResult } from './transport';
+
+/** Everything the SDK did instead of throwing. §16 requires at least the dropped counter. */
+export interface TelemetryStats {
+  /** Events waiting in the bounded buffer right now. */
+  readonly queued: number;
+  /** Events that passed the wire contract and entered the buffer. */
+  readonly recorded: number;
+  /** Events the transport confirmed it delivered. */
+  readonly delivered: number;
+  /** Oldest events discarded because the buffer was full. */
+  readonly droppedOverflow: number;
+  /** Events that failed the wire contract or could not be serialized. */
+  readonly droppedInvalid: number;
+  /** Events over §12's per-event byte cap. */
+  readonly droppedTooLarge: number;
+  /** Events recorded after shutdown(). */
+  readonly droppedAfterShutdown: number;
+  /** Events in batches given up on after the bounded retry budget ran out. */
+  readonly droppedUndeliverable: number;
+  /** Individual failed delivery attempts, retries included. */
+  readonly deliveryFailures: number;
+}
+
+export interface TelemetryClient {
+  startRun(input: StartRunInput): RunHandle;
+  /** Drains what is queued now. Never rejects. */
+  flush(): Promise<void>;
+  /** §16 "Flushable": drains the queue, then stops. Idempotent, bounded, never rejects. */
+  shutdown(): Promise<void>;
+  stats(): TelemetryStats;
+}
+
+class Client implements TelemetryClient, EventRecorder {
+  private readonly config: ResolvedTelemetryConfig;
+
+  private readonly queue: BoundedQueue<TelemetryEventEnvelope>;
+
+  private readonly wakeups = new Set<() => void>();
+
+  private flushTimer: CancelTimer | null = null;
+
+  private pumping: Promise<void> | null = null;
+
+  private shutdownRun: Promise<void> | null = null;
+
+  /** Stops accepting new events. Set by shutdown() before the drain starts. */
+  private closed = false;
+
+  /** Stops draining. Set only when shutdown() hit its bound with work still pending. */
+  private abandoned = false;
+
+  /**
+   * True between the start and the end of shutdown(). Timers scheduled while it is true
+   * hold the process open, so an awaited drain in a short-lived script actually completes
+   * (§16) rather than being cut short by a runtime that sees nothing left to wait for.
+   */
+  private draining = false;
+
+  private inFlight: AbortController | null = null;
+
+  private readonly counters = {
+    recorded: 0,
+    delivered: 0,
+    droppedInvalid: 0,
+    droppedTooLarge: 0,
+    droppedAfterShutdown: 0,
+    droppedUndeliverable: 0,
+    deliveryFailures: 0,
+  };
+
+  constructor(config: TelemetryConfig) {
+    // The one throw in the SDK, and it happens before any event can exist (§16).
+    this.config = resolveConfig(config);
+    this.queue = new BoundedQueue<TelemetryEventEnvelope>(this.config.maxQueueSize);
+  }
+
+  startRun(input: StartRunInput): RunHandle {
+    return createRun(this, input);
+  }
+
+  nextId(): string {
+    return newId();
+  }
+
+  noteIgnoredCompletion(entityId: string): void {
+    this.emit('completion_ignored', `complete() called more than once for ${entityId}`, 0, 0);
+  }
+
+  record<K extends TelemetryEventType>(
+    type: K,
+    entityId: string,
+    runId: string,
+    payload: TelemetryEventOf<K>['payload'],
+  ): void {
+    try {
+      this.enqueue(type, entityId, runId, payload);
+    } catch (error) {
+      // §16: "The record methods must not throw because of circular data, redaction
+      // failure, serialization failure, transport failure, or buffer overflow." Each of
+      // those has its own handled path below; this catch is the backstop that makes the
+      // guarantee unconditional, including for an injected clock or sink that misbehaves.
+      this.counters.droppedInvalid += 1;
+      this.emit('event_invalid', `record failed: ${describeError(error)}`, 1, 0);
+    }
+  }
+
+  async flush(): Promise<void> {
+    await this.requestPump();
+    // A second pass picks up anything recorded while the first was in flight. Bounded at
+    // two on purpose: a caller emitting faster than the transport drains must not be able
+    // to make flush() run forever.
+    if (this.queue.size > 0 && !this.abandoned) await this.requestPump();
+  }
+
+  shutdown(): Promise<void> {
+    this.shutdownRun ??= this.performShutdown();
+    return this.shutdownRun;
+  }
+
+  stats(): TelemetryStats {
+    return {
+      queued: this.queue.size,
+      recorded: this.counters.recorded,
+      delivered: this.counters.delivered,
+      droppedOverflow: this.queue.dropped,
+      droppedInvalid: this.counters.droppedInvalid,
+      droppedTooLarge: this.counters.droppedTooLarge,
+      droppedAfterShutdown: this.counters.droppedAfterShutdown,
+      droppedUndeliverable: this.counters.droppedUndeliverable,
+      deliveryFailures: this.counters.deliveryFailures,
+    };
+  }
+
+  private enqueue<K extends TelemetryEventType>(
+    type: K,
+    entityId: string,
+    runId: string,
+    payload: TelemetryEventOf<K>['payload'],
+  ): void {
+    if (this.closed) {
+      this.counters.droppedAfterShutdown += 1;
+      this.emit('client_closed', `${type} recorded after shutdown(); dropped`, 1, 0);
+      return;
+    }
+
+    const envelope = buildEnvelope({
+      eventId: newId(),
+      type,
+      entityId,
+      runId,
+      occurredAt: this.config.clock.now(),
+      payload,
+    });
+
+    const check = checkEnvelope(envelope);
+    if (!check.ok) {
+      if (check.code === 'event_too_large') this.counters.droppedTooLarge += 1;
+      else this.counters.droppedInvalid += 1;
+      this.emit(check.code, check.reason, 1, 0);
+      return;
+    }
+
+    const dropped = this.queue.push(envelope);
+    this.counters.recorded += 1;
+    if (dropped > 0) {
+      this.emit(
+        'queue_overflow',
+        `buffer full at ${this.config.maxQueueSize}; dropped ${dropped} oldest event(s)`,
+        dropped,
+        0,
+      );
+    }
+    this.scheduleWork();
+  }
+
+  /** §16: flush on interval or on buffer size, whichever comes first. */
+  private scheduleWork(): void {
+    if (this.queue.size >= this.config.maxBatchSize) {
+      this.cancelFlushTimer();
+      void this.requestPump();
+      return;
+    }
+    this.armFlushTimer();
+  }
+
+  private armFlushTimer(): void {
+    if (this.flushTimer !== null || this.closed) return;
+    this.flushTimer = this.schedule(() => {
+      this.flushTimer = null;
+      void this.requestPump();
+    }, this.config.flushIntervalMs);
+  }
+
+  private cancelFlushTimer(): void {
+    if (this.flushTimer === null) return;
+    this.flushTimer();
+    this.flushTimer = null;
+  }
+
+  /** Single-flight: the transport is never called concurrently. */
+  private requestPump(): Promise<void> {
+    this.pumping ??= this.pump().finally(() => {
+      this.pumping = null;
+    });
+    return this.pumping;
+  }
+
+  private async pump(): Promise<void> {
+    while (this.queue.size > 0 && !this.abandoned) {
+      await this.deliverBatch(this.queue.take(this.config.maxBatchSize));
+    }
+  }
+
+  private async deliverBatch(batch: TelemetryEventEnvelope[]): Promise<void> {
+    const maxAttempts = this.config.maxRetries + 1;
+    let attempt = 0;
+
+    // `!this.abandoned` at the TOP, not only after the attempt: once shutdown() has given
+    // up, waking the pending backoff must end the batch, never start one more request. The
+    // trailing check below cannot cover this — it runs after an attempt has already gone out.
+    while (attempt < maxAttempts && !this.abandoned) {
+      attempt += 1;
+      const result = await this.attemptDelivery(batch);
+      if (result.outcome === 'delivered') {
+        this.counters.delivered += batch.length;
+        return;
+      }
+      this.counters.deliveryFailures += 1;
+      this.emit(
+        'delivery_failed',
+        `attempt ${attempt} of ${maxAttempts} failed: ${result.detail}`,
+        batch.length,
+        attempt,
+      );
+      // `attempt === maxAttempts` looks redundant against the loop condition and is not:
+      // without it the last failed attempt would still sit out a backoff nobody will use.
+      if (result.outcome === 'permanent' || attempt === maxAttempts || this.abandoned) break;
+      await this.delay(this.backoffFor(attempt));
+    }
+
+    // §16 requires the retry budget to be FINITE. This is where finite stops being a
+    // configuration value and becomes an observable event: the batch is lost, and counted.
+    this.counters.droppedUndeliverable += batch.length;
+    this.emit(
+      'batch_dropped',
+      `gave up on ${batch.length} event(s) after ${attempt} attempt(s)`,
+      batch.length,
+      attempt,
+    );
+  }
+
+  private async attemptDelivery(batch: TelemetryEventEnvelope[]): Promise<TransportResult> {
+    const controller = new AbortController();
+    this.inFlight = controller;
+    try {
+      return await this.raceTimeout(this.invokeTransport(batch, controller.signal), controller);
+    } finally {
+      if (this.inFlight === controller) this.inFlight = null;
+    }
+  }
+
+  /**
+   * ASYNC-4. The signal is a request; this race is the guarantee. A transport that ignores
+   * cancellation and never settles still cannot hold the caller — the timer resolves the
+   * attempt without it, and the abandoned promise cannot reject because `invokeTransport`
+   * never rejects.
+   */
+  private raceTimeout(
+    work: Promise<TransportResult>,
+    controller: AbortController,
+  ): Promise<TransportResult> {
+    return new Promise<TransportResult>((settle) => {
+      let cancel: CancelTimer = () => undefined;
+      let done = false;
+
+      const finish = (result: TransportResult): void => {
+        if (done) return;
+        done = true;
+        cancel();
+        this.wakeups.delete(abandon);
+        settle(result);
+      };
+
+      // shutdown() giving up must not leave a live timer, or an attempt promise nothing
+      // will ever settle, behind it.
+      const abandon = (): void => {
+        controller.abort();
+        finish({ outcome: 'retryable', detail: 'attempt abandoned at shutdown' });
+      };
+
+      cancel = this.schedule(() => {
+        controller.abort();
+        finish({
+          outcome: 'retryable',
+          detail: `attempt timed out after ${this.config.requestTimeoutMs}ms`,
+        });
+      }, this.config.requestTimeoutMs);
+      this.wakeups.add(abandon);
+
+      void work.then(finish);
+    });
+  }
+
+  private async invokeTransport(
+    batch: TelemetryEventEnvelope[],
+    signal: AbortSignal,
+  ): Promise<TransportResult> {
+    try {
+      return await this.config.transport.send(batch, { signal });
+    } catch (error) {
+      // Covers a custom transport that throws synchronously as well as one that rejects.
+      return { outcome: 'retryable', detail: `transport threw: ${describeError(error)}` };
+    }
+  }
+
+  private backoffFor(attempt: number): number {
+    return Math.min(this.config.maxBackoffMs, this.config.initialBackoffMs * 2 ** (attempt - 1));
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise<void>((done) => {
+      let cancel: CancelTimer = () => undefined;
+      const wake = (): void => {
+        cancel();
+        this.wakeups.delete(wake);
+        done();
+      };
+      cancel = this.schedule(wake, ms);
+      this.wakeups.add(wake);
+    });
+  }
+
+  /** Resolves every outstanding backoff immediately so shutdown does not wait one out. */
+  private abandonWaits(): void {
+    for (const wake of [...this.wakeups]) wake();
+  }
+
+  private async performShutdown(): Promise<void> {
+    this.closed = true;
+    this.draining = true;
+    this.cancelFlushTimer();
+
+    const deadline = this.deadline(this.config.shutdownTimeoutMs);
+    const drained = await Promise.race([
+      this.flush().then(
+        () => true,
+        (error: unknown) => {
+          this.emit('batch_dropped', `flush failed: ${describeError(error)}`, this.queue.size, 0);
+          return true;
+        },
+      ),
+      deadline.promise.then(() => false),
+    ]);
+    deadline.cancel();
+
+    if (!drained) {
+      this.abandoned = true;
+      this.inFlight?.abort();
+      this.abandonWaits();
+      this.emit(
+        'shutdown_timeout',
+        `shutdown gave up after ${this.config.shutdownTimeoutMs}ms with ${this.queue.size} event(s) still queued`,
+        this.queue.size,
+        0,
+      );
+    }
+
+    // Whatever the outcome, the SDK stops holding the process from here on.
+    this.draining = false;
+  }
+
+  private deadline(ms: number): { promise: Promise<void>; cancel: CancelTimer } {
+    let cancel: CancelTimer = () => undefined;
+    const promise = new Promise<void>((done) => {
+      cancel = this.schedule(done, ms);
+    });
+    return { promise, cancel: () => cancel() };
+  }
+
+  private schedule(callback: () => void, delayMs: number): CancelTimer {
+    return this.config.scheduler.schedule(callback, delayMs, {
+      keepProcessAlive: this.draining,
+    });
+  }
+
+  private emit(
+    code: TelemetryDiagnosticCode,
+    message: string,
+    eventCount: number,
+    attempt: number,
+  ): void {
+    const diagnostic: TelemetryDiagnostic = { code, message, eventCount, attempt };
+    try {
+      this.config.onDiagnostic(diagnostic);
+    } catch {
+      // Deliberately terminal, and the one place ERR-1 is answered by design rather than by
+      // a log: the sink IS the reporting channel. Re-entering a sink that just threw would
+      // either recurse or throw into host code, and §16 forbids the second absolutely. The
+      // failure is still visible to the host — it happened in the host's own callback.
+    }
+  }
+}
+
+export function createTelemetryClient(config: TelemetryConfig): TelemetryClient {
+  return new Client(config);
+}
