@@ -368,13 +368,29 @@ describe('TelemetryService.ingest — year-0000 occurredAt is an event-level rej
 });
 
 describe('TelemetryService.ingest — a persistence failure aborts the whole response, never an event-level REJECTED (T1/T3/T4)', () => {
-  function fakePrismaError(name: string, code?: string): Error {
+  function fakePrismaError(name: string, code?: string, meta?: unknown): Error {
     const error = new Error(`fake ${name} for classification testing`);
     error.name = name;
     if (code !== undefined) {
       (error as unknown as { code: string }).code = code;
     }
+    if (meta !== undefined) {
+      (error as unknown as { meta: unknown }).meta = meta;
+    }
     return error;
+  }
+
+  /**
+   * Reproduces the REAL shape Prisma's Postgres driver adapter attaches to a raw-query
+   * (P2010) error, verified live via `platform/api/p2010-probe.mts` (throwaway, not
+   * committed) against two real Postgres failures on the SAME code path
+   * `TelemetryRepository.lockEntity`'s `$executeRaw` uses —
+   * `.artifacts/evidence/2/builder-repair-3/p2010-sqlstate-probe.txt`.
+   */
+  function fakeP2010(sqlState: string): Error {
+    return fakePrismaError('PrismaClientKnownRequestError', 'P2010', {
+      driverAdapterError: { name: 'DriverAdapterError', cause: { originalCode: sqlState } },
+    });
   }
 
   it('a known-dependency-unavailable Prisma error (table missing, P2021) throws ServiceUnavailableException (503)', async () => {
@@ -404,10 +420,30 @@ describe('TelemetryService.ingest — a persistence failure aborts the whole res
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
-  it("an unclassified Prisma error (e.g. P2010, this service's own bad query) throws InternalServerErrorException (500)", async () => {
-    const failFor = new Map<string, unknown>([
-      ['run:bug-run', fakePrismaError('PrismaClientKnownRequestError', 'P2010')],
+  // Coordinator finding on the FIRST version of F-5 (2026-08-20, repair attempt 3 round 2):
+  // P2010 is Prisma's GENERIC raw-query error — it fires for a statement cancelled under
+  // load (transient, retryable) and for a query this service's own code got wrong
+  // (permanent defect) alike. Moving P2010 wholesale into the dependency-unavailable set
+  // (round 1 of this fix) recreated F-6's non-convergent-retry shape for a different
+  // input: a permanently-broken query classified 503 tells a conforming SDK to retry
+  // forever. Discriminate on the Postgres SQLSTATE the error actually carries instead.
+  it('P2010 whose SQLSTATE is 57014 (statement cancelled under load — the canonical retryable-dependency signal) throws ServiceUnavailableException (503)', async () => {
+    const failFor = new Map<string, unknown>([['run:cancelled-run', fakeP2010('57014')]]);
+    const { repository } = fakeRepository({ failFor });
+    const service = new TelemetryService(repository);
+
+    const promise = service.ingest([
+      runStartedEvent({ entityId: 'cancelled-run', runId: 'cancelled-run' }),
     ]);
+
+    await expect(promise).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await promise.catch((error: HttpException) => {
+      expect(error.getStatus()).toBe(503);
+    });
+  });
+
+  it('P2010 whose SQLSTATE is 42703 (undefined_column — a genuine query defect, not a dependency condition) throws InternalServerErrorException (500), never 503', async () => {
+    const failFor = new Map<string, unknown>([['run:bug-run', fakeP2010('42703')]]);
     const { repository } = fakeRepository({ failFor });
     const service = new TelemetryService(repository);
 
@@ -417,6 +453,18 @@ describe('TelemetryService.ingest — a persistence failure aborts the whole res
     await promise.catch((error: HttpException) => {
       expect(error.getStatus()).toBe(500);
     });
+  });
+
+  it('P2010 with no SQLSTATE reachable on the error object falls through to InternalServerErrorException (500), the conservative default — never guesses 503', async () => {
+    const failFor = new Map<string, unknown>([
+      ['run:no-meta-run', fakePrismaError('PrismaClientKnownRequestError', 'P2010')],
+    ]);
+    const { repository } = fakeRepository({ failFor });
+    const service = new TelemetryService(repository);
+
+    await expect(
+      service.ingest([runStartedEvent({ entityId: 'no-meta-run', runId: 'no-meta-run' })]),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
   });
 
   it('a plain, non-Prisma error (e.g. a RangeError from inside the fold) also throws InternalServerErrorException (500)', async () => {

@@ -19,7 +19,12 @@ import {
 import { entityKindOf, toMergeEvent, type EntityKind } from './event-mapping';
 import { mergeEvent, type EntityMergeState } from './merge-rules';
 import { TelemetryRepository } from './telemetry.repository';
-import { containsUnsafeUnicode, isPostgresUnrepresentableTimestamp } from './wire-sanitize';
+import {
+  containsUnsafeUnicode,
+  exceedsMaxStructuralDepth,
+  isPostgresUnrepresentableTimestamp,
+  MAX_STRUCTURAL_DEPTH,
+} from './wire-sanitize';
 
 interface BatchItem {
   readonly index: number;
@@ -114,20 +119,46 @@ function collectKnownEventIds(state: EntityMergeState | undefined): Set<string> 
 // every Prisma error exposes on the `Error` shape all JS errors already have.
 //
 // Confirmed live, 2026-08-20, against this project's own Postgres instance (a throwaway
-// database, migrated and torn down for the probe — `.artifacts/evidence/2/human-repair/`):
+// database, migrated and torn down for the probe — `.artifacts/evidence/2/human-repair/`,
+// `.artifacts/evidence/2/tester-human-repair/`, `.artifacts/evidence/2/builder-repair-3/`):
 //   - Run table renamed away (T4's own fixture)  -> PrismaClientKnownRequestError code P2021
 //   - connection refused (bad port)              -> PrismaClientKnownRequestError code ECONNREFUSED
 //   - interactive-transaction timeout (T1's lock-contention fixture, past Prisma's own
 //     5000ms transaction timeout) -> PrismaClientKnownRequestError code P2028
-//   - a query this service's own code got wrong (unknown column, via $queryRawUnsafe)
-//     -> PrismaClientKnownRequestError code P2010 — NOT a dependency-availability signal,
-//     classified 500 by omission below.
 const KNOWN_DEPENDENCY_UNAVAILABLE_CODES = new Set([
   'ECONNREFUSED', // node-postgres's own code, passed through unwrapped by the driver adapter
   'P2021', // table does not exist — the schema this process depends on is not there
   'P2022', // column does not exist — same class as P2021
   'P2024', // timed out fetching a new connection from the pool
   'P2028', // transaction API error (an interactive transaction expired/timed out)
+]);
+
+// F-5 (tester finding, 2026-08-20; corrected by the Coordinator, repair attempt 3 round 2):
+// P2010 is Prisma's GENERIC raw-query error — it fires for a statement cancelled under load
+// (a transient, retryable dependency condition) and for a query this service's own code got
+// wrong (a permanent defect) alike. The code alone cannot tell them apart; the two prior
+// attempts each collapsed it to one branch (500-always, then 503-always) and were both
+// wrong for the input the other branch covers. A permanently-broken query classified 503
+// recreates F-6's shape in a different suit: a conforming SDK would retry a query that can
+// never succeed, forever.
+//
+// Prisma's Postgres driver adapter exposes the ACTUAL Postgres SQLSTATE underneath a P2010,
+// at `error.meta.driverAdapterError.cause.originalCode` — confirmed live via
+// `platform/api/p2010-probe.mts` (throwaway, not committed) against two real Postgres
+// failures on the SAME code path `TelemetryRepository.lockEntity`'s `$executeRaw` uses:
+//   - `SET LOCAL statement_timeout = 300` + an externally-held advisory lock (the tester's
+//     own `raw/statement-timeout.txt` recipe) -> code: P2010,
+//     meta.driverAdapterError.cause.originalCode: "57014" (canceling statement due to
+//     statement timeout — the canonical transient-overload SQLSTATE)
+//   - `$queryRawUnsafe` against a column that does not exist -> code: P2010,
+//     meta.driverAdapterError.cause.originalCode: "42703" (undefined_column — a permanent
+//     query defect, not a dependency condition)
+// Full captures: `.artifacts/evidence/2/builder-repair-3/p2010-sqlstate-probe.txt`.
+const RETRYABLE_RAW_QUERY_SQLSTATES = new Set([
+  '57014', // canceling statement due to statement timeout — the one SQLSTATE this repair
+  // has live evidence for. Any other SQLSTATE under a P2010 falls through to the 500
+  // default below, which is the conservative direction (a caller told 500 still retries
+  // safely; a caller told 503 for a permanent defect retries forever).
 ]);
 
 const PRISMA_ERROR_NAMES = new Set([
@@ -143,6 +174,26 @@ function errorCode(error: Error): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
+/**
+ * The Postgres SQLSTATE underneath a raw-query Prisma error (P2010), read from the driver
+ * adapter's own error shape — `error.meta.driverAdapterError.cause.originalCode`. Every
+ * layer is read defensively (`typeof` narrowed, never cast) because `.meta`'s shape is
+ * Prisma-adapter-internal, not a documented contract this project owns.
+ */
+function rawQuerySqlState(error: Error): string | undefined {
+  const meta: unknown = (error as { meta?: unknown }).meta;
+  if (typeof meta !== 'object' || meta === null) return undefined;
+
+  const driverAdapterError: unknown = (meta as Record<string, unknown>).driverAdapterError;
+  if (typeof driverAdapterError !== 'object' || driverAdapterError === null) return undefined;
+
+  const cause: unknown = (driverAdapterError as Record<string, unknown>).cause;
+  if (typeof cause !== 'object' || cause === null) return undefined;
+
+  const originalCode: unknown = (cause as Record<string, unknown>).originalCode;
+  return typeof originalCode === 'string' ? originalCode : undefined;
+}
+
 function isKnownDependencyUnavailable(error: unknown): boolean {
   if (!(error instanceof Error) || !PRISMA_ERROR_NAMES.has(error.name)) return false;
 
@@ -151,9 +202,16 @@ function isKnownDependencyUnavailable(error: unknown): boolean {
   if (error.name !== 'PrismaClientKnownRequestError') return true;
 
   const code = errorCode(error);
-  return (
-    code !== undefined && (KNOWN_DEPENDENCY_UNAVAILABLE_CODES.has(code) || /^P10\d\d$/.test(code))
-  );
+  if (code === undefined) return false;
+
+  // P2010 is ambiguous by code alone (see the block comment above) — discriminate on the
+  // SQLSTATE it actually carries instead of trusting the Prisma code.
+  if (code === 'P2010') {
+    const sqlState = rawQuerySqlState(error);
+    return sqlState !== undefined && RETRYABLE_RAW_QUERY_SQLSTATES.has(sqlState);
+  }
+
+  return KNOWN_DEPENDENCY_UNAVAILABLE_CODES.has(code) || /^P10\d\d$/.test(code);
 }
 
 /**
@@ -182,15 +240,19 @@ export class TelemetryService {
   /**
    * POST /v1/telemetry/events. §12's whole per-event contract in one pass:
    *
-   * 1. Event-level rejection (size, then schema, then wire-safety) never fails the batch —
-   *    every raw event gets exactly one `IngestResult`, regardless of what happens to its
-   *    neighbours. The whole per-event stage (including the wire-safety checks below) runs
-   *    inside a per-event `try`/`catch` (tester finding T5, 2026-08-20): `containsUnsafeUnicode`
-   *    recurses over arbitrarily-deep, Zod-legal `metadata` (`MetadataSchema` is
-   *    `z.record(z.string(), z.unknown())` and never bounds nesting) and can overflow V8's
-   *    call stack at a depth that is not a stable threshold. A `RangeError` there rejects
-   *    only THAT event — it must never escape as an uncaught request-level 500 that loses
-   *    every other event's result too.
+   * 1. Event-level rejection (size, then schema, then structural depth, then wire-safety,
+   *    then timestamp representability) never fails the batch — every raw event gets
+   *    exactly one `IngestResult`, regardless of what happens to its neighbours. The whole
+   *    per-event stage runs inside a per-event `try`/`catch` as a backstop, but the
+   *    structural-depth check (tester findings F-1/F-3/F-6, 2026-08-20, repair attempt 3;
+   *    formerly T5) is what actually closes the hazard rather than merely catching it:
+   *    `metadata` (`MetadataSchema` is `z.record(z.string(), z.unknown())`) never has its
+   *    nesting bounded by Zod, and a sufficiently deep one can overflow V8's call stack in
+   *    `containsUnsafeUnicode` below OR, past this per-event stage, in `structuredClone`
+   *    inside `mergeEvent` — two DIFFERENT, unstable thresholds (see `wire-sanitize.ts`),
+   *    the second of which throws INSIDE the entity fold, past where this `try`/`catch` can
+   *    turn it into a per-event verdict. `exceedsMaxStructuralDepth` rejects event-level,
+   *    before either walk runs, so neither threshold is ever reached from a normal request.
    * 2. Accepted events are grouped by entity (`kind:entityId`).
    * 3. Each group is folded and saved as ONE atomic unit via
    *    `TelemetryRepository.withEntityLock` (F1 fix, tester regression 2026-08-19): the
@@ -253,6 +315,32 @@ export class TelemetryService {
         }
 
         const event = parsed.event;
+
+        // F-1/F-3/F-6 fix (tester findings, 2026-08-20, repair attempt 3): bound how deeply
+        // `event.payload` (in practice, `metadata` — the one field Zod never looks inside)
+        // may nest, event-level, BEFORE either downstream recursive walk
+        // (`containsUnsafeUnicode` just below, or `structuredClone` inside `mergeEvent`,
+        // reached only once this event has been grouped) ever sees it. Both of those walks
+        // can stack-overflow on a sufficiently deep, Zod-legal `metadata` object, at two
+        // DIFFERENT and unstable depths (see `wire-sanitize.ts`) — a poison event between
+        // the two thresholds used to slip past this per-event stage, get grouped, and throw
+        // INSIDE the entity fold: a per-event problem surfacing as a per-request 500 with
+        // zero results, destroying every well-formed sibling in the batch. Bounding it here
+        // closes both thresholds with one check, and does so without risking becoming a
+        // third unstable threshold itself — `exceedsMaxStructuralDepth` is iterative, not
+        // recursive, so it cannot overflow at any input depth.
+        if (exceedsMaxStructuralDepth(event.payload)) {
+          results[index] = {
+            eventId: event.eventId,
+            status: 'REJECTED',
+            error: {
+              code: INGEST_ERROR_CODES.INVALID_PAYLOAD,
+              message: `event payload nests more than ${MAX_STRUCTURAL_DEPTH} levels deep`,
+            },
+          };
+          rejected++;
+          continue;
+        }
 
         // F2 fix (tester regression, 2026-08-19): a U+0000 or lone-surrogate value passes
         // every Zod schema (IdSchema/NameSchema accept both) but Postgres rejects it at the

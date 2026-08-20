@@ -63,14 +63,13 @@ export function containsUnsafeUnicode(value: unknown): boolean {
 }
 
 // ADR 0010 / tester finding T2 (2026-08-20): `occurredAt` is `z.iso.datetime({ offset: true
-// })` — always a syntactically valid ISO 8601 timestamp with a 4-digit year, `0000`-`9999`.
-// Postgres's `timestamptz` accepts every one of those years EXCEPT `0000`: confirmed live
-// against this project's own Postgres instance, `'0000-01-01T00:00:00.000Z'::timestamptz`
-// raises `22008 date/time field value out of range` while `'0001-01-01T00:00:00.000Z'` (and
-// every year up to `9999`, both comfortably inside Postgres's actual range of 4713 BC to
-// 294276 AD) succeeds. Postgres has no year zero — it runs 1 BC straight to 1 AD — so a bare
-// "0000" year, which ISO 8601 permits and Postgres's date/time input does not, is the only
-// value in this schema's entire output domain that can trigger it.
+// })` — always a syntactically valid ISO 8601 timestamp with a 4-digit year, `0000`-`9999`,
+// optionally shifted by an offset. Postgres's `timestamptz` accepts every UTC calendar year
+// EXCEPT `0000` (and below): confirmed live against this project's own Postgres instance,
+// `'0000-01-01T00:00:00.000Z'::timestamptz` raises `22008 date/time field value out of
+// range` while `'0001-01-01T00:00:00.000Z'` (and every year up to `9999`, both comfortably
+// inside Postgres's actual range of 4713 BC to 294276 AD) succeeds. Postgres has no year
+// zero — it runs 1 BC straight to 1 AD.
 //
 // Previously this reached `TelemetryRepository` and threw a raw Postgres error from inside
 // an entity group's transaction — which poisoned the WHOLE group (one row, one final
@@ -80,6 +79,92 @@ export function containsUnsafeUnicode(value: unknown): boolean {
 // group, keeps a genuinely bad `occurredAt` from ever reaching persistence at all — so any
 // well-formed siblings in the same entity group fold and persist normally, exactly like any
 // other event-level rejection (§12: "a malformed event rejects only itself").
+//
+// Repair attempt 3 (tester finding F-3, 2026-08-20): the FIRST fix here compared the
+// literal wire text (`occurredAt.slice(0, 4) === '0000'`), which checks the wrong thing —
+// `TimestampSchema` allows an explicit UTC offset, and the offset shifts the INSTANT
+// Postgres actually stores, not merely how it is spelled. `'0001-01-01T00:00:00.000+05:00'`
+// reads year `0001` in the literal text but names the UTC instant
+// `0000-12-31T19:00:00.000Z` — year `0000` — and Postgres rejected it live with the same
+// SQLSTATE `22008`, while the literal-text guard let it straight through to the entity
+// fold, reproducing the exact group-poisoning defect this function exists to prevent.
+// Conversely a literal `'0000-...'` shifted FORWARD by a negative offset (e.g.
+// `'0000-12-31T20:00:00.000-05:00'`, UTC `0001-01-01T01:00:00.000Z`) is genuinely
+// representable and must not be rejected. The only correct check is on the resulting UTC
+// calendar year, not the wire text: `Date.parse`/`new Date(...)` already normalizes any
+// valid `TimestampSchema` value (parsed the same way `merge-rules.ts`'s
+// `compareOccurredAt` does) to its true instant, so `getUTCFullYear()` on that instant is
+// the property Postgres actually enforces. `<= 0` (not just `=== 0`) covers the same "no
+// year zero, no year before it either" boundary an offset can reach from a `0000` literal.
 export function isPostgresUnrepresentableTimestamp(occurredAt: string): boolean {
-  return occurredAt.slice(0, 4) === '0000';
+  return new Date(occurredAt).getUTCFullYear() <= 0;
+}
+
+// ADR 0010 / tester findings F-1, F-3, F-6 (2026-08-20, repair attempt 3 — the third attempt
+// at this exact defect class, so this fixes the CLASS, not another single input shape).
+//
+// The class: `MetadataSchema` (`platform/shared/schema/primitives.ts`) is
+// `z.record(z.string(), z.unknown())` — Zod validates that `metadata` (and everything else
+// carried in `payload`) is a plain object with string keys, but never bounds how deeply a
+// `z.unknown()` VALUE nests, because it never looks inside one. A sufficiently deep,
+// Zod-legal `metadata` object therefore reaches two independent recursive walks downstream
+// of `parseTelemetryEvent`, each of which can overflow V8's call stack: `containsUnsafeUnicode`
+// above (this same per-event stage) and, if that survives, `structuredClone` inside
+// `merge-rules.ts`'s `mergeEvent` — called only AFTER the event has been grouped, i.e.
+// inside the entity fold, past the point where a per-event `try`/`catch` can turn the throw
+// into a per-event verdict. The two do not overflow at the same depth (`containsUnsafeUnicode`
+// survives to roughly 9000-10000 in this project's own measurements;
+// `structuredClone`-inside-`mergeEvent` throws far lower, around 1500), and NEITHER
+// threshold is stable across processes or stack states (ADR 0010 Detection, T5: "depth is
+// not a stable threshold... 7000 escaped as a single event; 8000 was contained in a batch;
+// >=9000 escaped on every attempt"). The first two repair attempts each caught only the
+// higher of the two thresholds (whichever one their fixture happened to probe), leaving the
+// other reachable — a poison event in the gap slipped past every per-event check, got
+// grouped, and threw INSIDE the fold: a per-event problem surfacing as a per-request 500
+// with zero results, destroying every well-formed sibling in the batch.
+//
+// The fix is to stop relying on catching an overflow after the fact and instead bound the
+// structure BEFORE either recursive walk ever sees it — event-level, like
+// `isPostgresUnrepresentableTimestamp` above, so a well-formed sibling in the same entity
+// group still folds and persists. `MAX_STRUCTURAL_DEPTH` is chosen with a wide safety
+// margin below the LOWEST observed overflow (~1500), not tuned to the observed band — the
+// band itself is stack-size dependent and is not a stable contract to pin a threshold
+// against. The walk below is ITERATIVE (an explicit array as a heap-allocated stack, never
+// native recursion), so unlike `containsUnsafeUnicode` and `structuredClone` it cannot
+// overflow at any input depth — it is safe to run first, on every event, without risking
+// becoming the next version of the same bug.
+export const MAX_STRUCTURAL_DEPTH = 64;
+
+/**
+ * True if `value` nests an object or array inside another more than `maxDepth` levels deep.
+ * A bare leaf (string/number/boolean/null) is depth 0; each object/array level below it
+ * adds one. Iterative (no native recursion) so it is safe to run on arbitrarily deep,
+ * possibly-adversarial input without itself becoming a stack-overflow site.
+ */
+export function exceedsMaxStructuralDepth(
+  value: unknown,
+  maxDepth: number = MAX_STRUCTURAL_DEPTH,
+): boolean {
+  // Breadth-first, level by level: `frontier` holds every node at the CURRENT depth, never
+  // a mix of depths, so there is nothing to destructure off a stack that TypeScript would
+  // (correctly) type as possibly-`undefined`.
+  let frontier: unknown[] = [value];
+  for (let depth = 0; frontier.length > 0; depth++) {
+    if (depth > maxDepth) return true;
+    const next: unknown[] = [];
+    for (const current of frontier) {
+      if (Array.isArray(current)) {
+        // `Array.isArray` narrows `unknown` to `any[]` under this project's lib target, not
+        // `unknown[]` — the explicit annotation keeps the spread below type-safe
+        // (@typescript-eslint/no-unsafe-argument) without weakening what is actually pushed.
+        const items: unknown[] = current;
+        next.push(...items);
+      } else if (current !== null && typeof current === 'object') {
+        const values: unknown[] = Object.values(current);
+        next.push(...values);
+      }
+    }
+    frontier = next;
+  }
+  return false;
 }

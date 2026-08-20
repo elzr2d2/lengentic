@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import type { Server } from 'node:http';
@@ -443,35 +443,83 @@ describe('Telemetry ingestion against a real Postgres (integration)', () => {
       }
     }, 30_000);
 
-    it('a failure INSIDE the fold itself (RangeError: structuredClone overflows on a ~3000-deep metadata object, before any Postgres call) throws — it is never an event-level REJECTED', async () => {
+    // F-7 (tester finding, 2026-08-20, repair attempt 3): the PREVIOUS version of this test
+    // asserted the FORBIDDEN behaviour — `.rejects.toThrow()` on a single depth-3000 fixture,
+    // i.e. it pinned in "a deep metadata object throws and loses its sibling", exactly what
+    // ADR 0010's Detection section (T5) forbids: "no input shape produces a 500 with zero
+    // per-event results." It also only ever probed ONE depth, while the underlying defect
+    // (F-1/F-3/F-6) was that the fix which closed T5 for one repair attempt's fixture left a
+    // BAND of other depths (1500-9000) still throwing — a green that lied twice over. This
+    // replacement sweeps that band, reproduced from the tester's own fixture
+    // (`.artifacts/evidence/2/tester-human-repair/raw/t5-sweep.txt`), plus the values on
+    // either side of it, and asserts the boundary ADR 0010 actually states: every depth is
+    // either accepted or REJECTED event-level, never a throw.
+    it('a pathologically deep, Zod-legal metadata object is REJECTED event-level across the whole depth range that used to escape containment — never a throw from inside the fold (tester findings F-1/F-3/F-6, 2026-08-20, repair attempt 3)', async () => {
       const { service, repository, prisma } = await newTrio(connectionString);
       try {
-        // Zod-legal: MetadataSchema is z.record(z.string(), z.unknown()) and never recurses
-        // into the value's own shape, so this passes parseTelemetryEvent AND
-        // containsUnsafeUnicode (both proven, by direct probe, not to overflow at this
-        // depth) — the RangeError is exclusive to structuredClone inside mergeEvent, i.e.
-        // INSIDE the persistence transaction, not the event-level pre-checks T5 hardened.
-        let deeplyNested: unknown = { v: 1 };
-        for (let i = 0; i < 3000; i++) {
-          deeplyNested = { child: deeplyNested };
-        }
+        const depths = [200, 1000, 1500, 3000, 6000, 9000, 10000, 15000, 25000];
 
-        // `d2-good-sibling` is inserted first — Map iteration order is insertion order, so
-        // its group's transaction commits BEFORE the failing group is even attempted.
-        await expect(
-          service.ingest([
-            runStartedEvent('d2-good-sibling'),
-            runStartedEvent('d2-bad-deep-metadata', {
-              eventId: 'd2-bad-deep-metadata-start',
+        for (const depth of depths) {
+          let deeplyNested: unknown = { v: 1 };
+          for (let i = 0; i < depth; i++) {
+            deeplyNested = { child: deeplyNested };
+          }
+
+          const goodEntityId = `d2-sweep-good-${depth}`;
+          const badEntityId = `d2-sweep-bad-${depth}`;
+
+          // Each depth gets its OWN entity pair (own groups) — one poison event must never
+          // affect another depth's result, and Map iteration order (insertion order) means
+          // the good group's transaction is attempted before the bad one's either way.
+          const response = await service.ingest([
+            runStartedEvent(goodEntityId),
+            runStartedEvent(badEntityId, {
+              eventId: `${badEntityId}-start`,
               payload: { workflowName: 'wf', workflowVersion: '1.0.0', metadata: deeplyNested },
             }),
-          ]),
-        ).rejects.toThrow();
+          ]);
 
-        // ADR 0010: durability is unaffected by what the (failed) response reported — the
-        // sibling's own transaction had already committed.
-        expect((await repository.loadRun('d2-good-sibling'))?.startedAt).not.toBeNull();
-        expect(await repository.loadRun('d2-bad-deep-metadata')).toBeUndefined();
+          expect(response.results, `depth ${depth}`).toHaveLength(2);
+          expect(response.results[0], `depth ${depth}`).toMatchObject({ status: 'ACCEPTED' });
+          expect(response.results[1], `depth ${depth}`).toMatchObject({ status: 'REJECTED' });
+          expect(response.results[1]?.error?.code, `depth ${depth}`).toBe('INVALID_PAYLOAD');
+
+          expect(
+            (await repository.loadRun(goodEntityId))?.startedAt,
+            `depth ${depth}: good sibling`,
+          ).not.toBeNull();
+          expect(await repository.loadRun(badEntityId), `depth ${depth}: poison`).toBeUndefined();
+        }
+      } finally {
+        await prisma.onModuleDestroy();
+      }
+    }, 60_000);
+
+    it('an occurredAt whose literal year reads 0001 but whose UTC-shifted instant lands in year 0000 is caught the same way as a literal 0000 — the offset bypass (tester finding F-3, 2026-08-20, repair attempt 3)', async () => {
+      const { service, repository, prisma } = await newTrio(connectionString);
+      try {
+        const response = await service.ingest([
+          runStartedEvent('d2-good-before-offset'),
+          runStartedEvent('d2-bad-offset-year-zero', {
+            eventId: 'd2-bad-offset-year-zero-start',
+            // Literal year reads 0001; UTC instant is 0000-12-31T19:00:00.000Z — confirmed
+            // live to raise Postgres SQLSTATE 22008, the same as a literal year-0000 value
+            // (`.artifacts/evidence/2/tester-human-repair/raw/pg-22008-observed.txt`). The
+            // FIRST fix here compared the literal wire text and let this straight through.
+            occurredAt: '0001-01-01T00:00:00.000+05:00',
+          }),
+          runStartedEvent('d2-good-after-offset'),
+        ]);
+
+        expect(response.results).toHaveLength(3);
+        expect(response.results[0]).toMatchObject({ status: 'ACCEPTED' });
+        expect(response.results[1]).toMatchObject({ status: 'REJECTED' });
+        expect(response.results[1]?.error?.code).toBe('INVALID_PAYLOAD');
+        expect(response.results[2]).toMatchObject({ status: 'ACCEPTED' });
+
+        expect((await repository.loadRun('d2-good-before-offset'))?.startedAt).not.toBeNull();
+        expect((await repository.loadRun('d2-good-after-offset'))?.startedAt).not.toBeNull();
+        expect(await repository.loadRun('d2-bad-offset-year-zero')).toBeUndefined();
       } finally {
         await prisma.onModuleDestroy();
       }
@@ -622,83 +670,103 @@ describe('POST /v1/telemetry/events — ADR 0010 at the real HTTP boundary', () 
     await container?.stop();
   });
 
-  it('T5: a pathologically deep, Zod-legal metadata object never produces a 500 with zero per-event results — the poisoned event is REJECTED, a good sibling still lands, HTTP 200', async () => {
-    // Tester finding T5: depth is not a stable threshold (7000 escaped as a single event,
-    // 8000 was contained in a 2-event batch, >=9000 escaped every attempt). 15000 is
-    // comfortably past that observed range without being needlessly extreme — this proves
-    // the boundary holds, it does not need to find V8's absolute limit.
-    //
-    // The request body is built as a JSON STRING by plain iteration, not `JSON.stringify`
+  // F-7 (tester finding, 2026-08-20, repair attempt 3): the PREVIOUS version of this test
+  // was pinned to a single depth (15_000), comfortably inside the ONE band the prior repair
+  // happened to close. ADR 0010's Detection section says explicitly: "depth is not a stable
+  // threshold... a test pinned to one depth proves little." No depth in 1500-9000 was ever
+  // exercised — this sweeps that band and the values on either side of it, reproduced from
+  // the tester's own fixture (`.artifacts/evidence/2/tester-human-repair/raw/t5-sweep.txt`).
+  it('T5: a pathologically deep, Zod-legal metadata object never produces a 500 with zero per-event results, at any depth across the band that used to escape containment — the poisoned event is REJECTED, a good sibling still lands, HTTP 200 (tester findings F-1/F-3/F-6, 2026-08-20, repair attempt 3)', async () => {
+    // Each request body is built as a JSON STRING by plain iteration, not `JSON.stringify`
     // on the deep object: `JSON.stringify` is itself a recursive walk, and so is
     // supertest/superagent's own request serializer (`fast-safe-stringify`) — both overflow
-    // on this input for reasons that have nothing to do with `containsUnsafeUnicode`, the
-    // thing this test is actually proving. A regularly-shaped `{"child":...}` chain has a
-    // trivial closed-form text representation, so building it by string repetition sidesteps
-    // recursion entirely on the client side; the server still receives, and must still
-    // `JSON.parse`, a genuinely deep structure.
-    const depth = 15_000;
-    const deepMetadataJson = '{"child":'.repeat(depth) + '{"leaf":true}' + '}'.repeat(depth);
-    const goodEvent = {
-      eventId: 'http-t5-good-start',
-      schemaVersion: '1',
-      type: 'run.started',
-      entityId: 'http-t5-good',
-      runId: 'http-t5-good',
-      occurredAt: '2026-08-19T10:00:00.000Z',
-      payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
-    };
-    const bodyJson =
-      `{"events":[${JSON.stringify(goodEvent)},` +
-      `{"eventId":"http-t5-bad-start","schemaVersion":"1","type":"run.started",` +
-      `"entityId":"http-t5-bad","runId":"http-t5-bad","occurredAt":"2026-08-19T10:00:00.000Z",` +
-      `"payload":{"workflowName":"wf","workflowVersion":"1.0.0","metadata":${deepMetadataJson}}}]}`;
+    // on this input for reasons that have nothing to do with the boundary this test is
+    // actually proving. A regularly-shaped `{"child":...}` chain has a trivial closed-form
+    // text representation, so building it by string repetition sidesteps recursion entirely
+    // on the client side; the server still receives, and must still `JSON.parse`, a
+    // genuinely deep structure.
+    const depths = [200, 1000, 1500, 3000, 6000, 9000, 10000, 15000, 25000];
 
-    const response = await request(httpServer(app))
-      .post('/v1/telemetry/events')
-      .set('Content-Type', 'application/json')
-      .send(bodyJson);
-    const body = response.body as IngestResponse;
-
-    expect(response.status).toBe(200);
-    expect(body.results).toHaveLength(2);
-    expect(body.results[0]).toMatchObject({ status: 'ACCEPTED' });
-    expect(body.results[1]).toMatchObject({ status: 'REJECTED' });
-    expect(body.results[1]?.error?.code).toBe('INVALID_PAYLOAD');
-  }, 30_000);
-
-  it('T1: a genuine persistence failure (RangeError inside the fold) returns a sanitized 5xx body — no file path, no stack frame, no SQL code, no compiled source', async () => {
-    let deeplyNested: unknown = { v: 1 };
-    for (let i = 0; i < 3000; i++) {
-      deeplyNested = { child: deeplyNested };
-    }
-
-    const events = [
-      {
-        eventId: 'http-t1-bad-start',
+    for (const depth of depths) {
+      const deepMetadataJson = '{"child":'.repeat(depth) + '{"leaf":true}' + '}'.repeat(depth);
+      const goodEvent = {
+        eventId: `http-t5-good-${depth}-start`,
         schemaVersion: '1',
         type: 'run.started',
-        entityId: 'http-t1-bad',
-        runId: 'http-t1-bad',
+        entityId: `http-t5-good-${depth}`,
+        runId: `http-t5-good-${depth}`,
         occurredAt: '2026-08-19T10:00:00.000Z',
-        payload: { workflowName: 'wf', workflowVersion: '1.0.0', metadata: deeplyNested },
-      },
-    ];
+        payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+      };
+      const bodyJson =
+        `{"events":[${JSON.stringify(goodEvent)},` +
+        `{"eventId":"http-t5-bad-${depth}-start","schemaVersion":"1","type":"run.started",` +
+        `"entityId":"http-t5-bad-${depth}","runId":"http-t5-bad-${depth}","occurredAt":"2026-08-19T10:00:00.000Z",` +
+        `"payload":{"workflowName":"wf","workflowVersion":"1.0.0","metadata":${deepMetadataJson}}}]}`;
 
-    const response = await request(httpServer(app)).post('/v1/telemetry/events').send({ events });
+      const response = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .set('Content-Type', 'application/json')
+        .send(bodyJson);
+      const body = response.body as IngestResponse;
 
-    expect(response.status).toBe(500);
-    // The ONLY shape AllExceptionsFilter ever sends for a 5xx: statusCode/error/message/
-    // path/timestamp, message replaced with the generic string — never the exception itself.
-    expect(response.body).toMatchObject({
-      statusCode: 500,
-      message: 'Internal server error',
+      expect(response.status, `depth ${depth}`).toBe(200);
+      expect(body.results, `depth ${depth}`).toHaveLength(2);
+      expect(body.results[0], `depth ${depth}`).toMatchObject({ status: 'ACCEPTED' });
+      expect(body.results[1], `depth ${depth}`).toMatchObject({ status: 'REJECTED' });
+      expect(body.results[1]?.error?.code, `depth ${depth}`).toBe('INVALID_PAYLOAD');
+    }
+  }, 120_000);
+
+  it('T1: an unexpected, unclassified persistence failure returns a sanitized 500 body — no file path, no stack frame, no SQL code, no compiled source', async () => {
+    // The depth-based fixture this test previously used (a ~3000-deep metadata object
+    // overflowing structuredClone inside mergeEvent) is CLOSED by the F-1/F-3/F-6 fix:
+    // that depth is now caught event-level, before the fold, and can never reach the
+    // repository again — which is the point of that fix, and is what the T5 sweep above
+    // proves. `classifyPersistenceFailure`'s 500-vs-503 split, and `AllExceptionsFilter`'s
+    // sanitization of it, still need proving at the real HTTP boundary — sanitization is
+    // status-driven (`status >= 500`, see `platform/api/src/common/all-exceptions.filter.ts`),
+    // not code-specific, so nothing else in this suite drives an UNCLASSIFIED error through
+    // the real controller/pipe/service/filter stack now that T4 only ever produces 503.
+    // This stubs ONLY `TelemetryRepository.withEntityLock` for the duration of this one
+    // test to throw a plain, non-Prisma error — routing, the real Zod pipe, the real
+    // `TelemetryService` classification, and the real `AllExceptionsFilter` are untouched.
+    const repository = app.get(TelemetryRepository);
+    const spy = vi.spyOn(repository, 'withEntityLock').mockImplementation(() => {
+      throw new Error('fake unclassified persistence failure — T1 HTTP boundary coverage');
     });
-    const raw = JSON.stringify(response.body);
-    expect(raw).not.toMatch(/[A-Za-z]:\\\\/); // no Windows filesystem path
-    expect(raw).not.toMatch(/at .*:\d+:\d+/); // no stack frame
-    expect(raw).not.toMatch(/RangeError/);
-    expect(raw).not.toMatch(/telemetry\.repository/);
-    expect(raw).not.toMatch(/\b\d{5}\b/); // no bare 5-digit SQLSTATE-shaped code
+
+    try {
+      const events = [
+        {
+          eventId: 'http-t1-bad-start',
+          schemaVersion: '1',
+          type: 'run.started',
+          entityId: 'http-t1-bad',
+          runId: 'http-t1-bad',
+          occurredAt: '2026-08-19T10:00:00.000Z',
+          payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+        },
+      ];
+
+      const response = await request(httpServer(app)).post('/v1/telemetry/events').send({ events });
+
+      expect(response.status).toBe(500);
+      // The ONLY shape AllExceptionsFilter ever sends for a 5xx: statusCode/error/message/
+      // path/timestamp, message replaced with the generic string — never the exception itself.
+      expect(response.body).toMatchObject({
+        statusCode: 500,
+        message: 'Internal server error',
+      });
+      const raw = JSON.stringify(response.body);
+      expect(raw).not.toMatch(/[A-Za-z]:\\\\/); // no Windows filesystem path
+      expect(raw).not.toMatch(/at .*:\d+:\d+/); // no stack frame
+      expect(raw).not.toMatch(/fake unclassified/); // never the stub's own message
+      expect(raw).not.toMatch(/telemetry\.repository/);
+      expect(raw).not.toMatch(/\b\d{5}\b/); // no bare 5-digit SQLSTATE-shaped code
+    } finally {
+      spy.mockRestore();
+    }
   }, 30_000);
 
   it('T4: the database becoming unreachable mid-flight returns 503, not 200 — and the body is sanitized the same way', async () => {
