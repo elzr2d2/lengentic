@@ -650,10 +650,10 @@
         {
           "kind": "grep",
           "dir": "platform/telemetry-sdk",
-          "pattern": "IdGenerator"
+          "pattern": "export (interface|type) IdGenerator"
         }
       ],
-      "note": "PLAN GAP: v3 assigns seeded Clock/IdGen to Phase 3 WP4, but the injection seams live in the SDK. Land the seams here or Phase 3 reopens Phase 2 code."
+      "note": "PLAN GAP: v3 assigns seeded Clock/IdGen to Phase 3 WP4, but the injection seams live in the SDK. Land the seams here or Phase 3 reopens Phase 2 code. PROBE REPOINTED 2026-08-21: the pattern was the bare word IdGenerator, which p2.sdk-core satisfied with a code COMMENT at src/ids.ts:5 saying the injection point is this packet deliverable — the oracle reported DONE on prose stating the work was not done. check:probes did not catch it: the probe was inside its own node surface, so ownership was clean; what was wrong is that it matched prose rather than an artifact. It now requires an exported declaration, which a comment cannot satisfy."
     },
     {
       "id": "p2.runs-api",
