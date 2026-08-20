@@ -560,7 +560,7 @@
       "changeClass": "behavior",
       "validate": ["pnpm test", "pnpm gates"],
       "own": {
-        "allowed": ["platform/api/src/**"]
+        "allowed": ["platform/api/src/**", "platform/api/test/telemetry.integration.spec.ts"]
       },
       "phase": 2,
       "lane": "api",
@@ -573,7 +573,8 @@
           "dir": "platform/api/src",
           "pattern": "@Controller..telemetry/events.."
         }
-      ]
+      ],
+      "note": "allowed_paths carry ONE file outside platform/api/src/**: platform/api/test/telemetry.integration.spec.ts. Granted 2026-08-20 for repair attempt 2, because the F1 advisory-lock fix is only provable against real Postgres and vitest.config.mts includes `src/**/*.spec.ts` only — a colocated unit test cannot discover it, which is how attempt 1 shipped a criterion marked verified whose own command exits 1. The grant is that path and no other; schema.prisma stays out of this lane (F3 is p2.idempotency's, docs/decisions/0009). p2.integration-tests' probe was re-pointed at STALE in the same commit so it can no longer be satisfied by this file — a node reporting DONE on another node's deliverable is the failure `pnpm check:probes` exists to prevent."
     },
     {
       "id": "p2.idempotency",
@@ -712,9 +713,10 @@
         {
           "kind": "grep",
           "dir": "platform/api/test",
-          "pattern": "telemetry|ingest"
+          "pattern": "STALE"
         }
-      ]
+      ],
+      "note": "Probe re-pointed from `telemetry|ingest` to `STALE` on 2026-08-20. p2.ingest-endpoint was granted platform/api/test/telemetry.integration.spec.ts for its F1 regression suite, and the old pattern would have been satisfied by that filename alone — this node would have reported DONE on another node's deliverable, before writing a line. STALE derivation (ADR 0005 §4) is this node's own and appears in no other lane's file. If a later lane starts writing STALE into platform/api/test, re-point this probe again rather than letting it drift."
     },
     {
       "id": "p3.scaffold",
