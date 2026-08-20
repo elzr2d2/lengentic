@@ -34,7 +34,14 @@ put **decisions** to the user.
 
 ## 3. Grill in rounds
 
-Map the phase as a **design tree**: each decision branches into the decisions hanging off it.
+**Default scope is the next READY wave, not the whole phase.** Framing every wave up front
+answers questions the earlier waves' output will answer better and cheaper. A decision that
+belongs to a later wave enters this round's tree only when it is **irreversible now** (the
+current wave would bake it in) or it shapes an **interface future waves inherit** — the wire
+contract, a module boundary, a schema. Everything else waits for its own wave's framing.
+
+Map the scoped work as a **design tree**: each decision branches into the decisions hanging
+off it.
 
 The **frontier** is every decision whose prerequisites are already settled — the questions
 you can ask _now_ without guessing at answers you have not heard. Ask the whole frontier in

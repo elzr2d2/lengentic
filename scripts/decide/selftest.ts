@@ -273,15 +273,15 @@ scenario(15, 'a task with no constraining decision returns an empty list, not a 
 
 scenario(
   16,
-  'the `pnpm decide` BACKLOG entry itself reads as deferred, its own trigger unfired',
+  'the closed `pnpm decide` BACKLOG entry left the live index when it moved to the archive',
   () => {
-    const entries = loadBacklog().filter((n) => /pnpm decide/i.test(n.question));
-    const self = entries.find((n) => /one generated index/i.test(n.question));
-    if (!self)
-      return `expected to find the "pnpm decide" BACKLOG entry, got: ${entries.map((n) => n.question).join(' | ')}`;
-    return self.answer && /5a gate/i.test(self.answer)
+    // The entry was built and closed to docs/archive/BACKLOG_HISTORY.md (harness-throughput
+    // item 17). A closed entry resurfacing here would mean the index reads spent decisions
+    // as live ones.
+    const entries = loadBacklog().filter((n) => /one generated index/i.test(n.question));
+    return entries.length === 0
       ? null
-      : `expected the answer to cite the unfired 5a-gate trigger, got: "${self.answer}"`;
+      : `expected the archived entry to be gone from BACKLOG.md, still found: ${entries.map((n) => n.id).join(', ')}`;
   },
 );
 
@@ -444,14 +444,21 @@ scenario(
 
 scenario(
   23,
-  'detect against the live repository reports zero fired triggers on a clean tree',
+  'detect against the live repository runs clean and every finding is well-formed',
   () => {
+    // Live telemetry accumulates, so "zero fired triggers" was an assertion about the
+    // weather: the first real batch of decide/outcome records legitimately fired
+    // ADR-0002's too-conservative clause and turned this scenario red with no bug
+    // anywhere. A fired Detection clause is `pnpm decide detect`'s exit-1 job to report
+    // to a human; the selftest's job is only that detect() parses the live stores and
+    // produces findings a reader can act on.
     const index = build();
     const settled = index.nodes.filter((n) => n.kind === 'settled');
     const found = detect(settled, loadLaneEvents());
-    return found.length === 0
+    const malformed = found.filter((f) => !f.adrId || !f.rule || !f.detail);
+    return malformed.length === 0
       ? null
-      : `expected zero fired triggers, got ${JSON.stringify(found)} — a real Detection clause may have fired; verify before assuming a bug`;
+      : `expected every finding to carry adrId/rule/detail, got ${JSON.stringify(malformed)}`;
   },
 );
 

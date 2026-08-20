@@ -5,7 +5,7 @@ description: Record a valuable idea that is not required by the current phase De
 
 # Update Backlog
 
-MVP_PLAN.md §8, in full:
+MVP_PLAN_V3.md §8 (Scope Management Rule), in full:
 
 > Is it required for the current phase Definition of Done?
 > If yes — implement it. If no — `BACKLOG.md`. Do not expand the current phase.
@@ -16,22 +16,34 @@ building it now. Both are worse.
 ## Test first
 
 **Is it required by the current phase's Definition of Done?** Read the DoD from
-`MVP_PLAN.md` before answering — not from memory.
+`MVP_PLAN_V3.md` before answering — not from memory. `pnpm kb show phase <n>` prints it.
 
 If yes, it is not backlog. Build it.
 
 If no, it goes here even if it is small, obvious, and would take five minutes. Especially
 then. Five-minute additions are how a phase doubles.
 
+## Batch, then flush
+
+Mid-packet, append the entry to `.artifacts/backlog/pending.md` and return to the task —
+editing `BACKLOG.md` (~16k tokens) per idea pays its weight once per idea. At the **wave
+gate**, flush everything pending into `BACKLOG.md` in one edit and empty the pending file.
+
+Write straight into `BACKLOG.md` only when the pending file is unsafe — the idea must
+survive even if this session dies before the wave gate (a defect shape that will be
+re-introduced without the note, a decision someone is about to re-litigate).
+
 ## Where it goes
 
-`BACKLOG.md` has two sections:
+`BACKLOG.md` is organised as dated discovery sections — `## Discovered during <context>
+(<date>)`. Append to the current session's section, or start a new one with today's date and
+the discovery context. Environment prerequisites (blocking, not deferred — a different thing
+entirely) have their own section near the top.
 
-- **Discovered during implementation** — items found while building, with the discovery
-  context that makes them actionable later.
-- **Environment prerequisites** — blocking, not deferred. Different thing entirely.
+Entries that have since been addressed move to `docs/archive/BACKLOG_HISTORY.md` with a
+`**Closed:**` evidence line; never delete one in place.
 
-The standing post-MVP list lives in `MVP_PLAN.md` §94 and is not duplicated.
+The standing post-MVP list lives in `MVP_PLAN_V3.md` §27 and is not duplicated.
 
 ## Entry shape
 

@@ -31,11 +31,19 @@ In order: the work packet the change came from (`pnpm oracle packet <id>`), a pa
 an argument, the phase's Definition of Done in the plan. If none exists, the Scope axis says
 so rather than inventing a standard to measure against.
 
-## 3. Dispatch both axes in parallel
+## 3. Dispatch — one reviewer by default, two for high-risk
 
-One message, two sub-agents. They must not see each other's findings.
+**Default: ONE reviewer covers both axes**, briefed with both blocks below and required to
+report `## Standards` and `## Scope` as separate sections. Two agents per review doubled the
+cost on every diff to buy independence that matters only when a plausible-but-wrong reading
+can survive one reader.
 
-**Standards sub-agent** — give it the diff command, the commit list, and this brief:
+**Two independent sub-agents — one message, neither seeing the other's findings — only
+when** the diff touches `platform/shared/schema/**` (contract), changes architecture or a
+module boundary, implements an analyzer (false positives kill the product), or the
+dispatcher explicitly asks for independence.
+
+**Standards brief** — with the diff command and the commit list:
 
 > Report, per file and hunk: correctness defects (error paths, boundary values, the
 > dependency being unavailable); architecture fit — does this follow a pattern already in
@@ -51,8 +59,8 @@ One message, two sub-agents. They must not see each other's findings.
 >
 > Skip anything tooling already enforces. Under 400 words.
 
-**Scope sub-agent** — give it the diff command, the commit list, the packet or Definition of
-Done, and this brief:
+**Scope brief** — with the diff command, the commit list, and the packet or Definition of
+Done:
 
 > Report: (a) what the Definition of Done asked for that is missing or partial; (b) changes
 > present in the diff that it did not ask for — later-phase work, unrelated refactors riding
@@ -62,8 +70,9 @@ Done, and this brief:
 
 ## 4. Aggregate without reranking
 
-Report under `## Standards` and `## Scope`, verbatim or lightly cleaned. Do **not** merge or
-rerank across them — that reranking is exactly what the separation prevents.
+Report under `## Standards` and `## Scope`, verbatim or lightly cleaned — whichever dispatch
+mode ran. Do **not** merge or rerank across them — that reranking is exactly what the
+separation prevents.
 
 Rank _within_ each axis by severity and lead with the worst. For each finding: file and
 line, what is wrong, why it matters, what to do.

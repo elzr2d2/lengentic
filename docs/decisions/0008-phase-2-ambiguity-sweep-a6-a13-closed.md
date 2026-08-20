@@ -24,7 +24,7 @@ An item left "open" that a shipped contract has already decided is a re-litigati
 the next framing round would surface it as undecided and stall a wave on a question with
 one legal answer.
 
-## Decisions
+## Decision
 
 ### A-6 — `occurredAt` format: ISO-8601 datetime string with required offset
 

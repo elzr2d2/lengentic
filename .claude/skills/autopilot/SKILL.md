@@ -80,13 +80,20 @@ wrong exactly when it is needed.
 Walk `MVP_PLAN_V3.md`'s execution order — `0 → 1 → 5a → 2 → 3 → 4 → 5b → 6 → 7` — starting at
 the first incomplete phase. Phase numbers are identity, not sequence.
 
+`pnpm flow next` drives the loop: run it at every iteration and execute the one action it
+returns — DISPATCH, WAVE_GATE, INTEGRATE, REPAIR, PHASE_GATE, ADVANCE_PHASE, BLOCKED,
+COMPLETE. It derives the action from the oracle's probes, the gate records under
+`.artifacts/gates/`, and the checkpoint; re-deriving it in prose is the judgement dispatch
+`CLAUDE.md` forbids.
+
 For each phase:
 
 1. **Frame** — `frame-phase`. Its own rule stands: a phase framed with one open decision
    remaining stops mid-wave. An open decision that the charter, `docs/decisions/` or the plan
    cannot settle is trigger 3 — ask, do not default it.
-2. **Dispatch** — `pnpm lanes wave <phase>`, then the `dispatch-lanes` procedure verbatim.
-   Read `execution_decision`; never re-derive it. Sequential is the default.
+2. **Dispatch** — when `flow next` says DISPATCH: `pnpm lanes wave <phase>`, then the
+   `dispatch-lanes` procedure verbatim. Read `execution_decision`; never re-derive it.
+   Sequential is the default.
 3. **Gate** — the GREEN check in §3.
 4. **Advance** — GREEN advances immediately, no permission asked. Before advancing, check
    triggers 2 and 3 against the _next_ phase — a phase whose framing is already known to need a
@@ -114,12 +121,13 @@ Failure-evidence row. A `<node-id>` finding is explained the moment it is filed 
 `BACKLOG.md` with its trigger — it is that node's acceptance criterion, and holding this gate
 open on it makes every gate inherit the whole downstream design.
 
-Review itself runs **per wave, over the wave's whole diff** — not per node.
-`.claude/rules/agent-activation.json` `reviewCadence` is the rule, and `pnpm lanes wave` /
-`pnpm lanes decide` enforce it mechanically: reviewer is stripped from every per-node agent
-chain outside `perNodeClasses` and the decision prints a `review_cadence` block instead.
-Follow the printed cadence; never re-add a per-node review the decision removed. The single
-exception is `change_class: contract`, which keeps its per-node review.
+Agent cadence is **lifecycle-derived**: each change class in
+`.claude/rules/agent-activation.json` carries `perPacket` / `perWave` / `perPhase` /
+`conditional`, and `pnpm lanes wave` / `pnpm lanes decide` turn that into the printed
+`review_cadence` block mechanically — review per wave for feature, validation per wave and
+review at the phase gate for behavior, the full per-packet chain only for contract. Follow
+the printed cadence; never re-add a per-packet review the decision removed, and never waive
+one it kept.
 
 Anything short of all four is RED. Go to §4.
 

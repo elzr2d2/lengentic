@@ -122,6 +122,8 @@ A development lane reports its own work with `.claude/rules/lane-handoff.schema.
 is a different contract: a finding is about someone else's work, a lane handoff is about the
 lane's own. `DONE` requires a commit, changed files inside the lane's declared paths, and no
 unverified acceptance criteria. Deferred, skipped and unknown are all unverified.
+`changed_files` may be omitted — the checker derives it from the commit; when present it is
+verified against the commit.
 
 `DONE` is a claim about evidence, not about a green exit code. Every acceptance criterion
 carries its own expected, actual and result, and a command that did not exercise a criterion
@@ -137,7 +139,8 @@ the contract for emitting them and for citing them.
 Sequential execution is the default. Parallel is an exception a batch earns against the
 fifteen requirements in `pnpm lanes decide`, and unknown counts as false.
 
-Never dispatch by judgement. Run `pnpm lanes wave <phase>` and follow the
+Never dispatch by judgement. `pnpm flow next` is the entry point — it returns the one next
+action. When that action is DISPATCH, run `pnpm lanes wave <phase>` and follow the
 `execution_decision`. The `dispatch-lanes` skill is the procedure.
 
 A lane writes only inside its `allowed_paths`. Widening its own boundary is never the answer;
@@ -169,7 +172,7 @@ positives are the failure mode that kills a recommendations product.
 
 ```bash
 pnpm gates              # lint, format, typecheck, test, build, boundaries
-pnpm gates:full         # gates + check:isolation (slow; CI and pre-commit only)
+pnpm gates:full         # gates + check:isolation (slow; phase gate and CI only)
 pnpm check:boundaries   # dependency-cruiser
 pnpm check:isolation    # builds the platform with playground/ deleted
 pnpm spike              # Phase 0 thesis spike (disposable, deleted end of Phase 5)
@@ -177,11 +180,15 @@ pnpm check:integrity    # QA-integrity scan: false green, focused tests, hidden 
 pnpm --filter @lengentic/api test <substring>   # one test file, by path substring (vitest)
 pnpm oracle waves       # dependency fan-out; which packets can run in parallel now
 pnpm oracle packet <id> # the sliced brief for one work packet
+pnpm flow next          # the one next action, as JSON: DISPATCH | WAVE_GATE | INTEGRATE |
+                        #   REPAIR | PHASE_GATE | ADVANCE_PHASE | BLOCKED | COMPLETE
+pnpm flow record <t>    # write the wave/phase gate record `flow next` reads (needs evidence)
 pnpm lanes wave <n>     # sequential-vs-parallel decision for the next wave of a phase
 pnpm lanes check <id>   # pre-commit lane gate: did the lane stay inside its paths
 pnpm lanes handoff <f>  # is this handoff real: schema, commit, ownership, evidence
 pnpm lanes integrate    # pre-integration gate + ordered integration plan
 pnpm check:lanes        # the dispatch rules' own scenarios (CI; not in `pnpm gates`)
+pnpm check:flow         # the control plane's own scenarios (CI; not in `pnpm gates`)
 pnpm kb search <words>  # rank every document section; returns file:line citations
 pnpm kb show <target>   # one section verbatim — §19 | phase 5 | FILE.md#heading | heading
 pnpm kb term <name>     # CONTEXT.md definition + where the word is really used
@@ -192,7 +199,7 @@ pnpm hash:5a <label>    # hash the 5a files an analyzer packet must not change
                         #   …--compare <earlier-label> fails naming every drifted path
 ```
 
-`check:lanes`, `check:kb` and `check:probes` are out of `pnpm gates` on purpose: they read
+`check:lanes`, `check:flow`, `check:kb` and `check:probes` are out of `pnpm gates` on purpose: they read
 `.claude/`, the documents and `scripts/oracle/graph.json`, and `pnpm gates` must keep working
 with the engineering harness deleted.
 
