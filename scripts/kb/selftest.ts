@@ -227,7 +227,8 @@ scenario(12, 'path decides status: v2 historical, generated generated, research 
   const cases: Array<[string, string]> = [
     ['MVP_PLAN.md', 'historical'],
     ['docs/superpowers/specs/x.md', 'historical'],
-    ['docs/PROJECT_STATUS.md', 'generated'],
+    ['docs/archive/DELIVERY_PROMPT.md', 'historical'],
+    ['.artifacts/oracle/PROJECT_STATUS.md', 'generated'],
     ['.artifacts/plans/remaining-roadmap.md', 'generated'],
     ['docs/research/2026-08-16-note.md', 'expiring'],
     ['docs/research/README.md', 'authoritative'],

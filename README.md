@@ -213,14 +213,13 @@ are deliberately outside `pnpm gates`, which must keep working with the harness 
 
 ## Documentation
 
-| File                                                       | What it is                                      |
-| ---------------------------------------------------------- | ----------------------------------------------- |
-| [`MVP_PLAN_V3.md`](MVP_PLAN_V3.md)                         | The single executable plan. Seven phases        |
-| [`CONTEXT.md`](CONTEXT.md)                                 | Shared vocabulary — one term, one meaning       |
-| [`CLAUDE.md`](CLAUDE.md)                                   | Project rules binding every agent and session   |
-| [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md)         | Generated deliverable matrix and phase progress |
-| [`docs/PARALLEL_EXECUTION.md`](docs/PARALLEL_EXECUTION.md) | Work packets, waves, lanes, dispatch            |
-| [`BACKLOG.md`](BACKLOG.md)                                 | Deferred work, with its source                  |
+| File                                                       | What it is                                    |
+| ---------------------------------------------------------- | --------------------------------------------- |
+| [`MVP_PLAN_V3.md`](MVP_PLAN_V3.md)                         | The single executable plan. Seven phases      |
+| [`CONTEXT.md`](CONTEXT.md)                                 | Shared vocabulary — one term, one meaning     |
+| [`CLAUDE.md`](CLAUDE.md)                                   | Project rules binding every agent and session |
+| [`docs/PARALLEL_EXECUTION.md`](docs/PARALLEL_EXECUTION.md) | Work packets, waves, lanes, dispatch          |
+| [`BACKLOG.md`](BACKLOG.md)                                 | Deferred work, with its source                |
 
 `MVP_PLAN.md` (v2) and `docs/superpowers/specs/` are historical. v3 absorbed them and wins
 on any conflict.
