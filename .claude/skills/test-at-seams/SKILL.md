@@ -58,6 +58,11 @@ claims to cover. Run the test.
 Do this for tests you wrote in this session, not only for tests you inherited. Authoring the
 replacement is exactly where the last false positive got in.
 
+**Frequency is risk-based, not universal.** The mutation check is required for analyzers,
+contract changes (`platform/shared/schema/**`), false-green repairs, and anything the packet
+marks high-risk. It is skipped for docs, mechanical renames, and config-only changes — and
+the skip is stated, never silent.
+
 ## Negative fixtures first
 
 Write the failing case before the passing path. For anything that produces a recommendation

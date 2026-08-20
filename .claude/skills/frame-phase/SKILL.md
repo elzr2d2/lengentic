@@ -34,7 +34,14 @@ put **decisions** to the user.
 
 ## 3. Grill in rounds
 
-Map the phase as a **design tree**: each decision branches into the decisions hanging off it.
+**Default scope is the next READY wave, not the whole phase.** Framing every wave up front
+answers questions the earlier waves' output will answer better and cheaper. A decision that
+belongs to a later wave enters this round's tree only when it is **irreversible now** (the
+current wave would bake it in) or it shapes an **interface future waves inherit** — the wire
+contract, a module boundary, a schema. Everything else waits for its own wave's framing.
+
+Map the scoped work as a **design tree**: each decision branches into the decisions hanging
+off it.
 
 The **frontier** is every decision whose prerequisites are already settled — the questions
 you can ask _now_ without guessing at answers you have not heard. Ask the whole frontier in
@@ -78,8 +85,12 @@ vertical slice through every layer, demoable on its own, sized to fit one fresh 
 window. Check the wave assignment for lane collisions — two packets in one wave touching the
 same directory get serialised or given a worktree, never dispatched into the same tree.
 
-Then **stop and confirm**. Do not begin implementation off the back of your own framing —
-the user says whether shared understanding was reached.
+Then confirm the framing — how depends on who is driving. Outside autopilot, **stop**: the
+user says whether shared understanding was reached. Under the `autopilot` skill, the approved
+charter is that confirmation: check the six triggers in `CLAUDE.md`; when none fires, record
+the framing outcome in the checkpoint and proceed to dispatch without asking. A frontier that
+did not empty is trigger 3 in both modes — an open decision stops the phase, not a missing
+"shall I continue".
 
 ## Done when
 

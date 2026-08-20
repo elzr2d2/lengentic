@@ -500,9 +500,9 @@ export function createLogger(options: LoggerOptions): Logger {
     event: emit,
     debug: at('DEBUG'),
     info: at('INFO'),
-    pass: at('PASS') as Logger['pass'],
+    pass: at('PASS'),
     warn: at('WARN'),
-    error: at('ERROR') as Logger['error'],
+    error: at('ERROR'),
     events: () => recorded,
     summary: () => summarize(recorded, artifact),
     finish: () => {

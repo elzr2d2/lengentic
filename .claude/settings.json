@@ -1,5 +1,17 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(pnpm gates*)",
+      "Bash(pnpm check:*)",
+      "Bash(pnpm lanes *)",
+      "Bash(pnpm oracle *)",
+      "Bash(pnpm kb *)",
+      "Bash(pnpm test)",
+      "Bash(pnpm typecheck)",
+      "Bash(pnpm lint)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
@@ -32,18 +44,6 @@
             "type": "command",
             "command": "node .claude/hooks/check-lane-ownership.mjs",
             "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node .claude/hooks/format-changed.mjs",
-            "timeout": 30
           }
         ]
       }

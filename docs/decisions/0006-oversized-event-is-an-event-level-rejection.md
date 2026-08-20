@@ -74,7 +74,9 @@ caller here is a public SDK that any consumer can fork or bypass.
   the SDK a second time. A caller who sends three large fields loses more content than the
   per-field rule alone implies. This is visible — the `*Truncated` flag is set — not silent.
 
-## Detection — how this goes green while being wrong
+## Detection
+
+How this goes green while being wrong:
 
 A test that posts one 100 KB event and asserts HTTP 400 passes under a **request-level**
 implementation, which would discard the other 499 good events in the batch. The test must post

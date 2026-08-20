@@ -20,7 +20,7 @@ All six ODs in `MVP_PLAN_V3.md:2706-2772` are RESOLVED, so the register offered 
 14-item ambiguity sweep over the Phase 2 text found these four schema-shaped and on the
 critical path. Full sweep and both readings of each: `.artifacts/framing/phase-2-plan-facts.md`.
 
-## Decisions
+## Decision
 
 ### 1. Seen events live in a thin dedup table, not an event ledger
 
@@ -84,6 +84,20 @@ in charge of deciding whether a run is alive, and `MVP_PLAN_V3.md:493` already f
 related sin: "Never combine client and server clocks in one duration calculation." The server
 clock is authoritative for exactly one thing in this system — liveness — and this is it.
 
+## Consequences
+
+Each decision's cost is argued beside it above; the ones that bind future phases, in one
+place:
+
+- Raw events cannot be replayed or audited later without a migration (decision 1) — the
+  "cheap columns now, expensive migrations in Phase 5" bet, taken deliberately.
+- Nothing anywhere may assume a globally unique event id; uniqueness is `(runId, eventId)`
+  (decision 2).
+- Phase 4's event types arrive with a `schemaVersion` bump, never by pre-declaring types the
+  store cannot hold (decision 3).
+- A consumer of run status must go through the API view model to see `STALE`; a reader of
+  the raw row sees `RUNNING` forever (decision 4).
+
 ## Detection
 
 A decision nobody can catch being violated is a decision that will be violated.
@@ -113,4 +127,6 @@ contract have since been answered and are no longer open:
   resolution be "deterministic". Answered by the coordinator 2026-08-18 in
   `docs/decisions/0007-equal-occurredat-ties-break-on-eventid.md`.
 
-A-6 through A-13 remain unasked.
+A-6 through A-13 were closed 2026-08-19 in
+`docs/decisions/0008-phase-2-ambiguity-sweep-a6-a13-closed.md`. Nothing from the sweep
+remains open; Phase 2 framing may not reopen a sweep item without superseding 0008.

@@ -39,6 +39,13 @@ Forbidden imports and architectural boundaries are `pnpm check:boundaries`, whic
 reliable than you at them. Lint and formatting already ran. Restating a tool's output buries
 your real findings underneath it.
 
+`docs/ENGINEERING_STANDARDS.md` is the standards axis, and its **Enforced by** column tells
+you which half of it is yours. A row naming a command is already decided — floating
+promises, `any` leaking through a boundary, double assertions, Prisma crossing a boundary,
+non-exhaustive switches, complexity over 15. Reviewing those spends your budget re-proving
+a green gate. The rows naming **Reviewer** are the ones nothing else can answer: earned
+abstraction, cohesion, error classification, which writes form one invariant.
+
 What you own instead is coupling no tool can express: shared mutable state, implicit
 ordering assumptions, a module whose imports are clean but which cannot function without
 another's internals.

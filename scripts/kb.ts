@@ -69,8 +69,9 @@ const MAX_BYTES = 1_000_000;
 
 export function classify(file: string): Status {
   const f = file.replace(/\\/g, '/');
-  if (f === 'MVP_PLAN.md' || f.startsWith('docs/superpowers/')) return 'historical';
-  if (f === 'docs/PROJECT_STATUS.md' || f.startsWith('.artifacts/')) return 'generated';
+  if (f === 'MVP_PLAN.md' || f.startsWith('docs/superpowers/') || f.startsWith('docs/archive/'))
+    return 'historical';
+  if (f.startsWith('.artifacts/')) return 'generated';
   if (f.startsWith('docs/research/') && !f.endsWith('README.md')) return 'expiring';
   return 'authoritative';
 }
@@ -735,7 +736,11 @@ function main(): void {
       }
       if (json) {
         console.log(
-          JSON.stringify(found, (k, v) => (k === 'tf' || k === 'tokens' ? undefined : v), 2),
+          JSON.stringify(
+            found,
+            (k: string, v: unknown) => (k === 'tf' || k === 'tokens' ? undefined : v),
+            2,
+          ),
         );
         break;
       }
@@ -793,11 +798,14 @@ function main(): void {
         );
         console.log('        revalidate, archive, or delete — do not cite it as-is');
       }
-      const status = join(ROOT, 'docs/PROJECT_STATUS.md');
+      // The generated snapshot is optional — it only exists after `pnpm oracle md` has run.
+      const status = join(ROOT, '.artifacts/oracle/PROJECT_STATUS.md');
       const graph = join(ROOT, 'scripts/oracle/graph.json');
       if (existsSync(status) && existsSync(graph)) {
         if (statSync(graph).mtimeMs > statSync(status).mtimeMs) {
-          console.log('  DRIFT docs/PROJECT_STATUS.md is older than scripts/oracle/graph.json');
+          console.log(
+            '  DRIFT .artifacts/oracle/PROJECT_STATUS.md is older than scripts/oracle/graph.json',
+          );
           console.log('        regenerate it: pnpm oracle md');
         }
       }

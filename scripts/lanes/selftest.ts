@@ -22,16 +22,19 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import {
+  checkChangedFiles,
   checkOwnership,
   dependencyOrder,
   dependents,
   evaluate,
   integrationPlan,
+  knownPhases,
   matchPath,
   nextWave,
   patternsOverlap,
@@ -39,12 +42,20 @@ import {
   repoState,
   unitsFor,
   validateHandoff,
+  waveOutcome,
   type Decision,
   type Policy,
   type RepoState,
   type Unit,
 } from '../lanes.ts';
-import { loadActivation, resolveRoles } from '../oracle.ts';
+import {
+  lifecycleOf,
+  loadActivation,
+  resolveRoles,
+  reviewLifecycle,
+  verificationBlock,
+  type Resolved,
+} from '../oracle.ts';
 import {
   colorsEnabled,
   createLogger,
@@ -351,40 +362,60 @@ export async function run(): Promise<number> {
     );
   });
 
-  scenario(9, 'Tester is skipped for a deterministic non-behavioral change', () => {
+  scenario(9, 'a mechanical packet is Builder-only — no Validator, Reviewer or Tester', () => {
     const activation = loadActivation();
-    const rule = activation.classes.mechanical;
+    const rule = lifecycleOf('mechanical', activation);
     if (!rule) return 'no `mechanical` class in agent-activation.json';
-    const required = resolveRoles(rule.required, activation);
-    const optional = resolveRoles(rule.optional, activation);
-    const adversarial = resolveRoles(['adversarial-test'], activation);
+    const packet = resolveRoles(rule.perPacket, activation);
+    const gates = resolveRoles([...rule.perWave, ...rule.perPhase], activation);
     return (
       expect(
-        !required.some((r) => adversarial.includes(r)),
-        `adversarial testing must not be required for a mechanical change; got ${required.join(',')}`,
+        packet.join(',') === 'builder',
+        `a mechanical packet dispatches builder and nothing else; got ${packet.join(',')}`,
       ) ??
       expect(
-        !optional.some((r) => adversarial.includes(r)),
-        `adversarial testing must not even be optional for a mechanical change; got ${optional.join(',')}`,
+        gates.length === 0,
+        `a mechanical class puts no agent at any gate; got ${gates.join(',')}`,
       ) ??
-      expect(required.includes('builder'), 'builder must still own the edit')
+      expect(
+        !rule.conditional.includes('adversarial-test'),
+        'adversarial testing must not even be conditional for a mechanical change',
+      )
     );
   });
 
-  scenario(10, 'Tester activates when behavior or the test oracle changes', () => {
-    const activation = loadActivation();
-    const rule = activation.classes.behavior;
-    if (!rule) return 'no `behavior` class in agent-activation.json';
-    const required = resolveRoles(rule.required, activation);
-    const adversarial = resolveRoles(['adversarial-test'], activation);
-    const conditions = activation.activationConditions?.['adversarial-test'] ?? [];
-    return (
-      expect(
-        adversarial.every((r) => required.includes(r)),
-        `adversarial testing must be required for a behavior change; got ${required.join(',')}`,
-      ) ?? expect(conditions.length > 0, 'adversarial-test must document when it fires')
-    );
-  });
+  scenario(
+    10,
+    'behavior: Validator at the wave gate, Tester and Reviewer at the phase gate',
+    () => {
+      const activation = loadActivation();
+      const rule = lifecycleOf('behavior', activation);
+      if (!rule) return 'no `behavior` class in agent-activation.json';
+      const packet = resolveRoles(rule.perPacket, activation);
+      const wave = resolveRoles(rule.perWave, activation);
+      const phase = resolveRoles(rule.perPhase, activation);
+      const conditions = activation.activationConditions?.['adversarial-test'] ?? [];
+      return (
+        expect(
+          packet.join(',') === 'builder',
+          `per packet only builder runs for behavior; got ${packet.join(',')}`,
+        ) ??
+        expect(
+          wave.includes('validator'),
+          `validator must sit at the wave gate; got ${wave.join(',')}`,
+        ) ??
+        expect(
+          phase.includes('tester') && phase.includes('reviewer'),
+          `tester and reviewer belong to the phase gate; got ${phase.join(',')}`,
+        ) ??
+        expect(
+          !packet.includes('tester') && !wave.includes('tester'),
+          'tester never runs per packet or per wave',
+        ) ??
+        expect(conditions.length > 0, 'adversarial-test must document when it fires')
+      );
+    },
+  );
 
   scenario(11, 'Watchdog and Reviewer produce distinct decisions', () => {
     const activation = loadActivation();
@@ -410,13 +441,23 @@ export async function run(): Promise<number> {
     );
   });
 
-  scenario(13, 'the final full validation runs only at the intended integration point', () => {
+  scenario(13, 'the wave gate runs `pnpm gates` once; gates:full never runs per wave', () => {
     const units = [unit({ task_id: 'alpha' }), unit({ task_id: 'beta', depends_on: ['alpha'] })];
     const steps = integrationPlan(dependencyOrder(units), units);
     const full = steps.filter((s) => s.commands.includes('pnpm gates:full'));
+    const waveGate = steps.filter(
+      (s) => s.gate === 'BATCH-FINAL' && s.commands.includes('pnpm gates'),
+    );
     const last = steps[steps.length - 1];
     return (
-      expect(full.length === 1, `expected exactly one gates:full step, got ${full.length}`) ??
+      expect(
+        full.length === 0,
+        `gates:full belongs to the phase gate and CI, not the wave; found ${full.length} step(s)`,
+      ) ??
+      expect(
+        waveGate.length === 1,
+        `expected exactly one wave-gate gates step, got ${waveGate.length}`,
+      ) ??
       expect(last?.gate === 'BATCH-FINAL', `expected BATCH-FINAL last, got ${last?.gate}`) ??
       expect(
         steps.filter((s) => s.gate === 'PRE-INTEGRATION').length === 2,
@@ -1060,6 +1101,499 @@ export async function run(): Promise<number> {
         ).includes('structured-logging'),
         'the output contract must reach the logging contract rather than restate it',
       )
+    );
+  });
+
+  await scenarioAsync(
+    39,
+    'a DONE handoff that omits a packet criterion entirely is refused',
+    async () => {
+      const u = unit({
+        task_id: 'alpha',
+        acceptance_criteria: ['criterion A', 'criterion B', 'criterion C'],
+      });
+      const evidenceFor = (req: string) => ({
+        requirement: req,
+        expected: 'x',
+        actual: 'x',
+        verification: 'pnpm test',
+        result: 'PASS',
+        artifact: '.artifacts/runs/alpha-test.log',
+      });
+      // Verifies two of the packet's three criteria and never mentions the third — neither
+      // verified nor unverified. Schema-valid (unverified is empty) and exactly the hole
+      // audit §3 item 1 named: a lane that lists fewer criteria than its packet reaching DONE.
+      const partial = doneHandoff({
+        acceptance_criteria: { verified: ['criterion A', 'criterion B'], unverified: [] },
+        evidence: [evidenceFor('criterion A'), evidenceFor('criterion B')],
+      });
+      const full = doneHandoff({
+        acceptance_criteria: {
+          verified: ['criterion A', 'criterion B', 'criterion C'],
+          unverified: [],
+        },
+        evidence: [
+          evidenceFor('criterion A'),
+          evidenceFor('criterion B'),
+          evidenceFor('criterion C'),
+        ],
+      });
+      // Lists criterion A in both buckets at once — the other way a handoff can dodge the
+      // "exactly one bucket" rule.
+      const doubled = doneHandoff({
+        acceptance_criteria: {
+          verified: ['criterion A', 'criterion B', 'criterion C'],
+          unverified: ['criterion A'],
+        },
+        evidence: [
+          evidenceFor('criterion A'),
+          evidenceFor('criterion B'),
+          evidenceFor('criterion C'),
+        ],
+      });
+      const partialVerdict = await validateHandoff(partial, u, NO_COMMIT_CHECK);
+      const fullVerdict = await validateHandoff(full, u, NO_COMMIT_CHECK);
+      const doubledVerdict = await validateHandoff(doubled, u, NO_COMMIT_CHECK);
+      return (
+        expect(
+          !partialVerdict.ok,
+          'a DONE handoff that omits a packet criterion must not validate',
+        ) ??
+        expect(
+          partialVerdict.errors.some((e) => e.includes('criterion C')),
+          `the omitted criterion must be named; got: ${partialVerdict.errors.join('; ')}`,
+        ) ??
+        expect(
+          fullVerdict.ok,
+          `a handoff covering every packet criterion must validate; got: ${fullVerdict.errors.join('; ')}`,
+        ) ??
+        expect(
+          !doubledVerdict.ok && doubledVerdict.errors.some((e) => e.includes('criterion A')),
+          `a criterion in both buckets must be refused and named; got: ${doubledVerdict.errors.join('; ')}`,
+        )
+      );
+    },
+  );
+
+  scenario(40, 'changed_files is checked against what the commit actually touched', () => {
+    // A real, immutable commit from this repository's history: "docs(backlog): file
+    // p2.prisma-run-step review findings, close stale gitignore entry", which touches exactly
+    // one file. Sourced independently with `git diff-tree --no-commit-id --name-only -r
+    // 2b489c2` before writing this scenario, not derived from the function under test.
+    const sha = '2b489c2fd832000f7681a4bc8a7e09b9201dd897';
+    const accurate = checkChangedFiles(sha, ['BACKLOG.md']);
+    const omitted = checkChangedFiles(sha, []);
+    const padded = checkChangedFiles(sha, ['BACKLOG.md', 'scripts/lanes.ts']);
+    return (
+      expect(
+        accurate.length === 0,
+        `an accurate claim must not be flagged; got: ${accurate.join('; ')}`,
+      ) ??
+      expect(
+        omitted.some((e) => e.includes('BACKLOG.md')),
+        `a file the commit touched but the claim omits must be named; got: ${omitted.join('; ')}`,
+      ) ??
+      expect(
+        padded.some((e) => e.includes('scripts/lanes.ts')),
+        `a file the claim adds but the commit never touched must be named; got: ${padded.join('; ')}`,
+      )
+    );
+  });
+
+  await scenarioAsync(
+    41,
+    'a finding handoff requires evidence on PASSED and a structured reason on BLOCKED',
+    async () => {
+      const schema = JSON.parse(
+        readFileSync(
+          fileURLToPath(new URL('../../.claude/rules/handoff.schema.json', import.meta.url)),
+          'utf8',
+        ),
+      ) as object;
+      const lib = (await import(
+        new URL('../../.claude/hooks/lib/validate-schema.mjs', import.meta.url).href
+      )) as { validate: (v: unknown, s: object) => string[] };
+      const base = {
+        status: 'PASSED',
+        owner: 'validator',
+        failure: '',
+        evidence: [] as unknown[],
+        affectedArea: 'scripts/lanes.ts',
+        recommendedNextAction: 'merge',
+        confidence: 'HIGH',
+      };
+      const passedNoEvidence = lib.validate(base, schema);
+      const passedWithEvidence = lib.validate(
+        {
+          ...base,
+          evidence: [{ command: 'pnpm test', location: 'x', expected: 'y', actual: 'z' }],
+        },
+        schema,
+      );
+      const blockedNoReason = lib.validate({ ...base, status: 'BLOCKED' }, schema);
+      const blockedWithReason = lib.validate(
+        { ...base, status: 'BLOCKED', blocker: { kind: 'path', ref: 'platform/x' } },
+        schema,
+      );
+      return (
+        expect(
+          passedNoEvidence.some((e) => e.includes('evidence')),
+          `PASSED with empty evidence must be refused; got: ${passedNoEvidence.join('; ')}`,
+        ) ??
+        expect(
+          passedWithEvidence.length === 0,
+          `PASSED with evidence must validate; got: ${passedWithEvidence.join('; ')}`,
+        ) ??
+        expect(
+          blockedNoReason.some((e) => e.includes('blocker')),
+          `BLOCKED with no blocker must be refused; got: ${blockedNoReason.join('; ')}`,
+        ) ??
+        expect(
+          blockedWithReason.length === 0,
+          `BLOCKED with a structured blocker must validate; got: ${blockedWithReason.join('; ')}`,
+        )
+      );
+    },
+  );
+
+  await scenarioAsync(
+    42,
+    'a lane handoff claiming BLOCKED without a structured blocker is refused',
+    async () => {
+      const u = unit({ task_id: 'alpha' });
+      const base = {
+        task_id: 'alpha',
+        status: 'BLOCKED',
+        commit: '',
+        changed_files: [],
+        validation: { commands: [], results: [] },
+        acceptance_criteria: { verified: [], unverified: ['a documented criterion'] },
+        assumptions: [],
+        risks: [],
+        failures: [],
+        follow_up_required: [],
+        token_or_usage_summary: 'fixture',
+      };
+      const noBlocker = await validateHandoff(base, u, NO_COMMIT_CHECK);
+      const withBlocker = await validateHandoff(
+        { ...base, blocker: { kind: 'path', ref: 'docs/decisions/0006-x.md' } },
+        u,
+        NO_COMMIT_CHECK,
+      );
+      return (
+        expect(
+          noBlocker.errors.some((e) => e.includes('blocker')),
+          `BLOCKED with no blocker must be refused; got: ${noBlocker.errors.join('; ')}`,
+        ) ??
+        expect(
+          !withBlocker.errors.some((e) => e.includes('blocker')),
+          `a structured blocker must satisfy the requirement; got: ${withBlocker.errors.join('; ')}`,
+        )
+      );
+    },
+  );
+
+  scenario(
+    43,
+    'a unit or node with no usable changeClass hard-errors instead of shipping an empty agent chain',
+    () => {
+      const withoutClass = unit({ task_id: 'alpha', changeClass: null });
+      const withClass = unit({ task_id: 'beta' });
+      let laneError: string | null = null;
+      try {
+        decide([withoutClass, withClass]);
+      } catch (e) {
+        laneError = e instanceof Error ? e.message : String(e);
+      }
+
+      const node: Resolved = {
+        id: 'fixture.unclassified',
+        phase: 9,
+        lane: 'fixture',
+        title: 'fixture node with no changeClass',
+        owner: 'builder',
+        needs: [],
+        probes: [],
+        state: 'TODO',
+        hits: 0,
+        blockedBy: [],
+        readiness: 'READY',
+        depth: 0,
+        wave: 1,
+      };
+      let oracleError: string | null = null;
+      try {
+        verificationBlock(node);
+      } catch (e) {
+        oracleError = e instanceof Error ? e.message : String(e);
+      }
+
+      return (
+        expect(
+          laneError !== null && laneError.includes('alpha'),
+          `a batch containing an unclassified unit must hard-error naming it; got: ${laneError}`,
+        ) ??
+        expect(
+          oracleError !== null && oracleError.includes('fixture.unclassified'),
+          `a node with no changeClass must hard-error naming it; got: ${oracleError}`,
+        )
+      );
+    },
+  );
+
+  scenario(
+    44,
+    'the SubagentStop hook validates a lane handoff against the lane schema, never the finding schema',
+    () => {
+      const hook = fileURLToPath(
+        new URL('../../.claude/hooks/validate-handoff.mjs', import.meta.url),
+      );
+      const lanePath = join(tmpdir(), `selftest-lane-handoff-${process.pid}.json`);
+      const findingPath = join(tmpdir(), `selftest-finding-handoff-${process.pid}.json`);
+      const brokenPath = join(tmpdir(), `selftest-broken-lane-handoff-${process.pid}.json`);
+
+      const laneHandoff = {
+        task_id: 'fixture.alpha',
+        status: 'DONE',
+        commit: 'abcdef1234567890',
+        changed_files: ['fixture/alpha/index.ts'],
+        validation: {
+          commands: ['pnpm test'],
+          results: [{ command: 'pnpm test', exitCode: 0, passed: true }],
+        },
+        acceptance_criteria: { verified: ['a documented criterion'], unverified: [] },
+        assumptions: [],
+        risks: [],
+        failures: [],
+        follow_up_required: [],
+        token_or_usage_summary: 'fixture',
+        evidence: [
+          {
+            requirement: 'a documented criterion',
+            expected: 'x',
+            actual: 'x',
+            verification: 'pnpm test',
+            result: 'PASS',
+          },
+        ],
+      };
+      const findingHandoff = {
+        status: 'PASSED',
+        owner: 'validator',
+        failure: '',
+        evidence: [{ command: 'pnpm test', location: 'x', expected: 'y', actual: 'z' }],
+        affectedArea: 'scripts/lanes.ts',
+        recommendedNextAction: 'merge',
+        confidence: 'HIGH',
+      };
+      // Lane-shaped (has task_id) but DONE with no evidence — invalid under lane-handoff, and
+      // if it were wrongly checked against handoff.schema.json's additionalProperties:false
+      // it would also fail on every lane-only field name instead.
+      const brokenLaneHandoff = {
+        ...laneHandoff,
+        acceptance_criteria: { verified: [], unverified: [] },
+        evidence: [],
+      };
+
+      writeFileSync(lanePath, JSON.stringify(laneHandoff));
+      writeFileSync(findingPath, JSON.stringify(findingHandoff));
+      writeFileSync(brokenPath, JSON.stringify(brokenLaneHandoff));
+
+      const runHook = (p: string) =>
+        spawnSync(process.execPath, [hook, '--file', p], { encoding: 'utf8' });
+
+      try {
+        const laneResult = runHook(lanePath);
+        const findingResult = runHook(findingPath);
+        const brokenResult = runHook(brokenPath);
+
+        return (
+          expect(
+            laneResult.status === 0,
+            `a valid lane handoff must pass; stderr: ${laneResult.stderr}`,
+          ) ??
+          expect(
+            findingResult.status === 0,
+            `a valid finding handoff must pass; stderr: ${findingResult.stderr}`,
+          ) ??
+          expect(
+            brokenResult.status === 2,
+            `an invalid lane handoff must fail; got exit ${brokenResult.status}`,
+          ) ??
+          expect(
+            brokenResult.stderr.includes('lane-handoff.schema.json'),
+            `the error must name the lane schema, not the finding schema; got: ${brokenResult.stderr}`,
+          ) ??
+          expect(
+            !brokenResult.stderr.includes('unexpected property'),
+            `a lane-shaped handoff must never be checked against handoff.schema.json's ` +
+              `additionalProperties:false; got: ${brokenResult.stderr}`,
+          )
+        );
+      } finally {
+        rmSync(lanePath, { force: true });
+        rmSync(findingPath, { force: true });
+        rmSync(brokenPath, { force: true });
+      }
+    },
+  );
+
+  scenario(45, 'review cadence is derived from the class lifecycle and enforced per lane', () => {
+    const activation = loadActivation();
+    const reviewer = resolveRoles(['review'], activation);
+    const d = decide([
+      unit({ task_id: 'alpha', changeClass: 'behavior', allowed_paths: ['a/**'] }),
+      unit({ task_id: 'beta', changeClass: 'contract', allowed_paths: ['b/**'] }),
+      unit({ task_id: 'gamma', changeClass: 'feature', allowed_paths: ['c/**'] }),
+    ]);
+    const alpha = d.lanes.find((l) => l.task_id === 'alpha');
+    const beta = d.lanes.find((l) => l.task_id === 'beta');
+    const gamma = d.lanes.find((l) => l.task_id === 'gamma');
+    return (
+      expect(
+        reviewLifecycle('contract', activation) === 'per-node',
+        'contract must keep its per-node review',
+      ) ??
+      expect(
+        alpha?.review_cadence === 'phase',
+        `a behavior lane reviews at the phase gate; got ${alpha?.review_cadence}`,
+      ) ??
+      expect(
+        gamma?.review_cadence === 'wave',
+        `a feature lane reviews at the wave gate; got ${gamma?.review_cadence}`,
+      ) ??
+      expect(
+        alpha !== undefined && !alpha.required_agents.some((a) => reviewer.includes(a)),
+        `reviewer must be stripped from a non-per-node chain; got ${alpha?.required_agents.join(',')}`,
+      ) ??
+      expect(
+        beta?.review_cadence === 'per-node' &&
+          beta.required_agents.some((a) => reviewer.includes(a)),
+        `a contract chain must keep its reviewer; got ${beta?.required_agents.join(',')}`,
+      ) ??
+      expect(
+        d.review_cadence.phase.includes('alpha') &&
+          d.review_cadence.per_node.includes('beta') &&
+          d.review_cadence.wave.includes('gamma'),
+        `decision-level cadence lists are wrong: ${JSON.stringify(d.review_cadence)}`,
+      ) ??
+      expect(
+        d.review_cadence.wave_review_required,
+        'a wave containing a feature lane requires one wave review',
+      ) ??
+      expect(
+        d.review_cadence.wave_gate_agents.includes('validator') &&
+          d.review_cadence.phase_gate_agents.includes('tester') &&
+          d.review_cadence.phase_gate_agents.includes('reviewer'),
+        `gate agents are wrong: wave=${d.review_cadence.wave_gate_agents.join(',')} phase=${d.review_cadence.phase_gate_agents.join(',')}`,
+      )
+    );
+  });
+
+  scenario(46, 'a finished phase is PHASE_COMPLETE, an unknown phase is an error', () => {
+    const bogus = waveOutcome('99');
+    const absent = waveOutcome(undefined);
+    const phases = knownPhases();
+    const mismatch = phases.find((p) => {
+      const o = waveOutcome(String(p));
+      const ids = nextWave(p);
+      return ids.length === 0
+        ? o.kind !== 'complete'
+        : o.kind !== 'wave' || o.ids.join(',') !== ids.join(',');
+    });
+    const complete = phases.map((p) => waveOutcome(String(p))).find((o) => o.kind === 'complete');
+    return (
+      expect(
+        bogus.kind === 'error' && bogus.message.includes('unknown phase'),
+        `phase 99 must be an error naming the phase; got ${JSON.stringify(bogus)}`,
+      ) ??
+      expect(absent.kind === 'error', 'a missing phase argument must be an error') ??
+      expect(
+        mismatch === undefined,
+        `waveOutcome disagrees with nextWave for phase ${String(mismatch)}`,
+      ) ??
+      expect(
+        complete === undefined || complete.message.startsWith('PHASE_COMPLETE'),
+        'a finished phase must announce itself as PHASE_COMPLETE',
+      )
+    );
+  });
+
+  scenario(47, 'a feature packet dispatches Builder alone and never a Tester', () => {
+    const activation = loadActivation();
+    const rule = lifecycleOf('feature', activation);
+    if (!rule) return 'no `feature` class in agent-activation.json';
+    const packet = resolveRoles(rule.perPacket, activation);
+    const everywhere = resolveRoles(
+      [...rule.perPacket, ...rule.perWave, ...rule.perPhase, ...rule.conditional],
+      activation,
+    );
+    const d = decide([
+      unit({ task_id: 'alpha', changeClass: 'feature', allowed_paths: ['a/**'] }),
+      unit({ task_id: 'beta', changeClass: 'feature', allowed_paths: ['b/**'] }),
+    ]);
+    const alpha = d.lanes.find((l) => l.task_id === 'alpha');
+    return (
+      expect(
+        packet.join(',') === 'builder',
+        `a feature packet dispatches builder alone; got ${packet.join(',')}`,
+      ) ??
+      expect(!everywhere.includes('tester'), 'tester appears nowhere in the feature lifecycle') ??
+      expect(
+        alpha?.required_agents.join(',') === 'builder',
+        `the dispatched chain must be builder only; got ${alpha?.required_agents.join(',')}`,
+      )
+    );
+  });
+
+  scenario(48, 'Architect fires for a contract only when a decision is genuinely open', () => {
+    const settled = decide([
+      unit({ task_id: 'alpha', changeClass: 'contract', allowed_paths: ['a/**'] }),
+      unit({ task_id: 'beta', allowed_paths: ['b/**'] }),
+    ]).lanes.find((l) => l.task_id === 'alpha');
+    const ambiguous = decide([
+      unit({
+        task_id: 'alpha',
+        changeClass: 'contract',
+        allowed_paths: ['a/**'],
+        open_decisions: ['OD-X'],
+      }),
+      unit({ task_id: 'beta', allowed_paths: ['b/**'] }),
+    ]).lanes.find((l) => l.task_id === 'alpha');
+    return (
+      expect(
+        settled !== undefined && !settled.required_agents.includes('architect'),
+        `a settled contract must not dispatch an Architect; got ${settled?.required_agents.join(',')}`,
+      ) ??
+      expect(
+        settled?.optional_agents.includes('architect') === true,
+        'architect stays available as a conditional for a settled contract',
+      ) ??
+      expect(
+        ambiguous?.required_agents[0] === 'architect',
+        `an open decision must put Architect first in the chain; got ${ambiguous?.required_agents.join(',')}`,
+      )
+    );
+  });
+
+  scenario(49, 'Runner is conditional: no class lifecycle dispatches it', () => {
+    const activation = loadActivation();
+    const offenders: string[] = [];
+    for (const cls of Object.keys(activation.classes)) {
+      const rule = lifecycleOf(cls, activation);
+      if (!rule) continue;
+      const dispatched = resolveRoles(
+        [...rule.perPacket, ...rule.perWave, ...rule.perPhase],
+        activation,
+      );
+      if (dispatched.includes('runner')) offenders.push(cls);
+    }
+    const conditions = activation.activationConditions?.execute ?? [];
+    return (
+      expect(
+        offenders.length === 0,
+        `runner must never be a lifecycle-dispatched agent; found in: ${offenders.join(',')}`,
+      ) ?? expect(conditions.length > 0, 'execute must document when Runner actually fires')
     );
   });
 

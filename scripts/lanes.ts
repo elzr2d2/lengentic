@@ -35,11 +35,15 @@ import { createLogger, evidenceIdFor, type Logger } from './lib/log.ts';
 import {
   describeProbe,
   graph,
+  lifecycleOf,
   loadActivation,
+  perPacketCaps,
   resolveGraph,
   resolveRoles,
+  reviewLifecycle,
   type ProbeSpec,
   type Resolved,
+  type ReviewLifecycle,
 } from './oracle.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -110,11 +114,34 @@ export interface LaneEntry {
   allowed_paths: string[];
   forbidden_paths: string[];
   validation: string[];
+  /** The per-packet chain — who runs for this packet itself, in order. */
   required_agents: string[];
+  /** Conditional agents: run only when their activationConditions entry fires. */
   optional_agents: string[];
+  /** Where this lane's review runs, derived from the class lifecycle. */
+  review_cadence: ReviewLifecycle;
   /** Batch members that must stop if this one fails. Everything else keeps going. */
   halts_if_failed: string[];
   independent_of: string[];
+}
+
+/**
+ * The class lifecycles from `.claude/rules/agent-activation.json`, applied to one batch.
+ * Lanes in `per_node` keep their per-node review (their class is inherited downstream).
+ * `wave` lanes are reviewed **once** at the wave gate over the wave's combined diff; `phase`
+ * lanes once at the phase gate — a per-node review there is what let findings about one node
+ * hold another node's gate RED. `wave_gate_agents` / `phase_gate_agents` are every agent any
+ * lane's class puts at that gate (review, validate, adversarial-test), each running once
+ * over the combined diff, after every lane has committed.
+ */
+export interface ReviewCadence {
+  per_node: string[];
+  wave: string[];
+  phase: string[];
+  none: string[];
+  wave_review_required: boolean;
+  wave_gate_agents: string[];
+  phase_gate_agents: string[];
 }
 
 export interface Decision {
@@ -124,6 +151,7 @@ export interface Decision {
   blockers: string[];
   dependency_order: string[];
   shared_contracts: string[];
+  review_cadence: ReviewCadence;
   lanes: LaneEntry[];
   max_concurrency: number;
   requirements: Requirement[];
@@ -415,9 +443,37 @@ export function evaluate(units: Unit[], policy: Policy, repo: RepoState): Decisi
     blockers: failed.map((r) => `${r.id} ${r.text} — ${r.detail}`),
     dependency_order: order,
     shared_contracts: sharedContracts(units, ids),
+    review_cadence: reviewCadenceFor(units),
     lanes: units.map((u) => laneEntry(u, units)),
     max_concurrency: eligible ? Math.min(policy.maxConcurrency, units.length) : 1,
     requirements: req,
+  };
+}
+
+function reviewCadenceFor(units: Unit[]): ReviewCadence {
+  const activation = loadActivation();
+  const buckets: Record<ReviewLifecycle, string[]> = {
+    'per-node': [],
+    wave: [],
+    phase: [],
+    none: [],
+  };
+  const waveCaps = new Set<string>();
+  const phaseCaps = new Set<string>();
+  for (const u of units) {
+    buckets[reviewLifecycle(u.changeClass ?? '', activation)].push(u.task_id);
+    const rule = u.changeClass ? lifecycleOf(u.changeClass, activation) : null;
+    for (const c of rule?.perWave ?? []) waveCaps.add(c);
+    for (const c of rule?.perPhase ?? []) phaseCaps.add(c);
+  }
+  return {
+    per_node: buckets['per-node'].sort(),
+    wave: buckets.wave.sort(),
+    phase: buckets.phase.sort(),
+    none: buckets.none.sort(),
+    wave_review_required: waveCaps.has('review'),
+    wave_gate_agents: resolveRoles([...waveCaps].sort(), activation),
+    phase_gate_agents: resolveRoles([...phaseCaps].sort(), activation),
   };
 }
 
@@ -518,7 +574,24 @@ export function dependents(unit: Unit, units: Unit[]): string[] {
 
 function laneEntry(u: Unit, units: Unit[]): LaneEntry {
   const activation = loadActivation();
-  const rule = u.changeClass ? activation.classes[u.changeClass] : undefined;
+  const rule = u.changeClass ? lifecycleOf(u.changeClass, activation) : null;
+  // A missing or unmapped changeClass used to fall through to an empty required_agents /
+  // optional_agents pair — a packet with no validation chain, silently. Hard error instead:
+  // ten graph nodes hit exactly this before every one of them was classified.
+  if (!rule || !u.changeClass) {
+    throw new Error(
+      `unit "${u.task_id}" has no usable changeClass (got ${JSON.stringify(u.changeClass)}) — ` +
+        'add one of mechanical|feature|behavior|contract|diagnosis to its graph node so the ' +
+        'agent chain is not silently empty',
+    );
+  }
+  // The lifecycle is enforced mechanically: only the class's perPacket bucket reaches the
+  // dispatched chain — wave-gate and phase-gate agents surface once at the Decision level
+  // instead. A chain this function prints is a chain that gets dispatched, so this is where
+  // the rule either binds or stays prose. Architect joins a contract chain only when an open
+  // decision gates the unit; a settled contract does not pay for an Architect dispatch.
+  const requiredCaps = perPacketCaps(u.changeClass, u.open_decisions.length, activation);
+  const optionalCaps = rule.conditional.filter((c) => !requiredCaps.includes(c));
   const halts = dependents(u, units);
   return {
     task_id: u.task_id,
@@ -528,8 +601,9 @@ function laneEntry(u: Unit, units: Unit[]): LaneEntry {
     allowed_paths: u.allowed_paths,
     forbidden_paths: u.forbidden_paths,
     validation: u.validation_commands,
-    required_agents: rule ? resolveRoles(rule.required, activation) : [],
-    optional_agents: rule ? resolveRoles(rule.optional, activation) : [],
+    required_agents: resolveRoles(requiredCaps, activation),
+    optional_agents: resolveRoles(optionalCaps, activation),
+    review_cadence: reviewLifecycle(u.changeClass, activation),
     halts_if_failed: halts,
     independent_of: units
       .map((o) => o.task_id)
@@ -549,10 +623,10 @@ export interface IntegrationStep {
 }
 
 /**
- * Integration is sequential in dependency order, and the full suite runs **once**, after
- * the last lane. Running `gates:full` per lane would pay `check:isolation` — a whole
- * install and build in a temp checkout — once per lane to answer a question that only has
- * one answer per batch.
+ * Integration is sequential in dependency order, and the repository-wide gate runs **once**,
+ * after the last lane — the wave gate's deterministic tier. `pnpm gates:full` does not run
+ * here at all: `check:isolation` — a whole install and build in a temp checkout — answers a
+ * question with one answer per phase, so it runs at the phase gate and in CI, never per wave.
  */
 export function integrationPlan(order: string[], units: Unit[]): IntegrationStep[] {
   const byId = new Map(units.map((u) => [u.task_id, u]));
@@ -589,8 +663,8 @@ export function integrationPlan(order: string[], units: Unit[]): IntegrationStep
     order: n,
     task_id: null,
     gate: 'BATCH-FINAL',
-    commands: ['pnpm gates:full'],
-    note: 'Once, after the whole batch. This is the intended point for the full suite.',
+    commands: ['pnpm gates'],
+    note: 'Once, after the whole batch — the wave gate. gates:full (isolation) belongs to the phase gate and CI, not to every wave.',
   });
   return steps;
 }
@@ -774,11 +848,36 @@ export async function validateHandoff(
     return { ok: false, errors: [`missing schema: ${schemaPath}`], status: null };
   }
   const lib = (await import(libPath)) as { validate: (v: unknown, s: object) => string[] };
-  errors.push(...lib.validate(handoff, JSON.parse(readFileSync(schemaPath, 'utf8'))));
+  errors.push(...lib.validate(handoff, JSON.parse(readFileSync(schemaPath, 'utf8')) as object));
 
   const h = handoff as Record<string, unknown>;
   const status = typeof h?.status === 'string' ? h.status : null;
-  const changed = Array.isArray(h?.changed_files) ? (h.changed_files as string[]) : [];
+  // `changed_files` is machine-derivable from the commit, so an agent may omit it entirely
+  // (absent, not empty) and the gate derives ground truth from `git diff-tree`. A provided
+  // list is still cross-checked against the commit — a self-report is allowed, never trusted.
+  const claimed = Array.isArray(h?.changed_files) ? (h.changed_files as string[]) : null;
+  let ownershipFiles = claimed ?? [];
+  let derived = false;
+
+  if (status === 'DONE' && opts.checkCommit) {
+    const sha = typeof h?.commit === 'string' ? h.commit : '';
+    if (!git(['cat-file', '-e', `${sha}^{commit}`]).ok) {
+      errors.push(`commit "${sha}" does not resolve to a commit in this repository`);
+    } else {
+      const actual = git(['diff-tree', '--no-commit-id', '--name-only', '-r', sha]);
+      if (actual.ok) {
+        ownershipFiles = actual.out.split('\n').filter(Boolean).map(normalise);
+        derived = true;
+      }
+      if (claimed !== null) errors.push(...checkChangedFiles(sha, claimed));
+    }
+  }
+  if (status === 'DONE' && !derived && claimed === null) {
+    errors.push(
+      'changed_files is absent and no resolvable commit was available to derive it from — ' +
+        'a DONE lane names its commit',
+    );
+  }
 
   if (unit) {
     if (h?.task_id !== unit.task_id) {
@@ -786,21 +885,47 @@ export async function validateHandoff(
         `task_id "${String(h?.task_id)}" does not match the dispatched unit "${unit.task_id}"`,
       );
     }
-    const verdict = checkOwnership(changed, unit.allowed_paths, unit.forbidden_paths);
+    const verdict = checkOwnership(ownershipFiles, unit.allowed_paths, unit.forbidden_paths);
     for (const v of verdict.violations) {
-      errors.push(`changed_files: ${v.file} — ${v.reason} (${v.rule})`);
+      errors.push(
+        `changed_files${derived ? ' (derived from the commit)' : ''}: ${v.file} — ${v.reason} (${v.rule})`,
+      );
     }
   }
 
-  errors.push(...checkEvidence(h, status));
-
-  if (status === 'DONE' && opts.checkCommit) {
-    const sha = typeof h?.commit === 'string' ? h.commit : '';
-    if (!git(['cat-file', '-e', `${sha}^{commit}`]).ok) {
-      errors.push(`commit "${sha}" does not resolve to a commit in this repository`);
-    }
-  }
+  errors.push(...checkEvidence(h, status, unit?.acceptance_criteria ?? []));
   return { ok: errors.length === 0, errors, status };
+}
+
+/**
+ * The commit is the ground truth for what changed; `changed_files` is a self-report next to
+ * it. A lane that omits a file escapes the ownership check at handoff time (the file is
+ * never compared against `allowed_paths`), and a lane that pads the list claims territory it
+ * never touched. Both directions are checkable against `git diff-tree` without trusting the
+ * report.
+ */
+export function checkChangedFiles(sha: string, claimed: string[]): string[] {
+  const errors: string[] = [];
+  const actual = git(['diff-tree', '--no-commit-id', '--name-only', '-r', sha]);
+  if (!actual.ok) return errors; // Commit resolution is checked separately; nothing more to say.
+
+  const actualFiles = new Set(actual.out.split('\n').filter(Boolean).map(normalise));
+  const claimedFiles = new Set(claimed.map(normalise));
+
+  const omitted = [...actualFiles].filter((f) => !claimedFiles.has(f)).sort();
+  const extra = [...claimedFiles].filter((f) => !actualFiles.has(f)).sort();
+
+  if (omitted.length > 0) {
+    errors.push(
+      `changed_files omits ${omitted.length} file(s) commit "${sha}" actually touched: ${omitted.join(', ')}`,
+    );
+  }
+  if (extra.length > 0) {
+    errors.push(
+      `changed_files claims ${extra.length} file(s) commit "${sha}" does not touch: ${extra.join(', ')}`,
+    );
+  }
+  return errors;
 }
 
 interface RunResult {
@@ -827,7 +952,11 @@ const TEST_COMMAND = /(^|\s|:)(test|tests|vitest|jest|playwright|check:integrity
  * mechanical: each one is a way a green report can be true about a command and false about
  * the work, and none of them needs an agent's judgement to detect.
  */
-export function checkEvidence(h: Record<string, unknown>, status: string | null): string[] {
+export function checkEvidence(
+  h: Record<string, unknown>,
+  status: string | null,
+  packetCriteria: string[] = [],
+): string[] {
   const errors: string[] = [];
   const done = status === 'DONE';
 
@@ -842,6 +971,25 @@ export function checkEvidence(h: Record<string, unknown>, status: string | null)
     ? h.acceptance_criteria
     : {};
   const verified = Array.isArray(criteria.verified) ? (criteria.verified as string[]) : [];
+  const unverified = Array.isArray(criteria.unverified) ? (criteria.unverified as string[]) : [];
+
+  // 0. Every criterion the packet named lands in exactly one bucket, whatever the status.
+  //    A lane that lists 2 of the packet's 5 criteria and verifies both would otherwise
+  //    reach DONE with `unverified: []` having said nothing about the other 3 — and a
+  //    criterion missing from both buckets triggers no other check below.
+  for (const criterion of packetCriteria) {
+    const inVerified = verified.includes(criterion);
+    const inUnverified = unverified.includes(criterion);
+    if (inVerified && inUnverified) {
+      errors.push(
+        `acceptance_criteria: "${criterion}" appears in both verified and unverified — a criterion lands in exactly one bucket`,
+      );
+    } else if (!inVerified && !inUnverified) {
+      errors.push(
+        `acceptance_criteria: packet criterion "${criterion}" appears in neither verified nor unverified — silence is not a bucket`,
+      );
+    }
+  }
 
   // 1. Results line up with the commands that produced them. A results array the reader
   //    cannot map back to a command is a summary, not evidence.
@@ -917,7 +1065,7 @@ export function checkEvidence(h: Record<string, unknown>, status: string | null)
   const tests = isRecord(h.tests) ? h.tests : null;
   const ranTests = commands.some((c) => TEST_COMMAND.test(c));
   if (tests) {
-    const count = (k: string): number => (typeof tests[k] === 'number' ? (tests[k] as number) : 0);
+    const count = (k: string): number => (typeof tests[k] === 'number' ? tests[k] : 0);
     const discovered = count('discovered');
     const accounted = count('passed') + count('failed') + count('skipped');
     if (discovered !== accounted) {
@@ -1071,6 +1219,18 @@ export function renderDecision(d: Decision): string {
   out.push(...yamlList(d.dependency_order, '    '));
   out.push('  shared_contracts:');
   out.push(...yamlList(d.shared_contracts, '    '));
+  out.push('  review_cadence:');
+  out.push('    per_node:');
+  out.push(...yamlList(d.review_cadence.per_node, '      '));
+  out.push('    wave:');
+  out.push(...yamlList(d.review_cadence.wave, '      '));
+  out.push('    phase:');
+  out.push(...yamlList(d.review_cadence.phase, '      '));
+  out.push('    none:');
+  out.push(...yamlList(d.review_cadence.none, '      '));
+  out.push(`    wave_review_required: ${d.review_cadence.wave_review_required}`);
+  out.push(`    wave_gate_agents: [${d.review_cadence.wave_gate_agents.join(', ')}]`);
+  out.push(`    phase_gate_agents: [${d.review_cadence.phase_gate_agents.join(', ')}]`);
   out.push('  lanes:');
   if (d.lanes.length === 0) out.push('    []');
   for (const l of d.lanes) {
@@ -1078,6 +1238,7 @@ export function renderDecision(d: Decision): string {
     out.push(`      lane: ${l.lane}`);
     out.push(`      risk: ${l.risk ?? 'null'}`);
     out.push(`      change_class: ${l.change_class ?? 'null'}`);
+    out.push(`      review_cadence: ${l.review_cadence}`);
     out.push('      allowed_paths:');
     out.push(...yamlList(l.allowed_paths, '        '));
     out.push('      forbidden_paths:');
@@ -1133,6 +1294,41 @@ export function nextWave(phase: number): string[] {
     .sort();
 }
 
+export function knownPhases(): number[] {
+  const byId = resolveGraph();
+  return [...new Set([...byId.values()].map((n) => n.phase))].sort((a, b) => a - b);
+}
+
+export type WaveOutcome =
+  | { kind: 'error'; message: string }
+  | { kind: 'complete'; message: string }
+  | { kind: 'wave'; ids: string[] };
+
+/**
+ * `pnpm lanes wave <phase>` used to exit 1 both when the phase was finished and when the
+ * command genuinely failed, so every caller had to parse the message to tell a finished
+ * phase from a broken one — and one session sent a finished phase into bounded recovery.
+ * Now the exit code is the verdict: a finished phase is `PHASE_COMPLETE` and exit 0; only
+ * a real error (a phase the graph does not know) is non-zero.
+ */
+export function waveOutcome(raw: string | undefined): WaveOutcome {
+  const known = knownPhases();
+  const phase = Number(raw);
+  if (raw === undefined || raw === '' || !known.includes(phase)) {
+    return {
+      kind: 'error',
+      message:
+        `unknown phase: ${raw ?? '(none)'} — graph phases: ${known.join(', ')}. ` +
+        'usage: pnpm lanes wave <phase>',
+    };
+  }
+  const ids = nextWave(phase);
+  if (ids.length === 0) {
+    return { kind: 'complete', message: `PHASE_COMPLETE: no outstanding work in phase ${raw}` };
+  }
+  return { kind: 'wave', ids };
+}
+
 function isDirectRun(): boolean {
   const invoked = process.argv[1];
   if (!invoked) return false;
@@ -1149,14 +1345,29 @@ async function main(): Promise<void> {
   switch (cmd) {
     case 'decide':
     case 'wave': {
-      const ids = cmd === 'wave' ? nextWave(Number(args[0] ?? '0')) : args;
-      if (ids.length === 0) {
-        console.error(
-          cmd === 'wave'
-            ? `no outstanding work in phase ${args[0]}`
-            : 'usage: pnpm lanes decide <node-id> [<node-id>...]',
-        );
-        process.exit(1);
+      let ids: string[];
+      if (cmd === 'wave') {
+        const outcome = waveOutcome(args[0]);
+        // Machine-readable states, so no caller ever parses prose or infers state from a
+        // generic exit code: ERROR is exit 1; PHASE_COMPLETE is exit 0 and not a failure.
+        if (outcome.kind === 'error') {
+          if (json) console.log(JSON.stringify({ action: 'ERROR', reason: outcome.message }));
+          else console.error(outcome.message);
+          process.exit(1);
+        }
+        if (outcome.kind === 'complete') {
+          if (json) {
+            console.log(JSON.stringify({ action: 'PHASE_COMPLETE', phase: Number(args[0]) }));
+          } else console.log(outcome.message);
+          process.exit(0);
+        }
+        ids = outcome.ids;
+      } else {
+        ids = args;
+        if (ids.length === 0) {
+          console.error('usage: pnpm lanes decide <node-id> [<node-id>...]');
+          process.exit(1);
+        }
       }
       const p = policy();
       const maxOverride = flag(rest, 'max');
@@ -1400,7 +1611,7 @@ async function main(): Promise<void> {
     }
 
     case 'selftest': {
-      const mod = (await import('./lanes/selftest.ts')) as { run: () => Promise<number> };
+      const mod = await import('./lanes/selftest.ts');
       process.exit(await mod.run());
       break;
     }
@@ -1487,6 +1698,12 @@ function probeTargets(p: ProbeSpec): ProbeTarget[] {
     }
     case 'manual':
       return [{ path: p.evidence, label: `manual ${p.evidence}`, evidence: true }];
+    case 'script':
+    case 'cmd':
+      return [];
+    // Kinds arrive from graph.json, so a malformed one is reachable at runtime even though
+    // the union says otherwise. The cases above are named rather than left to this default
+    // so that ADDING a probe kind fails lint instead of silently landing here.
     default:
       return [];
   }
@@ -1573,17 +1790,33 @@ function changedFiles(base: string | undefined): string[] {
 }
 
 function advice(d: Decision, ids: string[]): string {
+  const rc = d.review_cadence;
+  const parts: string[] = [];
+  if (rc.wave_gate_agents.length > 0) {
+    parts.push(
+      `Wave gate, once over the combined diff: ${rc.wave_gate_agents.join(', ')} + pnpm gates.`,
+    );
+  } else {
+    parts.push('Wave gate: pnpm gates only — no agent required by any lane class.');
+  }
+  if (rc.phase_gate_agents.length > 0) {
+    parts.push(`Deferred to the phase gate: ${rc.phase_gate_agents.join(', ')}.`);
+  }
+  if (rc.per_node.length > 0) parts.push(`Per-node review only for ${rc.per_node.join(', ')}.`);
+  const review = parts.join(' ');
   if (d.eligible) {
     return [
       `PARALLEL approved for ${ids.length} lanes at concurrency ${d.max_concurrency}.`,
       `Next: pnpm lanes worktrees ${ids.join(' ')}`,
       `Then dispatch one packet per lane in a single message: ${ids.map((i) => `pnpm oracle packet ${i}`).join(' ; ')}`,
+      review,
     ].join('\n');
   }
   return [
     `SEQUENTIAL. ${d.blockers.length} hard requirement(s) not verified.`,
     `Run them in this order: ${d.dependency_order.join(' → ')}`,
     `Start with: pnpm oracle packet ${d.dependency_order[0] ?? ids[0] ?? ''}`,
+    review,
   ].join('\n');
 }
 

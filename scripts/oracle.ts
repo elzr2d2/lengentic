@@ -78,6 +78,10 @@ export interface Decision {
 
 export interface Graph {
   planRef: string;
+  /** Segment ids in delivery order — plain phase numbers plus split segments like "5a". */
+  executionOrder?: string[];
+  /** For a split phase: segment id → the node ids it owns. */
+  segments?: Record<string, string[]>;
   lanePolicy: LanePolicy;
   decisions: Decision[];
   sections: Record<string, string[]>;
@@ -96,9 +100,9 @@ export interface Resolved extends Node {
   wave: number;
 }
 
-export const graph: Graph = JSON.parse(
+export const graph = JSON.parse(
   readFileSync(join(ROOT, 'scripts/oracle/graph.json'), 'utf8'),
-);
+) as Graph;
 
 // ── probes ────────────────────────────────────────────────────────────────────────────
 
@@ -129,7 +133,9 @@ function runProbe(p: ProbeSpec): boolean {
       return !existsSync(join(ROOT, p.path));
 
     case 'script': {
-      const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+      const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+        scripts?: Record<string, string>;
+      };
       return Boolean(pkg.scripts?.[p.name]);
     }
 
@@ -409,12 +415,45 @@ function ownershipBlock(n: Resolved): string[] {
   return out;
 }
 
+/**
+ * The per-packet agent chain for one node: the class lifecycle's `perPacket` bucket, plus
+ * `architecture` when the node is a contract gated by an open decision — the one activation
+ * condition a script can check. A settled contract does not pay for an Architect dispatch.
+ */
+export function perPacketCaps(
+  changeClass: string,
+  openDecisions: number,
+  activation: Activation,
+): string[] {
+  const rule = lifecycleOf(changeClass, activation);
+  if (!rule) return [];
+  const caps = [...rule.perPacket];
+  if (
+    changeClass === 'contract' &&
+    openDecisions > 0 &&
+    rule.conditional.includes('architecture') &&
+    !caps.includes('architecture')
+  ) {
+    caps.unshift('architecture');
+  }
+  return caps;
+}
+
 /** Validation, acceptance and the agents this change class actually needs. */
-function verificationBlock(n: Resolved): string[] {
+export function verificationBlock(n: Resolved): string[] {
   const commands = n.validate ?? [];
   const activation = loadActivation();
   const cls = n.changeClass;
-  const rule = cls ? activation.classes[cls] : undefined;
+  const rule = cls ? lifecycleOf(cls, activation) : null;
+  // A missing or unmapped changeClass used to silently drop the whole `## Agents` block — a
+  // packet with no validation chain, and nothing in the output said so. Hard error instead.
+  if (!rule || !cls) {
+    throw new Error(
+      `node "${n.id}" has no usable changeClass (got ${JSON.stringify(cls)}) — add one of ` +
+        'mechanical|feature|behavior|contract|diagnosis to scripts/oracle/graph.json so the ' +
+        'agent chain is not silently empty',
+    );
+  }
 
   const out = ['## Validation', ''];
   if (commands.length === 0) {
@@ -441,20 +480,32 @@ function verificationBlock(n: Resolved): string[] {
     '',
   );
 
-  if (rule) {
-    out.push(
-      '## Agents',
-      '',
-      `Change class **${cls}** (risk ${n.risk ?? 'unstated'}): ${rule.rationale}`,
-      '',
-      `- required: ${resolveRoles(rule.required, activation).join(' → ') || 'none'}`,
-      `- optional: ${resolveRoles(rule.optional, activation).join(', ') || 'none'}`,
-      '',
-      'Optional agents run when their activation condition fires, not by default. Dispatching',
-      'an agent that had nothing to look at costs the same as one that did.',
-      '',
-    );
-  }
+  const openDecisions = graph.decisions.filter((d) => !d.answered && d.blocks.includes(n.id));
+  const packetCaps = perPacketCaps(cls, openDecisions.length, activation);
+  const cadence: Record<string, string> = {
+    'per-node':
+      'per node — this class is inherited downstream; review lands before the next lane builds on it',
+    wave: "wave gate — one review over the wave's combined diff, never per node",
+    phase: "phase gate — one review over the phase's combined diff, never per node or per wave",
+    none: 'none unless explicitly triggered',
+  };
+  out.push(
+    '## Agents',
+    '',
+    `Change class **${cls}** (risk ${n.risk ?? 'unstated'}): ${rule.rationale}`,
+    '',
+    `- per packet: ${resolveRoles(packetCaps, activation).join(' → ') || 'none'}`,
+    `- at the wave gate: ${resolveRoles(rule.perWave, activation).join(', ') || 'none'}`,
+    `- at the phase gate: ${resolveRoles(rule.perPhase, activation).join(', ') || 'none'}`,
+    `- conditional: ${resolveRoles(rule.conditional, activation).join(', ') || 'none'}`,
+    `- review cadence: ${cadence[reviewLifecycle(cls, activation)]}`,
+    '',
+    'Conditional agents run when their activation condition in',
+    '`.claude/rules/agent-activation.json` fires, not by default. Dispatching an agent that',
+    'had nothing to look at costs the same as one that did. Deterministic commands are run',
+    'directly — Runner is dispatched only for long, noisy or repeated output.',
+    '',
+  );
   return out;
 }
 
@@ -466,12 +517,57 @@ function fmtPaths(paths: string[]): string {
   return paths.length === 0 ? '(none)' : paths.map((p) => `\`${p}\``).join(', ');
 }
 
+export interface ClassLifecycle {
+  perPacket: string[];
+  perWave: string[];
+  perPhase: string[];
+  conditional: string[];
+  rationale: string;
+}
+
 export interface Activation {
   capabilities: Record<string, string[]>;
-  classes: Record<string, { required: string[]; optional: string[]; rationale: string }>;
+  classes: Record<string, ClassLifecycle>;
   activationConditions?: Record<string, string[]>;
   responsibilities?: Record<string, string[]>;
   controlPlane?: Record<string, string>;
+}
+
+/**
+ * The lifecycle for one change class, with every bucket normalised to an array. A class the
+ * file does not know returns null — callers hard-error on that, because an unmapped class
+ * silently shipping an empty agent chain is exactly the bug this used to have.
+ */
+export function lifecycleOf(changeClass: string, activation: Activation): ClassLifecycle | null {
+  const rule = activation.classes[changeClass];
+  if (!rule) return null;
+  return {
+    perPacket: rule.perPacket ?? [],
+    perWave: rule.perWave ?? [],
+    perPhase: rule.perPhase ?? [],
+    conditional: rule.conditional ?? [],
+    rationale: rule.rationale,
+  };
+}
+
+export type ReviewLifecycle = 'per-node' | 'wave' | 'phase' | 'none';
+
+/**
+ * Review cadence is DERIVED from where `review` sits in the class lifecycle — one source of
+ * truth instead of a class chain and a cadence block that can disagree.
+ */
+export function reviewLifecycle(changeClass: string, activation: Activation): ReviewLifecycle {
+  const rule = lifecycleOf(changeClass, activation);
+  if (!rule) return 'none';
+  if (rule.perPacket.includes('review')) return 'per-node';
+  if (rule.perWave.includes('review')) return 'wave';
+  if (rule.perPhase.includes('review')) return 'phase';
+  return 'none';
+}
+
+/** Whether this change class keeps its per-node review; everything else reviews later. */
+export function reviewIsPerNode(changeClass: string, activation: Activation): boolean {
+  return reviewLifecycle(changeClass, activation) === 'per-node';
 }
 
 let activationCache: Activation | null = null;
@@ -838,8 +934,11 @@ function main(): void {
       console.log(JSON.stringify([...byId.values()], null, 2));
       break;
 
+    // The status matrix is a generated snapshot of runtime state. It lives under
+    // `.artifacts/` because dynamic state in a committed doc goes stale the moment the next
+    // packet lands — `pnpm oracle status` is the runtime authority, this is a convenience.
     case 'md': {
-      const dest = join(ROOT, 'docs/PROJECT_STATUS.md');
+      const dest = join(ROOT, '.artifacts/oracle/PROJECT_STATUS.md');
       mkdirSync(dirname(dest), { recursive: true });
       writeFileSync(dest, markdown(byId) + '\n', 'utf8');
       console.log(`wrote ${dest}`);

@@ -98,6 +98,29 @@ module.exports = {
       to: { path: '^(platform/(?!shared/)|playground/)' },
     },
     {
+      name: 'no-prisma-in-the-wire-contract',
+      severity: 'error',
+      comment:
+        'CLAUDE.md ## Types: "Prisma types are database-internal and never cross a module ' +
+        'boundary." platform/shared IS the wire contract and telemetry-sdk is the public ' +
+        'artifact, so a Prisma import in either puts a database-internal type on the wire and ' +
+        'makes every SDK consumer install a database client. shared-schema-is-the-wire-contract ' +
+        'cannot catch this: it forbids platform PATHS, and @prisma/client is an npm module ' +
+        'that arrives from outside the platform tree entirely.',
+      from: { path: '^platform/(shared|telemetry-sdk)/' },
+      to: { path: '@prisma[/+]client|^platform/database/|/generated/prisma/' },
+    },
+    {
+      name: 'analysis-engine-not-to-prisma',
+      severity: 'error',
+      comment:
+        'The analysis engine is pure functions over decision records. analysis-engine-is-pure ' +
+        'keeps it out of platform/database; this keeps it out of the client that package wraps, ' +
+        'which is the same rule reached by the other door.',
+      from: { path: '^platform/analysis-engine/' },
+      to: { path: '@prisma[/+]client|/generated/prisma/' },
+    },
+    {
       name: 'analysis-engine-is-pure',
       severity: 'error',
       comment:

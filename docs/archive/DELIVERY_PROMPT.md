@@ -1,5 +1,11 @@
 # LenGentic — Delivery Prompt
 
+> **[HISTORICAL]** Archived 2026-08-20 by the harness-throughput pass. The delivery loop it
+> describes is superseded: `pnpm flow next` is the entry point, agent cadence is
+> lifecycle-derived from `.claude/rules/agent-activation.json`, and the generated status
+> snapshot moved to `.artifacts/oracle/PROJECT_STATUS.md`. Kept for the record; do not
+> execute from it.
+
 What remains, which workflow runs each step, what may fan out, and where a failure goes.
 
 Derived from `MVP_PLAN_V3.md`, `.claude/rules/agent-activation.json`,

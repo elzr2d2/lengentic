@@ -16,13 +16,16 @@ counts as false.
 ## 1. Find the batch
 
 ```bash
+pnpm flow next              # the one next action, as JSON — start here
 pnpm oracle status          # what is done, what is unblocked
 pnpm oracle unblock         # root causes, ranked by leverage — start here when everything looks blocked
 pnpm lanes wave <phase>     # the next wave, already run through the eligibility gate
 ```
 
-`pnpm lanes wave` is the normal entry point. It picks the lowest unfinished wave in the
-phase and decides on it. Use `pnpm lanes decide <id...>` when you want a specific set.
+`pnpm flow next` is the entry point: when its action is `DISPATCH`, it names the packets and
+the mode. `pnpm lanes wave` is the decision it derives from — it picks the lowest unfinished
+wave in the phase and decides on it. Use `pnpm lanes decide <id...>` when you want a
+specific set.
 
 ## 2. Read the decision, do not re-derive it
 
@@ -86,11 +89,16 @@ Inside the lane, before the commit:
 
 ```bash
 pnpm lanes check <id>       # diff scope: forbidden paths, out-of-surface writes
-pnpm gates                  # lint, format, typecheck, test, build, boundaries
+<the packet's validate commands>   # the lane's own acceptance evidence
 ```
 
-Run `pnpm gates` before any validation agent, always. It costs no tokens and catches a large
-share of what an agent would otherwise spend tokens discovering.
+The commit itself then runs the Tier 2 staged-scope ladder (`scripts/precommit.ts`) via the
+pre-commit hook — secrets, format, lint, affected-package typecheck and test. The lane does
+not run `pnpm gates`; that is the wave gate's job, once, over the integrated wave
+(`run-quality-gates` tier table).
+
+Run the deterministic checks before any validation agent, always. They cost no tokens and
+catch a large share of what an agent would otherwise spend tokens discovering.
 
 The lane returns `.artifacts/handoffs/<phase>-<id>-<owner>.json` shaped by
 `.claude/rules/lane-handoff.schema.json`. `DONE` requires a commit SHA, changed files inside
@@ -110,9 +118,15 @@ ordered plan. It stops at the first failure and integrates nothing past it.
 You perform the merges. Integration order is `dependency_order`, always sequential, whatever
 the dispatch mode was.
 
-`pnpm gates:full` runs **once**, after the whole batch. Per-lane it would pay
+After the whole batch is merged, the **wave gate** runs: `pnpm gates` once over the
+integrated tree, then whatever `wave_gate_agents` the wave's change classes require from
+`.claude/rules/agent-activation.json` (a Validator over the combined diff for behavior,
+Reviewer for feature). Record it with `pnpm flow record wave ...` — the gate record is what
+`pnpm flow next` reads.
+
+`pnpm gates:full` runs at the **phase gate** and in CI only. Per-wave it would pay
 `check:isolation` — a full install and build in a temp checkout — repeatedly to answer a
-question with one answer per batch.
+question with one answer per phase.
 
 Do not delete worktrees or branches afterwards. That discards uncommitted lane work and is
 a human decision.

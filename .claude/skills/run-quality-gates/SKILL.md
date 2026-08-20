@@ -5,16 +5,21 @@ description: Run the deterministic quality gates and report real output. Use bef
 
 # Run Quality Gates
 
-Deterministic checks. No agent judgment is involved or wanted — MVP_PLAN.md §29: never ask
+Deterministic checks. No agent judgment is involved or wanted — `CLAUDE.md`: never ask
 an agent to verify what a script can verify.
 
-## Which set to run
+## Which tier to run
 
-| Situation                       | Command                       |
-| ------------------------------- | ----------------------------- |
-| Mid-task, quick feedback        | `pnpm lint && pnpm typecheck` |
-| Before claiming a task complete | `pnpm gates`                  |
-| Before a commit, or in CI       | `pnpm gates:full`             |
+| Tier | Situation            | Command                                                              |
+| ---- | -------------------- | -------------------------------------------------------------------- |
+| T1   | Inner loop, mid-task | the focused check: `pnpm lint`, one test file, one package typecheck |
+| T2   | Packet commit        | the pre-commit hook (`scripts/precommit.ts`) — staged-scope ladder   |
+| T3   | Wave gate            | `pnpm gates`                                                         |
+| T4   | Phase gate, and CI   | `pnpm gates:full`                                                    |
+
+T2 runs itself at `git commit`; do not run gates:full by hand before a packet commit — that
+was the old ladder, and it paid `check:isolation` per commit for a question with one answer
+per phase.
 
 `pnpm gates` runs lint, format:check, typecheck, test, build, check:boundaries, and
 check:integrity.
@@ -25,8 +30,8 @@ integration tests. Its `BLOCK` hits fail the gate; its `WARN` hits are prompts t
 `watchdog` is the role that looks.
 
 `pnpm gates:full` adds `check:isolation`, which rebuilds the platform in a temp checkout
-with `playground/` removed. It is slow by design and is scoped to the commit-ready tier
-(§31), not to every completion.
+with `playground/` removed. It is slow by design and is scoped to the phase gate and CI,
+not to every completion or commit.
 
 ## Procedure
 
@@ -42,6 +47,6 @@ with `playground/` removed. It is slow by design and is scoped to the commit-rea
 
 - Report gates as passing when you did not run them. This is the single most damaging
   thing you can do here — everything downstream trusts it.
-- Re-run the full suite after every small edit. Use the quick set mid-task.
+- Re-run the full suite after every small edit. Use T1 mid-task.
 - Fix a gate failure by weakening the gate. If a threshold or rule is wrong, say so and
   route it, do not quietly relax it.

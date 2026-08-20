@@ -9,7 +9,6 @@
     "task_id",
     "status",
     "commit",
-    "changed_files",
     "validation",
     "acceptance_criteria",
     "assumptions",
@@ -38,7 +37,7 @@
       "type": "string"
     },
     "changed_files": {
-      "description": "Repository-relative paths, verbatim from `git diff --name-only`. Not a summary — the integrator re-checks these against allowed_paths.",
+      "description": "OPTIONAL — machine-derivable. When omitted, `pnpm lanes handoff` derives the list from the commit via `git diff-tree` and checks ownership against that ground truth. When provided, it is still cross-checked against the commit in both directions. Provide it only when there is something the commit cannot say.",
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
@@ -174,6 +173,20 @@
       "description": "Repository-relative paths under `.artifacts/` holding full output. Required when `failures` is non-empty: a failure whose evidence is nowhere is a claim.",
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
+    },
+    "blocker": {
+      "description": "Required when status is BLOCKED. A structured reason instead of free prose, so BLOCKED can be auto-routed instead of costing a human read every time: kind=decision routes to architect, kind=path routes to re-lane (the ref names the offending path), kind=environment or kind=contract route to a human because neither has an automatic owner yet.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref"],
+      "properties": {
+        "kind": {
+          "description": "path: a file or write surface is the obstacle, ref names it. decision: an open decision gates the work, ref names the decision id. environment: infrastructure/tooling outside the repo is unavailable or misconfigured. contract: a shared interface or wire schema conflicts with what was asked.",
+          "type": "string",
+          "enum": ["path", "decision", "environment", "contract"]
+        },
+        "ref": { "type": "string", "minLength": 1 }
+      }
     }
   },
   "allOf": [
@@ -183,7 +196,6 @@
         "required": ["evidence"],
         "properties": {
           "commit": { "minLength": 7 },
-          "changed_files": { "minItems": 1 },
           "acceptance_criteria": {
             "properties": { "unverified": { "maxItems": 0 } }
           },
@@ -198,6 +210,12 @@
       "if": { "properties": { "status": { "const": "FAILED" } }, "required": ["status"] },
       "then": {
         "properties": { "failures": { "minItems": 1 } }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "BLOCKED" } }, "required": ["status"] },
+      "then": {
+        "required": ["blocker"]
       }
     }
   ]

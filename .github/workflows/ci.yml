@@ -20,7 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # Full history: check:lanes scenario 40 validates `changed_files` against a fixed
+      # historical commit, which a depth-1 clone does not have.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
 
@@ -54,6 +58,23 @@ jobs:
       - name: Lane workflow scenarios
         if: '!cancelled()'
         run: pnpm check:lanes
+
+      # The control plane's own scenarios — `pnpm flow next` action derivation, gate
+      # records, checkpoint reconciliation. Outside `pnpm gates` for the same reason.
+      - name: Flow scenarios
+        if: '!cancelled()'
+        run: pnpm check:flow
+
+      # Probe hygiene: a probe may only look inside the surface its own node owns
+      # (CLAUDE.md "The oracle must not lie").
+      - name: Probe ownership
+        if: '!cancelled()'
+        run: pnpm check:probes
+
+      # The sequential-vs-parallel decision engine's own scenarios.
+      - name: Decide scenarios
+        if: '!cancelled()'
+        run: pnpm check:decide
 
       # The retriever's own scenarios. Same reason as above for being outside `pnpm gates`.
       # It also catches document rot: a renumbered plan section or a renamed glossary term

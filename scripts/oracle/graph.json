@@ -1,6 +1,12 @@
 {
   "$comment": "Ground truth for LenGentic MVP delivery. Nodes are deliverables, not tasks. Status is PROBED from the repository, never hand-maintained — a checkbox lies, a probe does not. Edit this file when the plan changes; never edit it to make status look better.",
   "planRef": "MVP_PLAN_V3.md",
+  "$executionOrderComment": "The amended execution order from the Phase 1 gate (CLAUDE.md ## Current state): phase numbers are identity, not sequence. 5a is Phase 5 waves 1-3 (the pure analysis engine); 5b stays after Phase 4 and owns deleting spike/. `pnpm flow next` walks this order; `pnpm lanes wave` still takes the plain phase number. Every phase-5 node must appear in exactly one segment below — `pnpm check:flow` asserts it.",
+  "executionOrder": ["1", "5a", "2", "3", "4", "5b", "6", "7"],
+  "segments": {
+    "5a": ["p5.engine-pkg", "p5.negative-fixtures", "p5.det-candidate", "p5.repeated-failed"],
+    "5b": ["p5.rec-persistence", "p5.analysis-endpoint", "p5.recs-ui", "p5.spike-deleted"]
+  },
   "$lanePolicyComment": "Path ownership for parallel dispatch. `pnpm lanes decide` reads this. Annotation is the OPT-IN to parallelism: a node without `own.allowed` and `validate` fails the eligibility gate and falls back to sequential. That is deliberate — an unannotated node has no verified write surface, and dispatching one into a worktree beside another is exactly the collision the gate exists to prevent.",
   "lanePolicy": {
     "maxConcurrency": 2,
@@ -184,7 +190,8 @@
           "run": "docker --version"
         }
       ],
-      "note": "BACKLOG.md records Docker + WSL2 as not installed. Blocks every runtime probe below."
+      "note": "BACKLOG.md records Docker + WSL2 as not installed. Blocks every runtime probe below.",
+      "changeClass": "mechanical"
     },
     {
       "id": "p1.workspace",
@@ -206,7 +213,8 @@
           "kind": "script",
           "name": "gates:full"
         }
-      ]
+      ],
+      "changeClass": "mechanical"
     },
     {
       "id": "p1.boundaries",
@@ -230,7 +238,8 @@
           "file": ".dependency-cruiser.cjs",
           "pattern": "tsPreCompilationDeps"
         }
-      ]
+      ],
+      "changeClass": "contract"
     },
     {
       "id": "p1.isolation",
@@ -248,7 +257,8 @@
           "kind": "script",
           "name": "check:isolation"
         }
-      ]
+      ],
+      "changeClass": "behavior"
     },
     {
       "id": "p1.harness",
@@ -282,7 +292,8 @@
           "kind": "path",
           "path": ".claude/hooks/validate-handoff.mjs"
         }
-      ]
+      ],
+      "changeClass": "contract"
     },
     {
       "id": "p1.api",
@@ -300,7 +311,8 @@
           "kind": "path",
           "path": "platform/api/src/health/health.controller.ts"
         }
-      ]
+      ],
+      "changeClass": "feature"
     },
     {
       "id": "p1.dashboard",
@@ -318,7 +330,8 @@
           "kind": "path",
           "path": "platform/dashboard/src/lib/api.ts"
         }
-      ]
+      ],
+      "changeClass": "feature"
     },
     {
       "id": "p1.database-pkg",
@@ -336,7 +349,8 @@
           "kind": "path",
           "path": "platform/database/src/index.ts"
         }
-      ]
+      ],
+      "changeClass": "contract"
     },
     {
       "id": "p1.docker-files",
@@ -358,7 +372,8 @@
           "kind": "path",
           "path": "docker/dashboard.Dockerfile"
         }
-      ]
+      ],
+      "changeClass": "mechanical"
     },
     {
       "id": "p1.docker-runtime",
@@ -393,7 +408,8 @@
           "kind": "path",
           "path": ".github/workflows/ci.yml"
         }
-      ]
+      ],
+      "changeClass": "mechanical"
     },
     {
       "id": "p1.debt.handoff-files",
@@ -544,7 +560,7 @@
       "changeClass": "behavior",
       "validate": ["pnpm test", "pnpm gates"],
       "own": {
-        "allowed": ["platform/api/src/**"]
+        "allowed": ["platform/api/src/**", "platform/api/test/telemetry.integration.spec.ts"]
       },
       "phase": 2,
       "lane": "api",
@@ -557,28 +573,39 @@
           "dir": "platform/api/src",
           "pattern": "@Controller..telemetry/events.."
         }
-      ]
+      ],
+      "note": "allowed_paths carry ONE file outside platform/api/src/**: platform/api/test/telemetry.integration.spec.ts. Granted 2026-08-20 for repair attempt 2, because the F1 advisory-lock fix is only provable against real Postgres and vitest.config.mts includes `src/**/*.spec.ts` only — a colocated unit test cannot discover it, which is how attempt 1 shipped a criterion marked verified whose own command exits 1. The grant is that path and no other; schema.prisma stays out of this lane (F3 is p2.idempotency's, docs/decisions/0009). p2.integration-tests' probe was re-pointed at STALE in the same commit so it can no longer be satisfied by this file — a node reporting DONE on another node's deliverable is the failure `pnpm check:probes` exists to prevent."
     },
     {
       "id": "p2.idempotency",
-      "risk": "medium",
+      "risk": "high",
       "changeClass": "behavior",
       "validate": ["pnpm test", "pnpm gates"],
       "own": {
-        "allowed": ["platform/api/src/**"]
+        "allowed": [
+          "platform/api/src/**",
+          "platform/database/prisma/**",
+          "platform/database/src/**"
+        ]
       },
       "phase": 2,
       "lane": "persistence",
-      "title": "Idempotent upsert on eventId; DUPLICATE is a success",
+      "title": "Idempotent upsert on eventId; DUPLICATE is a success — owns the ADR 0005 §1 dedup ledger",
       "owner": "builder",
       "needs": ["p2.ingest-endpoint"],
       "probes": [
         {
           "kind": "grep",
+          "dir": "platform/database/prisma",
+          "pattern": "model IngestedEvent"
+        },
+        {
+          "kind": "grep",
           "dir": "platform/api/src",
           "pattern": "DUPLICATE"
         }
-      ]
+      ],
+      "note": "Owns F3 — re-laned here by human decision 2026-08-20 after the p2.ingest-endpoint Tester ruled it BLOCKED naming platform/database/prisma/schema.prisma (.artifacts/evidence/2/tester-reverify/README.md). ADR 0005 §1's dedup table was never built: `seen` is reconstructed from entity-state provenance (startEventId, completionEventId, completionFieldOrigins), so any event that wins no contest leaves no trace and re-posts ACCEPTED forever — replay of a 4-event batch returns accepted:2 duplicate:2, stably (raw/f3.out D2.2/D2.3). This node's allowed_paths were widened to platform/database/prisma/** for exactly that migration, closing BACKLOG 'ADR 0005's dedup table has no lane that can write it'; p2.ingest-endpoint's boundary was NOT widened. The `model IngestedEvent` probe is the mechanical block: phase 2 cannot reach its wave-2 gate, and therefore cannot reach ADVANCE_PHASE, until the ledger exists. risk:high and the schema.prisma sharedWriteSurface both force this node to run alone. Contract correction: docs/decisions/0009."
     },
     {
       "id": "p2.sdk-core",
@@ -686,9 +713,10 @@
         {
           "kind": "grep",
           "dir": "platform/api/test",
-          "pattern": "telemetry|ingest"
+          "pattern": "STALE"
         }
-      ]
+      ],
+      "note": "Probe re-pointed from `telemetry|ingest` to `STALE` on 2026-08-20. p2.ingest-endpoint was granted platform/api/test/telemetry.integration.spec.ts for its F1 regression suite, and the old pattern would have been satisfied by that filename alone — this node would have reported DONE on another node's deliverable, before writing a line. STALE derivation (ADR 0005 §4) is this node's own and appears in no other lane's file. If a later lane starts writing STALE into platform/api/test, re-point this probe again rather than letting it drift."
     },
     {
       "id": "p3.scaffold",
