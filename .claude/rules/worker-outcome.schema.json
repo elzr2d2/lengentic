@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lengentic.dev/schemas/worker-outcome.schema.json",
+  "title": "Autopilot worker outcome",
+  "description": "The control-flow envelope a supervised Claude worker writes before it exits. It is NOT a second evidence store: a lane's own work is still reported through .claude/rules/lane-handoff.schema.json and cited here by path. Orchestration consumes this file; the prose a worker prints is for humans and is never parsed for control flow. A missing or invalid file is FAILED, never DONE - the safe direction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "workerId", "task", "outcome", "summary"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "workerId": { "type": "string", "minLength": 1 },
+    "sessionId": {
+      "type": "string",
+      "description": "The Claude session id this worker ran under, so a rotation can resume it if recovery needs the prior context."
+    },
+    "task": {
+      "type": "string",
+      "enum": ["dispatch", "integrate", "repair", "wave-gate", "phase-gate", "reconcile"],
+      "description": "Which supervisor action produced this worker. Mirrors the `pnpm flow next` action that caused the launch."
+    },
+    "node": {
+      "type": "string",
+      "description": "The graph node this worker owned. Absent for gate tasks that span a wave or phase."
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["DONE", "REPAIR_REQUIRED", "BLOCKED", "ROTATE", "FAILED"],
+      "description": "DONE: the task is finished and its evidence is on disk. REPAIR_REQUIRED: a bounded, diagnosable failure the supervisor may redispatch. BLOCKED: a CLAUDE.md escalation trigger fired - `trigger` and `options` are then required. ROTATE: context exhausted or a clean boundary reached; the same task continues in a fresh worker. FAILED: the worker could not complete and could not classify why."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One line for a human reading `pnpm autopilot status`. Never parsed."
+    },
+    "commit": {
+      "type": "string",
+      "description": "The commit this worker produced, when it produced one."
+    },
+    "handoff": {
+      "type": "string",
+      "description": "Path to the lane handoff (.artifacts/handoffs/*.json) or the session continuation brief. DONE on a dispatch task requires one."
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Artifact paths that bear on this outcome. Paths, never pasted content."
+    },
+    "trigger": {
+      "type": "number",
+      "description": "The CLAUDE.md ## Plan discipline escalation trigger number, 1-6. Required when outcome is BLOCKED."
+    },
+    "options": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "The materially different courses of action the human is being asked to choose between. Required when outcome is BLOCKED."
+    },
+    "detail": {
+      "type": "string",
+      "description": "Captured output, verbatim, when it is short. Anything long goes to an evidence path instead."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "BLOCKED" } } },
+      "then": { "required": ["trigger", "options", "evidence"] }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "DONE" } } },
+      "then": { "required": ["evidence"] }
+    }
+  ]
+}

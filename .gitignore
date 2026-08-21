@@ -17,3 +17,8 @@ Thumbs.db
 # Session-local agent state. `.claude/` is engineering infrastructure; a checkpoint recording
 # one session's recovery attempts is not a fact about the repository.
 .claude/*.local.md
+
+# Supervisor control state: leases, worker transcripts, the run journal, the escalation
+# record. Machine-local by construction — it names pids and session ids on THIS machine, and
+# `pnpm autopilot` reconstructs everything else from git and `.artifacts/`.
+.autopilot/

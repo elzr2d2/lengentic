@@ -12,6 +12,19 @@ no subagent chooses the next phase, and every dispatch still routes through `pnp
 Autopilot **owns** phase progression. If `/loop` is running underneath, it exists only to wake
 this session up for the next iteration — it never decides a phase, a wave, or a dispatch.
 
+## Running this by hand, or having the supervisor run it
+
+`pnpm autopilot` executes everything below across sessions without a human: it derives the
+action from `pnpm flow next`, launches one disposable Claude worker per action, owns the GREEN
+check in §3 itself, and escalates only on the six triggers. A worker that runs out of context
+writes `ROTATE` and a fresh one continues the same task — the `/clear`-and-resume ceremony is
+gone. `docs/AUTOPILOT_SUPERVISOR.md` is the mechanism; `docs/decisions/0012` is why.
+
+This skill is the same loop performed by hand, and it stays the debugging path: run it when the
+question is _why did it do that_, or when you want to watch one phase closely. Nothing below
+changes depending on which is driving. If you are a supervised worker, you already have one
+task and one envelope to write — do that, and do not re-enter the loop.
+
 ## 0. Charter — once per invocation
 
 Run `grill-with-docs`. Land the objective and the standing preferences as ADRs and glossary

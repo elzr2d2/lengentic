@@ -65,6 +65,13 @@ jobs:
         if: '!cancelled()'
         run: pnpm check:flow
 
+      # The session supervisor's own scenarios: the progression invariant's false-green
+      # cases, and crash / rotation / repair-exhaustion / duplicate-ownership driven against
+      # a real child process. Outside `pnpm gates` for the same reason as the two above.
+      - name: Autopilot supervisor scenarios
+        if: '!cancelled()'
+        run: pnpm check:autopilot
+
       # Probe hygiene: a probe may only look inside the surface its own node owns
       # (CLAUDE.md "The oracle must not lie").
       - name: Probe ownership

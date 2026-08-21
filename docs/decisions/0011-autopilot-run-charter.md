@@ -1,3 +1,10 @@
+---
+number: 0011
+title: Autopilot run charter — standing preferences for the phase 2 to 7 run
+date: 2026-08-21
+status: accepted
+---
+
 # 0011 — Autopilot run charter: standing preferences for the phase 2 → 7 run
 
 - **Status:** accepted
@@ -81,3 +88,20 @@ sources in `autopilot` §3, without per-phase approval.
 - **Treat the directive as conversational context only.** It would then be invisible to the
   next session and to every subagent, and trigger 3 would fire on questions the human has
   already answered in writing.
+
+## Detection
+
+- **The record was never indexed.** `pnpm check:decide` threw on this file — first for absent
+  front matter, then for this missing section — from the moment it was written until
+  2026-08-21. A charter the ADR index cannot parse is invisible to `pnpm decide ask`, which is
+  the one command a session runs to find out whether a question is already answered. If that
+  command starts returning NOVEL for a question preference (1)-(7) answers, this record has
+  drifted out of the index again.
+- **The bar was raised and nobody noticed.** Preference (2) replaces autopilot §4's two-attempt
+  bound with three materially different strategies. `pnpm autopilot` defaults to two, so a run
+  under this charter must pass `--max-repairs 3` explicitly. An escalation on trigger 5 after
+  exactly two attempts is the visible symptom that the charter was not applied.
+- **The narrowing outlived the run.** Preference (3) narrows the six `CLAUDE.md` triggers for
+  THIS run only. If a session after the run cites this record to decline an escalation
+  `CLAUDE.md` requires, the scoping in Consequences was read as permanent and this record needs
+  superseding rather than quoting.

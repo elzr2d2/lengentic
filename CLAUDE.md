@@ -162,6 +162,13 @@ A lane writes only inside its `allowed_paths`. Widening its own boundary is neve
 Integration is sequential, in dependency order, whatever the dispatch mode was. Worktrees and
 branches are never deleted automatically.
 
+`pnpm autopilot` runs that whole loop unattended across sessions: it derives from `pnpm flow
+next`, launches one disposable Claude worker per action, and owns progression itself — a worker
+reports what it did, the supervisor re-asks the repository whether anything changed. Sessions
+become disposable; no `/clear`, no manual resume. Mechanism: `docs/AUTOPILOT_SUPERVISOR.md`.
+Why: `docs/decisions/0012-session-supervisor-owns-progression.md`. The manual procedure in the
+`autopilot` skill is unchanged and is the debugging path.
+
 Who runs, and when, is `.claude/rules/agent-activation.json`. Agents are conditional tools,
 not a mandatory pipeline. Do not run Architect, Validator and Reviewer after every minor edit.
 
@@ -196,6 +203,8 @@ pnpm oracle packet <id> # the sliced brief for one work packet
 pnpm flow next          # the one next action, as JSON: DISPATCH | WAVE_GATE | INTEGRATE |
                         #   REPAIR | PHASE_GATE | ADVANCE_PHASE | BLOCKED | COMPLETE
 pnpm flow record <t>    # write the wave/phase gate record `flow next` reads (needs evidence)
+pnpm autopilot          # run that loop unattended across sessions; --dry-run plans only
+                        #   status | doctor | stop | resume --note "<decision>"
 pnpm lanes wave <n>     # sequential-vs-parallel decision for the next wave of a phase
 pnpm lanes check <id>   # pre-commit lane gate: did the lane stay inside its paths
 pnpm lanes handoff <f>  # is this handoff real: schema, commit, ownership, evidence
@@ -207,12 +216,14 @@ pnpm kb show <target>   # one section verbatim — §19 | phase 5 | FILE.md#head
 pnpm kb term <name>     # CONTEXT.md definition + where the word is really used
 pnpm kb stale           # notes past review-by; generated files behind their source
 pnpm check:kb           # the retriever's own scenarios (CI; not in `pnpm gates`)
+pnpm check:autopilot    # the supervisor's own scenarios (CI; not in `pnpm gates`)
 pnpm check:probes       # probe hygiene: can a node report DONE on another node's work
 pnpm hash:5a <label>    # hash the 5a files an analyzer packet must not change
                         #   …--compare <earlier-label> fails naming every drifted path
 ```
 
-`check:lanes`, `check:flow`, `check:kb` and `check:probes` are out of `pnpm gates` on purpose: they read
+`check:lanes`, `check:flow`, `check:kb`, `check:autopilot` and `check:probes` are out of `pnpm gates` on
+purpose: they read
 `.claude/`, the documents and `scripts/oracle/graph.json`, and `pnpm gates` must keep working
 with the engineering harness deleted.
 

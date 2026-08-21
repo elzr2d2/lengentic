@@ -47,6 +47,9 @@ export default tseslint.config(
       // was breaking `pnpm lint` for every other session, on files nobody may edit to
       // fix. Observed 2026-08-20, in the standards pass.
       '.artifacts/**',
+      // Written by `pnpm autopilot` while it runs: worker transcripts, leases, the journal.
+      // Same reason as above — a supervisor recording its own state must not break lint.
+      '.autopilot/**',
     ],
   },
 
@@ -180,7 +183,7 @@ export default tseslint.config(
   {
     // The spike is a CLI. Writing to stdout is its entire job. Package build scripts
     // (platform/*/scripts/*.mjs) are the same kind of thing.
-    files: ['spike/**/*.ts', 'scripts/**/*.ts', 'platform/*/scripts/**/*.mjs'],
+    files: ['spike/**/*.ts', 'scripts/**/*.ts', 'scripts/**/*.mjs', 'platform/*/scripts/**/*.mjs'],
     rules: { 'no-console': 'off' },
   },
 
@@ -209,7 +212,13 @@ export default tseslint.config(
     // Plain-JS Node scripts: hooks and config. typescript-eslint turns `no-undef` off for
     // .ts files because the compiler already does it better, but these are not compiled,
     // so the globals have to be declared.
-    files: ['.claude/hooks/**/*.mjs', 'platform/*/scripts/**/*.mjs', '*.config.js', '*.cjs'],
+    files: [
+      '.claude/hooks/**/*.mjs',
+      'platform/*/scripts/**/*.mjs',
+      'scripts/**/*.mjs',
+      '*.config.js',
+      '*.cjs',
+    ],
     languageOptions: {
       globals: {
         process: 'readonly',
@@ -219,6 +228,7 @@ export default tseslint.config(
         module: 'writable',
         require: 'readonly',
         __dirname: 'readonly',
+        setTimeout: 'readonly',
       },
     },
   },

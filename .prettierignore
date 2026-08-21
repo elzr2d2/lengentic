@@ -22,3 +22,7 @@ docs/archive/
 # Machine-local and gitignored — rewritten whenever a permission is granted. A file git
 # refuses to track cannot be allowed to fail a shared gate.
 .claude/settings.local.json
+
+# Written by `pnpm autopilot` during a run, gitignored, and not source. Same reason
+# `.artifacts/` is ignored by eslint: a supervisor writing state must not fail a shared gate.
+.autopilot/
