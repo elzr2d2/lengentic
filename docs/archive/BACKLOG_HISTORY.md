@@ -385,3 +385,87 @@ phase-gate session that scripts around `pnpm lanes wave`.
 "No outstanding work in phase N" and "failed" both exit 1; CLAUDE.md already carries a warning
 paragraph because this burned a session. Give "finished" exit 0 with its message, or a dedicated
 code. One-line fix plus a selftest scenario.
+
+## Discovered during the first Docker execution (2026-08-16)
+
+### `platform/dashboard/tsconfig.tsbuildinfo` is tracked
+
+**Closed:** 2026-08-21 by `97b296b`. `tsconfig.tsbuildinfo` added to `platform/dashboard/.gitignore` and removed with `git rm --cached`, landed in the same Coordinator commit as the dashboard vitest harness so the re-dispatched `p2.dashboard-runs` would not hit it again. Second sighting: it had already failed `pnpm lanes check` for a dashboard lane that typechecked.
+
+**Source:** observed in `git status` after a dashboard build.
+
+It is a TypeScript incremental-build cache, it is not in `.gitignore`, and it is committed.
+Every build dirties the working tree with a file nobody reads, which trains everyone to
+`git add .` past it — and that is how an unrelated change rides into a commit unnoticed. Fix
+is `.gitignore` plus `git rm --cached`, but that is a tracked-file removal outside the change
+that found it, so it is recorded rather than done here.
+
+## Discovered designing the cross-reference checker (2026-08-18)
+
+### `STALE` needs a read-model vocabulary, and it lands in `platform/shared/read/**` — not `schema/`
+
+**Closed:** entry body records "**Addressed 2026-08-21**" — `platform/shared/read/` exists behind the `@lengentic/shared/read` subpath (`df9ee84`), and both closing assertions ship: `platform/api/src/runs/stale.spec.ts` (derivation, negative cases first) and `platform/shared/test/read/run-view.spec.ts` (the enum pair, plus the `the root entry stays ingestion-only` guard, mutation-checked → `1 failed | 60 passed`).
+
+**Source:** Reviewer finding SC1 against `p2.shared-schema` at `195af11`,
+`.artifacts/evidence/2/wire-contract-review-195af11.md`. **Trigger:** `p2.runs-api`, Phase 2 wave 3.
+
+`platform/shared/schema/status.ts:4` freezes `RUN_STATUSES = ['RUNNING','COMPLETED','FAILED']`.
+ADR 0005 decision 4 requires the API response to report `STALE`, computed server-side from
+`lastEventAt` and the existing `STALE_RUN_THRESHOLD_MS`. The stored enum cannot express it, and
+`MVP_PLAN_V3.md:592` is explicit that `STALE` is derived at read time and **never stored**.
+
+**Already decided — Architect's option B, previous session.** `p2.runs-api` widens its
+`allowed_paths` into `platform/shared/read/**` and puts the response vocabulary there. Deliberately
+**not** `schema/`, so `CLAUDE.md` `## Types` — "`platform/shared/schema/**` is the only wire
+contract" — stays literally true: `schema/` is the _ingestion_ contract, `read/` is the _response_
+model, and neither one leaks into the other.
+
+It is filed here because the decision existed only in a previous session's context. Reviewer could
+not tell "a later wave adds it" from "nobody noticed", and said so as its own unknown. That is the
+whole failure mode: an unwritten decision is indistinguishable from an oversight, and comes back as
+a finding every time someone reads the code fresh.
+
+**What `p2.runs-api` must not do:** declare a second run-status enum anywhere under
+`platform/shared/schema/**`, or mutate `RUN_STATUSES`. Either one makes the stored enum and the
+response enum the same object, and the next writer stores `STALE`.
+
+Closes when `p2.runs-api` ships the read model with a test that asserts a run whose `lastEventAt`
+is older than `STALE_RUN_THRESHOLD_MS` reports `STALE` while its stored `status` is still
+`RUNNING` — both halves asserted, because either alone passes on a wrong implementation.
+
+**Addressed 2026-08-21**, in two commits rather than one, because the lane could not reach the
+destination. `p2.runs-api` shipped the vocabulary at `platform/api/src/runs/run-view.ts` —
+`platform/shared/**` is outside its `allowed_paths`, and it correctly refused to widen — with the
+module written to relocate wholesale and the gap recorded in its `follow_up_required`. The
+Coordinator then moved it verbatim to `platform/shared/read/`.
+
+Both closing assertions exist. The derivation: `platform/api/src/runs/stale.spec.ts` — negative
+cases first, `RUNNING` at exactly the threshold, `STALE` one millisecond past it, and a stored
+`COMPLETED` never decaying. The enum pair: `platform/shared/test/read/run-view.spec.ts` — every
+stored status is representable in the view, and `RUN_STATUSES` does not contain `STALE`.
+
+**One thing the entry did not ask for and the move added.** `read/**` is reachable only through
+the `@lengentic/shared/read` subpath export, never from `@lengentic/shared`. The root entry is
+what `platform/telemetry-sdk` imports, and an ingestion-side author who can see `STALE` there is
+one refactor away from persisting it. Guarded mechanically by the `the root entry stays
+ingestion-only` case in the same spec; mutation-checked by re-exporting `read` from `index.ts`
+→ `1 failed | 60 passed`.
+
+## Discovered designing p2.prisma-run-step's schema (2026-08-19)
+
+### `platform/dashboard/tsconfig.tsbuildinfo` is a tracked build artifact that fails every lane's scope gate
+
+**Closed:** 2026-08-21 by `97b296b`, the Coordinator commit that also landed the dashboard vitest harness. `tsconfig.tsbuildinfo` added to `platform/dashboard/.gitignore` and removed with `git rm --cached`. This was the second filing of the same defect — the first is above, under `## Discovered during the first Docker execution (2026-08-16)` — and it was fixed here because the lane it was about to block for a third time (`p2.dashboard-runs`) was being re-dispatched.
+
+**Source:** Reviewer finding S-E on `p2.prisma-run-step` lane commit `ce2b8f5`, 2026-08-19.
+**Trigger:** the next lane that touches `.gitignore`, or a standalone one-line fix whenever it
+starts being noisy.
+
+`platform/dashboard/tsconfig.tsbuildinfo` has been tracked (not gitignored — `git check-ignore`
+exits 1) since Phase 1 commit `a898ac6`. Every `pnpm gates` run rewrites it as a side effect of
+the Next.js build step. Any lane that runs `pnpm gates` before `pnpm lanes check <id>` gets a
+false `BLOCK platform/dashboard/tsconfig.tsbuildinfo — outside allowed_paths` — reproduced twice
+on this packet, worked around both times with `git checkout --` before committing. Real fix:
+`git rm --cached platform/dashboard/tsconfig.tsbuildinfo` plus a `.gitignore` line for
+`*.tsbuildinfo` under `platform/dashboard/`. Outside every current Phase 2 lane's `allowed_paths`
+(root `.gitignore`), so no lane has fixed it inline.

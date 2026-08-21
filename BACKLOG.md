@@ -420,16 +420,6 @@ or the build cache exceeds **2 GB** — otherwise close the entry with the measu
 finding that hoisting was free. Both figures are chosen as "obviously fine below this", not
 derived; the point is that a number exists to test against, not that it is the right number.
 
-### `platform/dashboard/tsconfig.tsbuildinfo` is tracked
-
-**Source:** observed in `git status` after a dashboard build.
-
-It is a TypeScript incremental-build cache, it is not in `.gitignore`, and it is committed.
-Every build dirties the working tree with a file nobody reads, which trains everyone to
-`git add .` past it — and that is how an unrelated change rides into a commit unnoticed. Fix
-is `.gitignore` plus `git rm --cached`, but that is a tracked-file removal outside the change
-that found it, so it is recorded rather than done here.
-
 ### `pnpm test:integration` needs Docker on PATH, and nothing says so
 
 **Source:** observed while running the Phase 1 validation block.
@@ -1165,53 +1155,6 @@ and the fact that it is written down here is not approval to build it.
 Reopens only after §18–§21 are built and shipped, and only if the shipped thing demonstrably
 fails to record something a user needed — which is evidence this entry does not have today.
 
-### `STALE` needs a read-model vocabulary, and it lands in `platform/shared/read/**` — not `schema/`
-
-**Source:** Reviewer finding SC1 against `p2.shared-schema` at `195af11`,
-`.artifacts/evidence/2/wire-contract-review-195af11.md`. **Trigger:** `p2.runs-api`, Phase 2 wave 3.
-
-`platform/shared/schema/status.ts:4` freezes `RUN_STATUSES = ['RUNNING','COMPLETED','FAILED']`.
-ADR 0005 decision 4 requires the API response to report `STALE`, computed server-side from
-`lastEventAt` and the existing `STALE_RUN_THRESHOLD_MS`. The stored enum cannot express it, and
-`MVP_PLAN_V3.md:592` is explicit that `STALE` is derived at read time and **never stored**.
-
-**Already decided — Architect's option B, previous session.** `p2.runs-api` widens its
-`allowed_paths` into `platform/shared/read/**` and puts the response vocabulary there. Deliberately
-**not** `schema/`, so `CLAUDE.md` `## Types` — "`platform/shared/schema/**` is the only wire
-contract" — stays literally true: `schema/` is the _ingestion_ contract, `read/` is the _response_
-model, and neither one leaks into the other.
-
-It is filed here because the decision existed only in a previous session's context. Reviewer could
-not tell "a later wave adds it" from "nobody noticed", and said so as its own unknown. That is the
-whole failure mode: an unwritten decision is indistinguishable from an oversight, and comes back as
-a finding every time someone reads the code fresh.
-
-**What `p2.runs-api` must not do:** declare a second run-status enum anywhere under
-`platform/shared/schema/**`, or mutate `RUN_STATUSES`. Either one makes the stored enum and the
-response enum the same object, and the next writer stores `STALE`.
-
-Closes when `p2.runs-api` ships the read model with a test that asserts a run whose `lastEventAt`
-is older than `STALE_RUN_THRESHOLD_MS` reports `STALE` while its stored `status` is still
-`RUNNING` — both halves asserted, because either alone passes on a wrong implementation.
-
-**Addressed 2026-08-21**, in two commits rather than one, because the lane could not reach the
-destination. `p2.runs-api` shipped the vocabulary at `platform/api/src/runs/run-view.ts` —
-`platform/shared/**` is outside its `allowed_paths`, and it correctly refused to widen — with the
-module written to relocate wholesale and the gap recorded in its `follow_up_required`. The
-Coordinator then moved it verbatim to `platform/shared/read/`.
-
-Both closing assertions exist. The derivation: `platform/api/src/runs/stale.spec.ts` — negative
-cases first, `RUNNING` at exactly the threshold, `STALE` one millisecond past it, and a stored
-`COMPLETED` never decaying. The enum pair: `platform/shared/test/read/run-view.spec.ts` — every
-stored status is representable in the view, and `RUN_STATUSES` does not contain `STALE`.
-
-**One thing the entry did not ask for and the move added.** `read/**` is reachable only through
-the `@lengentic/shared/read` subpath export, never from `@lengentic/shared`. The root entry is
-what `platform/telemetry-sdk` imports, and an ingestion-side author who can see `STALE` there is
-one refactor away from persisting it. Guarded mechanically by the `the root entry stays
-ingestion-only` case in the same spec; mutation-checked by re-exporting `read` from `index.ts`
-→ `1 failed | 60 passed`.
-
 ### `entityId === runId` consistency check for run events — dropped at S4, re-add only with a citation
 
 **Source:** Recovery of `p2.shared-schema` at `c39f4d2`,
@@ -1404,21 +1347,6 @@ costing real time.
 immediately both times, same effect. Root cause not diagnosed — not blocking, since the
 workaround is one substitution — but will bite every future migration-bearing packet the same
 way until someone looks at how `db:migrate` forwards its args.
-
-### `platform/dashboard/tsconfig.tsbuildinfo` is a tracked build artifact that fails every lane's scope gate
-
-**Source:** Reviewer finding S-E on `p2.prisma-run-step` lane commit `ce2b8f5`, 2026-08-19.
-**Trigger:** the next lane that touches `.gitignore`, or a standalone one-line fix whenever it
-starts being noisy.
-
-`platform/dashboard/tsconfig.tsbuildinfo` has been tracked (not gitignored — `git check-ignore`
-exits 1) since Phase 1 commit `a898ac6`. Every `pnpm gates` run rewrites it as a side effect of
-the Next.js build step. Any lane that runs `pnpm gates` before `pnpm lanes check <id>` gets a
-false `BLOCK platform/dashboard/tsconfig.tsbuildinfo — outside allowed_paths` — reproduced twice
-on this packet, worked around both times with `git checkout --` before committing. Real fix:
-`git rm --cached platform/dashboard/tsconfig.tsbuildinfo` plus a `.gitignore` line for
-`*.tsbuildinfo` under `platform/dashboard/`. Outside every current Phase 2 lane's `allowed_paths`
-(root `.gitignore`), so no lane has fixed it inline.
 
 ## Discovered during the .claude infrastructure audit (2026-08-19)
 
@@ -1931,3 +1859,32 @@ that nothing asserted the isolation worked.
 Closes when two lanes can concurrently run the API integration suite against the same
 Postgres instance without seeing each other's rows, proven by a test that goes red if the
 isolation is removed.
+
+## Discovered building the dashboard test harness (2026-08-21, Phase 2 wave 2)
+
+### The dashboard hand-declares `HealthReport`, a twin of the API's health contract
+
+**Source:** Noticed while adding `@lengentic/shared` to `platform/dashboard` at `eb5587f`, the
+pre-dispatch plumbing for `p2.dashboard-runs`. **Trigger:** the next change to `/health`'s
+response shape, or Phase 6 when the dashboard grows a second API surface — whichever is first.
+
+`platform/dashboard/src/lib/api.ts:30-36` declares `CheckStatus` and `HealthReport` by hand.
+The API's real contract for `/health` lives in `platform/api/src/health/**`. Nothing links the
+two, so `checks: { database: 'up' | 'down' }` changing on the API side goes unnoticed on the
+dashboard side until a status page renders `undefined` — and a status page that lies is worse
+than no status page, which is the exact reasoning already written into that file's own comments.
+
+This is the same defect class that `df9ee84` removed for the runs contract: a response shape
+declared twice because the consumer could not import the producer. The fix has the same shape
+too — the health contract moves to `platform/shared/read/`, reachable through
+`@lengentic/shared/read`, and the dashboard imports it. That path and its subpath export now
+exist, so the fix is a move plus two import lines, not new architecture.
+
+**Not fixed at `eb5587f` on purpose.** No lane in Phase 2 wave 2 owns `/health`:
+`p2.dashboard-runs` has `platform/dashboard/src/**` and its deliverable is the runs explorer.
+Folding an unrelated contract move into a plumbing commit is the phase expansion `CLAUDE.md`
+forbids, and it would put an unreviewed change under a lane's feet mid-wave.
+
+Closes when `HealthReport` has exactly one declaration in the repository, with a test that
+fails if the API's health response and the dashboard's type disagree — not merely a shared
+type, because a shared type both sides import is still unverified against the actual JSON.
