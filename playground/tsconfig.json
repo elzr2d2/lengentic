@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // CommonJS, matching every platform package. The SDK resolves to `dist/index.js`,
+    // which `tsc -p tsconfig.build.json` emits as CommonJS; an ESM Playground would rely
+    // on Node's named-export detection to reach `createTelemetryClient`.
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "noEmit": true,
+    "declaration": false
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}
