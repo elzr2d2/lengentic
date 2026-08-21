@@ -82,8 +82,13 @@ const STALE_TEST_MS = 400;
 const WAIT_FOR_STALE_TIMEOUT_MS = 20_000;
 const WAIT_FOR_LINE_TIMEOUT_MS = 15_000;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Yields the event loop between polls. Deliberately NOT a duration: `docs/ENGINEERING_STANDARDS.md`
+ * TEST-1 forbids an arbitrary sleep in a test, and every wait in this file lands on an
+ * observable condition with a deadline. This only gives the API's I/O a turn to run.
+ */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 interface HostExit {
@@ -142,10 +147,33 @@ describe('A real host process killed mid-run leaves its Run reporting STALE on t
   let prisma: PrismaService;
   let port: number;
 
-  const detail = async (runId: string): Promise<RunDetailView> => {
-    const response = await request(app.getHttpServer()).get(`/v1/runs/${runId}`);
-    expect(response.status, JSON.stringify(response.body as unknown)).toBe(200);
-    return response.body as RunDetailView;
+  /**
+   * Polls the live API — never the row — until the server's own `lastEventAt` for `runId`
+   * is older than `STALE_TEST_MS`, i.e. until the staleness predicate's time condition is
+   * satisfied server-side. Returns the view read at that moment, so the caller asserts on
+   * a response that was produced while the run was genuinely past the threshold.
+   */
+  const waitForApiIdleBeyondThreshold = async (
+    runId: string,
+    timeoutMs: number,
+  ): Promise<RunDetailView> => {
+    const deadline = Date.now() + timeoutMs;
+    let last: RunDetailView | undefined;
+    for (;;) {
+      const response = await request(app.getHttpServer()).get(`/v1/runs/${runId}`);
+      if (response.status === 200) {
+        last = response.body as RunDetailView;
+        const idleMs = Date.now() - Date.parse(last.lastEventAt);
+        if (idleMs > STALE_TEST_MS) return last;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `timed out after ${timeoutMs}ms waiting for run ${runId} to be idle beyond ` +
+            `${STALE_TEST_MS}ms as the live API reports it; last seen: ${JSON.stringify(last)}`,
+        );
+      }
+      await yieldToEventLoop();
+    }
   };
 
   /** Polls the live API — never the row — until `runId` reports `expectedStatus`. */
@@ -168,7 +196,7 @@ describe('A real host process killed mid-run leaves its Run reporting STALE on t
             `over HTTP; last seen: ${JSON.stringify(last)}`,
         );
       }
-      await sleep(50);
+      await yieldToEventLoop();
     }
   };
 
@@ -305,9 +333,15 @@ describe('A real host process killed mid-run leaves its Run reporting STALE on t
     // ignores stored status and reports STALE for any sufficiently-idle run — the false
     // positive that would destroy trust in the Run Explorer — is exactly what this
     // assertion catches.
-    await sleep(STALE_TEST_MS + 300);
-
-    const view = await detail(runId);
+    //
+    // The wait lands on an observable condition, not a duration: it polls the live API
+    // until the server's OWN `lastEventAt` is further in the past than the threshold the
+    // server was configured with. That is strictly stronger than sleeping for
+    // `STALE_TEST_MS`, which would only assume the test's wall clock and the server's
+    // agree. When this returns, `now - lastEventAt > STALE_RUN_THRESHOLD_MS` holds on the
+    // server side — the exact predicate `runs/stale.ts` evaluates — so a status of
+    // COMPLETED below can only come from the stored terminal state winning.
+    const view = await waitForApiIdleBeyondThreshold(runId, WAIT_FOR_STALE_TIMEOUT_MS);
     expect(view.status).toBe('COMPLETED');
     expect(view.status).not.toBe('STALE');
 

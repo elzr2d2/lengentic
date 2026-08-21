@@ -1949,3 +1949,31 @@ context a human needs to interpret a run, and finds the Dashboard silently dropp
 
 Closes when both are rendered, or when a decision records that metadata is deliberately not a
 Dashboard surface and says where a caller is expected to read it instead.
+
+## Discovered at the Phase 2 wave 3 gate (2026-08-21)
+
+### `check:integrity`'s `arbitrary-sleep` rule only matches a literal digit, so a computed sleep passes
+
+**Source:** the wave 3 gate on `p2.stale-on-kill`. **Trigger:** the next time a BLOCK-severity
+rule in `scripts/check-integrity.ts` is edited, or the first `check:integrity` finding that a
+human disputes — whichever is first.
+
+`scripts/check-integrity.ts:81` tests `\bsleep\s*\(\s*\d`. `kill-mid-run.integration.spec.ts`
+shipped three waits; the scanner flagged the helper definition and the poll interval, and did
+**not** flag `await sleep(STALE_TEST_MS + 300)` — the one wait that was a genuine TEST-1
+violation, because the argument starts with an identifier rather than a digit. The two hits it
+did report were the pacing of loops that already terminated on an observable condition.
+
+So the rule is inverted in practice on both sides: it blocks the benign shape and passes the
+harmful one. That is the "green that lies" class `CLAUDE.md` names, sitting inside the checker
+whose whole job is catching it. A `sleep(TIMEOUT)`, `sleep(ms)`, `delay(WAIT_MS)` or
+`await new Promise(r => setTimeout(r, DURATION))` anywhere in the repo is currently invisible.
+
+Deliberately not fixed at this gate: widening the regex is a change to a mechanical gate that
+will surface hits across every existing test file at once, and no Phase 2 node owns that blast
+radius. It is a packet, not a drive-by.
+
+Closes when the rule distinguishes a _duration wait_ (blocking, whatever the argument
+expression) from a _poll interval inside a condition-terminated loop_ (allowed), and
+`scripts/check-integrity.spec.ts` — or whatever proves the rules — pins both directions with a
+fixture that fails when either half is removed.
