@@ -87,8 +87,12 @@ function optionsFrom(argv: string[]): SuperviseOptions {
 
 async function status(): Promise<number> {
   const state = readState(STATE_DIR);
-  const { nextAction } = await import('./flow.ts');
+  const { nextAction, checkpointState } = await import('./flow.ts');
   const action = await nextAction();
+  // REPAIR, BLOCKED and COMPLETE carry no segment — they are about the run, not a phase. The
+  // checkpoint still knows where the run is, and printing "(none derived)" there reads as if
+  // the supervisor had lost its place.
+  const segment = action.segment ?? action.to ?? checkpointState().segment ?? state?.segment;
 
   const lines: string[] = [
     '',
@@ -97,9 +101,7 @@ async function status(): Promise<number> {
   ];
 
   lines.push(`  Next action     ${action.action}${action.reason ? ` — ${action.reason}` : ''}`);
-  lines.push(
-    `  Segment/phase   ${action.segment ?? action.to ?? state?.segment ?? '(none derived)'}`,
-  );
+  lines.push(`  Segment/phase   ${segment ?? '(none derived)'}`);
   if (action.packets && action.packets.length > 0) {
     lines.push(`  Packets         ${action.packets.join(', ')} (${action.mode ?? 'sequential'})`);
   }
