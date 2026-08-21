@@ -2098,3 +2098,44 @@ landed early, the states are honest and only the WARN needs retiring.
 
 **Trigger:** before the Phase 4 gate, or the next time `check:probes` WARNs are triaged —
 whichever comes first. Not before the Phase 2 and Phase 3 gates, which do not depend on it.
+
+## Discovered at the Phase 2 wave 3 gate, Validator pass (2026-08-21)
+
+### `kill-mid-run` proves "eventually STALE" but not the comparison's direction, so two sibling tests are the only net
+
+**Source:** Validator NM1 at the `p2.stale-on-kill` wave gate,
+`.artifacts/evidence/2/wave3-gate-validator/README.md` and `NM1-inverted-comparison.log`.
+Independently re-run by the Coordinator before the record was written.
+
+Invert the comparison in `platform/api/src/runs/stale.ts:40` — `idleMs > staleThresholdMs`
+becomes `idleMs < staleThresholdMs` — leaving the `storedStatus !== 'RUNNING'` guard untouched.
+`platform/api/test/stale-on-kill/kill-mid-run.integration.spec.ts` **survives it, 3/3 runs, both
+tests green**. A fresh RUNNING run's `idleMs` starts near zero, so the mutated derivation reports
+STALE on the first poll and the positive test's "eventually STALE" wait passes vacuously; the
+negative test never notices because the guard is what it exercises.
+
+**This is not a defect in the node, and the wave gate is GREEN on it.** The node's contract is
+the path — a real spawned process, a real `SIGKILL`, STALE read back over live HTTP — and that
+path is what it proves. Boundary and arithmetic exactness is `stale.spec.ts`'s job, the file
+says so in its own comment, and the division holds: under the same mutation `stale.spec.ts`
+fails 5 of 8 assertions (Coordinator re-run: `pnpm --filter @lengentic/api test stale.spec`,
+`Tests 5 failed | 3 passed (8)`, sha1 `9ff0ee0c…` restored, `git status` clean).
+
+So the whole suite catches an inverted comparison; only this file does not. The exposure is
+that the net is exactly two tests wide — `stale.spec.ts` and
+`run-lifecycle.integration.spec.ts:594` — and neither is obviously load-bearing when read from
+`kill-mid-run.integration.spec.ts`. A future refactor that deletes or weakens either one removes
+the only thing catching an inverted-comparison regression at this seam, and the integration test
+that looks like it covers STALE will stay green.
+
+**Cheapest fix, if taken:** the positive test asserts the run is NOT STALE before the kill, then
+STALE after. One extra assertion, and NM1 stops surviving.
+
+**Trigger:** any change to `stale.ts`, `stale.spec.ts` or the stale threshold wiring — or the
+Phase 5 analyzer work, which is the next thing that reads run liveness. Not before the Phase 2
+phase gate; it blocks nothing there.
+
+**Validator's own declared unknowns, carried forward rather than treated as verified:** NM1 was
+not re-executed against `run-lifecycle.integration.spec.ts:594` directly (that catch is reasoned
+from reading, not run), and no mutation was attempted against `stale-threshold.provider.ts` or
+`runs.service.ts`'s single-clock-read invariant.
