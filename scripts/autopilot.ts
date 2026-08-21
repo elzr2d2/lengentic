@@ -40,6 +40,17 @@ import {
 } from './autopilot/state.ts';
 import { listLeases, isProcessAlive } from './autopilot/lease.ts';
 import {
+  describeRepairPolicy,
+  resolveRepairPolicy,
+  STANDING_REPAIR_BOUND,
+} from './autopilot/repair-policy.ts';
+import {
+  resolvePermissionPosture,
+  SUPERVISED_PERMISSION_MODES,
+  type ClaudeOptions,
+  type PermissionPosture,
+} from './autopilot/worker.ts';
+import {
   DEFAULT_OPTIONS,
   defaultDeps,
   supervise,
@@ -50,6 +61,7 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = join(ROOT, AUTOPILOT_DIR);
 const SCHEMA = join(ROOT, '.claude/rules/worker-outcome.schema.json');
+const PERMISSIONS = join(ROOT, '.claude/autopilot-permissions.json');
 
 function flag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -68,18 +80,57 @@ function num(argv: string[], name: string, fallback: number): number {
   return n;
 }
 
+/**
+ * A refusal to start, as opposed to a crash. Both are exit 1, but a refusal is a decision this
+ * code made on purpose and its stack trace is noise — the message IS the whole answer.
+ */
+class AutopilotRefusal extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AutopilotRefusal';
+  }
+}
+
+/**
+ * Both safety bounds are resolved here, and both fail closed: a widened repair bound without its
+ * authority, and an unrecognised permission mode, each stop the run before a worker exists
+ * rather than falling back to something permissive.
+ */
 function optionsFrom(argv: string[]): SuperviseOptions {
+  const maxRepairs = flag(argv, 'max-repairs');
+  const repair = resolveRepairPolicy({
+    bound: maxRepairs === undefined ? undefined : Number(maxRepairs),
+    charter: flag(argv, 'charter'),
+    exists: (p) => existsSync(resolve(ROOT, p)),
+  });
+  if ('error' in repair) throw new AutopilotRefusal(repair.error);
+
+  const permission = resolvePermissionPosture(process.env);
+  if ('error' in permission) throw new AutopilotRefusal(permission.error);
+
   return {
     ...DEFAULT_OPTIONS,
     root: ROOT,
     stateDir: STATE_DIR,
+    repair,
+    permission,
     maxIterations: num(argv, 'max-iterations', DEFAULT_OPTIONS.maxIterations),
-    maxRepairs: num(argv, 'max-repairs', DEFAULT_OPTIONS.maxRepairs),
     maxRotations: num(argv, 'max-rotations', DEFAULT_OPTIONS.maxRotations),
     concurrency: num(argv, 'concurrency', DEFAULT_OPTIONS.concurrency),
     workerTimeoutMs:
       num(argv, 'worker-timeout-min', DEFAULT_OPTIONS.workerTimeoutMs / 60_000) * 60_000,
     dryRun: has(argv, 'dry-run'),
+  };
+}
+
+/** The launcher options a real worker runs under: the resolved posture plus the deny floor. */
+function claudeOptionsFor(permission: PermissionPosture): ClaudeOptions {
+  return {
+    permissionMode: permission.mode,
+    // Passing the floor to a bypassed session would be theatre — bypass skips every check.
+    // Omitting it there keeps the argv honest about what is actually enforcing anything.
+    ...(permission.bypassed ? {} : { permissionsFile: PERMISSIONS }),
+    ...(process.env.AUTOPILOT_MODEL === undefined ? {} : { model: process.env.AUTOPILOT_MODEL }),
   };
 }
 
@@ -139,6 +190,20 @@ async function status(): Promise<number> {
     `  Leases          ${leases.length === 0 ? 'none' : leases.map((l) => `${l.node} -> ${l.workerId}${isProcessAlive(l.pid) ? '' : ' (pid gone)'}`).join(', ')}`,
   );
   lines.push(`  Stop requested  ${stopRequested(STATE_DIR) ? 'yes' : 'no'}`);
+  // Both safety bounds, from the run that is actually on disk — not from what this invocation
+  // would use. A run widened or bypassed by someone else must not read as an ordinary one.
+  lines.push(
+    `  Repair bound    ${String(state.repairBound ?? STANDING_REPAIR_BOUND)} attempt(s) — ` +
+      `${state.repairAuthority ?? 'not recorded (run predates the bound being written down)'}`,
+  );
+  lines.push(`  Permissions     ${state.permissionMode ?? '(not recorded)'}`);
+  if (state.permissionBypassed === true) {
+    lines.push(
+      '  WARNING         this run used bypassPermissions — every check was skipped, including',
+      '                  .claude/autopilot-permissions.json. The CLAUDE.md escalation classes',
+      '                  were not enforceable.',
+    );
+  }
 
   if (unresolved.length > 0) {
     lines.push('', '  Unresolved failure evidence:');
@@ -199,6 +264,34 @@ async function doctor(): Promise<number> {
     name: 'worker outcome schema',
     ok: existsSync(SCHEMA),
     detail: SCHEMA,
+  });
+
+  const posture = resolvePermissionPosture(process.env);
+  checks.push({
+    name: 'permission posture',
+    ok: !('error' in posture) && !posture.bypassed,
+    detail:
+      'error' in posture
+        ? posture.error
+        : posture.bypassed
+          ? 'bypassPermissions — EVERY check is skipped, including the deny floor. Unset ' +
+            'AUTOPILOT_PERMISSION_MODE to fail closed again.'
+          : `${posture.mode} (${posture.source}); modes: ${SUPERVISED_PERMISSION_MODES.join(' | ')}`,
+  });
+
+  checks.push({
+    name: 'permission floor',
+    ok: existsSync(PERMISSIONS),
+    detail: existsSync(PERMISSIONS)
+      ? `${PERMISSIONS} — deny beats allow and beats the auto classifier`
+      : `${PERMISSIONS} is missing; workers would run with no deterministic floor`,
+  });
+
+  const repair = resolveRepairPolicy({ exists: (x) => existsSync(resolve(ROOT, x)) });
+  checks.push({
+    name: 'repair bound',
+    ok: !('error' in repair),
+    detail: 'error' in repair ? repair.error : describeRepairPolicy(repair),
   });
 
   try {
@@ -278,7 +371,11 @@ const USAGE = `usage: pnpm autopilot [command] [options]
 options for a run:
   --dry-run                    derive and print the next action; launch nothing
   --max-iterations <n>         loop bound (default ${String(DEFAULT_OPTIONS.maxIterations)})
-  --max-repairs <n>            repair strategies before trigger 5 (default ${String(DEFAULT_OPTIONS.maxRepairs)})
+  --max-repairs <n>            repair attempts before trigger 5 (default ${String(STANDING_REPAIR_BOUND)}).
+                               An attempt IS a materially different strategy — raising this
+                               raises the escalation bar, so a value above ${String(STANDING_REPAIR_BOUND)} must
+                               name its authority with --charter.
+  --charter <path>             the decision record authorising a widened --max-repairs
   --max-rotations <n>          rotations on one node before one repair is spent (default ${String(DEFAULT_OPTIONS.maxRotations)})
   --concurrency <n>            workers when the lane decision says parallel (default ${String(DEFAULT_OPTIONS.concurrency)})
   --worker-timeout-min <n>     hard kill for one worker (default ${String(DEFAULT_OPTIONS.workerTimeoutMs / 60_000)})
@@ -332,14 +429,24 @@ async function main(): Promise<void> {
         console.log(`escalation resolved: ${note}`);
       }
       clearStop(STATE_DIR);
-      const result = await supervise(optionsFrom(argv), defaultDeps(ROOT, SCHEMA), SCHEMA);
+      const options = optionsFrom(argv);
+      const result = await supervise(
+        options,
+        defaultDeps(ROOT, SCHEMA, claudeOptionsFor(options.permission)),
+        SCHEMA,
+      );
       console.log(`\nautopilot ${result.status} after ${String(result.iterations)} iteration(s)\n`);
       process.exit(result.status === 'ESCALATED' ? 2 : 0);
       break;
     }
 
     case 'run': {
-      const result = await supervise(optionsFrom(argv), defaultDeps(ROOT, SCHEMA), SCHEMA);
+      const options = optionsFrom(argv);
+      const result = await supervise(
+        options,
+        defaultDeps(ROOT, SCHEMA, claudeOptionsFor(options.permission)),
+        SCHEMA,
+      );
       console.log(`\nautopilot ${result.status} after ${String(result.iterations)} iteration(s)\n`);
       // 2 is "a human is needed", distinct from 1 "the supervisor itself failed".
       process.exit(result.status === 'ESCALATED' ? 2 : 0);
@@ -360,6 +467,14 @@ function isDirectRun(): boolean {
 
 if (isDirectRun()) {
   main().catch((e: unknown) => {
+    if (e instanceof AutopilotRefusal) {
+      console.error(`
+autopilot refused to start:
+
+${e.message}
+`);
+      process.exit(1);
+    }
     console.error(e instanceof Error ? (e.stack ?? e.message) : String(e));
     process.exit(1);
   });

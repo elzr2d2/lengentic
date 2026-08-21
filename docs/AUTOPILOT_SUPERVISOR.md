@@ -35,17 +35,32 @@ pnpm check:autopilot                  # the supervisor's own scenarios (CI; not 
 
 Run bounds, all overridable per invocation:
 
-| Flag                   | Default | What it bounds                                                |
-| ---------------------- | ------- | ------------------------------------------------------------- |
-| `--max-iterations <n>` | 200     | loop iterations before the supervisor returns                 |
-| `--max-repairs <n>`    | 2       | materially different repair strategies before trigger 5 fires |
-| `--max-rotations <n>`  | 8       | rotations on one node before one repair attempt is charged    |
-| `--concurrency <n>`    | 3       | workers in flight when the lane decision says parallel        |
-| `--worker-timeout-min` | 90      | wall clock for one worker before it is killed and classified  |
+| Flag                   | Default | What it bounds                                            |
+| ---------------------- | ------- | --------------------------------------------------------- |
+| `--max-iterations <n>` | 200     | loop iterations before the supervisor returns             |
+| `--max-repairs <n>`    | 2       | repair attempts before trigger 5 fires — see below        |
+| `--charter <path>`     | none    | the decision record authorising a widened `--max-repairs` |
+| `--max-rotations <n>`  | 8       | rotations on one node before one repair attempt is spent  |
+| `--concurrency <n>`    | 3       | workers in flight when the lane decision says parallel    |
+| `--worker-timeout-min` | 90      | wall clock for one worker before it is killed             |
 
-`--max-repairs` defaults to 2 because that is `CLAUDE.md` trigger 5. ADR 0011 raises it to three
-materially different strategies while that charter is in force — pass `--max-repairs 3`
-deliberately; a bare `pnpm autopilot` obeys the narrower rule.
+**An attempt and a strategy are the same unit.** `autopilot` §4: "an attempt is a materially
+different, evidence-driven strategy" — re-running a command is neither, and neither is the same
+fix applied twice. `CLAUDE.md` trigger 5 bounds it at two, and that is the default.
+
+ADR 0011 raises the same count to three for one charter's run. Raising the count raises the
+escalation bar; it does not rename a unit. So a value above 2 must name the record that
+authorises it, or the run refuses to start:
+
+```bash
+pnpm autopilot --max-repairs 3       # refused, quoting trigger 5
+pnpm autopilot --max-repairs 3 --charter docs/decisions/0011-autopilot-run-charter.md
+pnpm autopilot --max-repairs 1       # tightening needs no authority
+```
+
+The bound and its authority are written to `state.json`, journalled before the first worker
+exists, shown by `pnpm autopilot status`, and quoted in the trigger-5 escalation. A run can
+never quietly have executed at 3.
 
 Exit codes: `0` the run finished or stopped cleanly, `2` a human decision is required, `1` the
 supervisor itself failed.
@@ -217,22 +232,53 @@ wired, `flow` derives a non-ERROR action, state is readable, no lease is held by
 
 ---
 
-## 8. Safety posture
+## 8. Safety posture — fail closed
 
-Workers run with `--permission-mode bypassPermissions` by default, because an unattended run
-cannot pause on a permission dialog. `AUTOPILOT_PERMISSION_MODE` narrows it. That is a real
-widening of what a background process may do on this machine — the loop is bounded by
-`--max-iterations`, every worker is bounded by `--worker-timeout-min`, `pnpm autopilot stop`
-halts a run at its next safe point, and `--dry-run` shows exactly what would happen first.
+Autonomous execution fails closed. Two layers, each covering the other's failure mode:
+
+```text
+--permission-mode auto                          judgement — ordinary work proceeds unattended
+--settings .claude/autopilot-permissions.json   floor — deny beats allow, beats the classifier
+```
+
+Measured rather than assumed (`.artifacts/evidence/autopilot/permission-posture.md`): `auto`
+permitted `git push --force` in a scratch repository despite shipping a Git Destructive rule, so
+the classifier is not load-bearing on its own. A `permissions.deny` list supplied through
+`--settings` blocks a tool call deterministically in print mode, with no prompt and no human,
+and outranks both the allow list and the classifier.
+
+The floor denies one representative set per `CLAUDE.md` escalation class — credentials and
+secret stores, production and cloud CLIs, external cost and publication, destructive or
+irreversible git / filesystem / database operations — plus, aimed at the supervisor itself,
+`.autopilot/`, `.artifacts/gates/`, the floor file, and `pnpm flow record`. A worker that can
+forge a gate record can manufacture a green.
+
+It is a **deterministic floor, not a proof of containment**: the matcher is prefix-based, so
+`rm -rf` is denied and `rm --recursive --force` is not. `auto` is the layer that covers what no
+list anticipated. Neither is claimed to be complete.
+
+A worker that needs a denied operation has hit trigger 1 or trigger 4 and reports `BLOCKED`.
+
+**Bypass is opt-in and loud.** `bypassPermissions` skips every check, including the floor. It
+requires `AUTOPILOT_PERMISSION_MODE=bypassPermissions` spelled exactly — a typo, a nonsense
+value, or a mode a worker cannot act under is refused before a worker exists, rather than
+falling back to something permissive. A bypassed run prints a WARNING, is journalled at
+`START -> RUNNING`, and is recorded in `state.json`, so `status` can never show it as ordinary.
+
+Other bounds: the loop is bounded by `--max-iterations`, every worker by
+`--worker-timeout-min`, `pnpm autopilot stop` halts at the next safe point, and `--dry-run`
+shows what would happen first. `pnpm autopilot doctor` reports the resolved posture, whether the
+floor file is present, and the repair bound, before a run starts.
 
 Environment seams:
 
-| Variable                    | Purpose                                              |
-| --------------------------- | ---------------------------------------------------- |
-| `AUTOPILOT_CLAUDE_BIN`      | the Claude executable (default `claude`)             |
-| `AUTOPILOT_PERMISSION_MODE` | passed to `--permission-mode`                        |
-| `AUTOPILOT_WORKER_CMD`      | replaces the launcher entirely — the scenarios' seam |
-| `AUTOPILOT_WORKER_ARGS`     | arguments for that launcher, space-separated         |
+| Variable                    | Purpose                                                            |
+| --------------------------- | ------------------------------------------------------------------ |
+| `AUTOPILOT_CLAUDE_BIN`      | the Claude executable (default `claude`)                           |
+| `AUTOPILOT_PERMISSION_MODE` | `auto` (default), `acceptEdits`, `dontAsk`, or `bypassPermissions` |
+| `AUTOPILOT_MODEL`           | passed to `--model`                                                |
+| `AUTOPILOT_WORKER_CMD`      | replaces the launcher entirely — the scenarios' seam               |
+| `AUTOPILOT_WORKER_ARGS`     | arguments for that launcher, space-separated                       |
 
 ---
 

@@ -55,14 +55,25 @@ import {
 import { acquireLease, listLeases, reapExpired, releaseLease, renewLease } from './lease.ts';
 import { buildBrief } from './bootstrap.ts';
 import {
+  describeRepairPolicy,
+  resolveRepairPolicy,
+  standingPolicy,
+  STANDING_AUTHORITY,
+  STANDING_REPAIR_BOUND,
+} from './repair-policy.ts';
+import {
+  claudeLaunch,
   isRotationSubtype,
   newSessionId,
   newWorkerId,
   parseResultSubtype,
   readReport,
   resolveLaunch,
+  resolvePermissionPosture,
   runWorker,
   shellCommandLine,
+  DEFAULT_PERMISSION_MODE,
+  SUPERVISED_PERMISSION_MODES,
   type WorkerSpec,
 } from './worker.ts';
 import {
@@ -103,6 +114,9 @@ async function scenario(n: number, name: string, fn: () => Promise<string | null
   }
   results.push({ n, name, pass: detail === null, detail: detail ?? 'ok' });
 }
+
+/** A permission rule is `Tool(pattern)`. Anything else in those arrays is not a rule. */
+const RULE_SHAPE = /^[A-Za-z]+\(.+\)$/;
 
 function expect(cond: boolean, message: string): string | null {
   return cond ? null : message;
@@ -174,7 +188,7 @@ function world(plan: Plan, over: Partial<SuperviseOptions> = {}): World {
       root: dir,
       stateDir,
       maxIterations: 8,
-      maxRepairs: 2,
+      repair: standingPolicy(),
       maxRotations: 3,
       workerTimeoutMs: 30_000,
       ...over,
@@ -703,8 +717,8 @@ async function run_(): Promise<number> {
           `expected trigger 5; got ${String(r.escalation?.trigger)}`,
         ) ??
         expect(
-          after === w.options.maxRepairs + 1,
-          `expected ${String(w.options.maxRepairs + 1)} launches; got ${String(after)}`,
+          after === w.options.repair.bound + 1,
+          `expected ${String(w.options.repair.bound + 1)} launches; got ${String(after)}`,
         ) ??
         expect(
           again.status === 'ESCALATED',
@@ -1149,30 +1163,324 @@ ${verdictFile === null ? '' : readFileSync(verdictFile, 'utf8')}`,
     },
   );
 
+  // ── safety: the permission posture fails closed ─────────────────────────────────────
+
   await scenario(
-    39,
-    'the one shelled command line is quoted here, and refuses a metacharacter',
+    41,
+    'bypassPermissions is not the default, and the default is not permissive',
     () => {
-      const line = shellCommandLine({
-        command: 'claude',
-        args: ['--print', '--session-id', '9f1c-4d', '--permission-mode', 'bypassPermissions'],
-        env: {},
-      });
-      let threw = '';
-      try {
-        shellCommandLine({ command: 'claude', args: ['--print', 'rm -rf / && echo'], env: {} });
-      } catch (e: unknown) {
-        threw = e instanceof Error ? e.message : String(e);
+      const w = world({ steps: { default: ['DONE'] } });
+      const spec = spec_(w, 'p9.a');
+      const posture = resolvePermissionPosture({});
+      if ('error' in posture) {
+        return `the empty environment must resolve, not error: ${posture.error}`;
       }
+      const launch = claudeLaunch(spec, {
+        permissionMode: posture.mode,
+        permissionsFile: '/repo/.claude/autopilot-permissions.json',
+      });
+      const modeIndex = launch.args.indexOf('--permission-mode');
       return (
         expect(
-          line ===
-            'claude "--print" "--session-id" "9f1c-4d" "--permission-mode" "bypassPermissions"',
-          `every argument must be quoted here rather than by the shell; got ${line}`,
+          posture.mode === DEFAULT_PERMISSION_MODE &&
+            DEFAULT_PERMISSION_MODE !== 'bypassPermissions',
+          `the default posture must not be bypass; got ${posture.mode}`,
+        ) ??
+        expect(!posture.bypassed, 'the default posture must not be flagged as bypassed') ??
+        expect(
+          !launch.args.includes('bypassPermissions'),
+          `bypassPermissions must not appear in a default argv; got ${launch.args.join(' ')}`,
         ) ??
         expect(
-          threw.includes('shell metacharacters'),
-          'an argument a shell would reinterpret must throw, not be escaped through',
+          launch.args[modeIndex + 1] === DEFAULT_PERMISSION_MODE,
+          `--permission-mode must carry the resolved default; got ${String(launch.args[modeIndex + 1])}`,
+        ) ??
+        expect(
+          launch.args.includes('--settings') &&
+            launch.args.includes('/repo/.claude/autopilot-permissions.json'),
+          `the deny floor must ride along on --settings; got ${launch.args.join(' ')}`,
+        )
+      );
+    },
+  );
+
+  await scenario(
+    42,
+    'bypass is reachable only by spelling it exactly; anything else fails closed',
+    () => {
+      const optIn = resolvePermissionPosture({ AUTOPILOT_PERMISSION_MODE: 'bypassPermissions' });
+      const typo = resolvePermissionPosture({ AUTOPILOT_PERMISSION_MODE: 'bypasspermissions' });
+      const nonsense = resolvePermissionPosture({ AUTOPILOT_PERMISSION_MODE: 'yes' });
+      const plan = resolvePermissionPosture({ AUTOPILOT_PERMISSION_MODE: 'plan' });
+      const narrower = resolvePermissionPosture({ AUTOPILOT_PERMISSION_MODE: 'acceptEdits' });
+      const empty = resolvePermissionPosture({ AUTOPILOT_PERMISSION_MODE: '' });
+      return (
+        expect(
+          !('error' in optIn) && optIn.mode === 'bypassPermissions' && optIn.bypassed,
+          `the exact opt-in must be honoured and flagged; got ${JSON.stringify(optIn)}`,
+        ) ??
+        expect('error' in typo, 'a case typo must NOT resolve to bypass') ??
+        expect('error' in nonsense, 'an unrecognised value must fail closed, not pass through') ??
+        expect(
+          'error' in plan,
+          'a mode a worker cannot act under is not a supervised posture — refuse it here',
+        ) ??
+        expect(
+          !('error' in narrower) && !narrower.bypassed,
+          'a narrower posture must be accepted and not flagged as bypassed',
+        ) ??
+        expect(
+          !('error' in empty) && empty.mode === DEFAULT_PERMISSION_MODE,
+          'an empty value is an unset value, and unset means the closed default',
+        ) ??
+        expect(
+          !(SUPERVISED_PERMISSION_MODES as readonly string[]).includes('plan'),
+          'the supervised mode list must not contain a mode that cannot act',
+        )
+      );
+    },
+  );
+
+  await scenario(43, 'the permission floor denies every escalation class it claims to', () => {
+    const file = join(ROOT, '.claude/autopilot-permissions.json');
+    if (!existsSync(file)) return `missing ${file}`;
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as {
+      permissions?: { deny?: string[]; allow?: string[] };
+    };
+    const deny = parsed.permissions?.deny ?? [];
+    const allow = parsed.permissions?.allow ?? [];
+    const covers = (prefix: string): boolean => deny.some((d) => d.startsWith(prefix));
+
+    // One representative per CLAUDE.md escalation class. A class losing its last rule is what
+    // this scenario exists to catch — not the exact wording of any single rule.
+    const classes: [string, string][] = [
+      ['credentials: secret files', 'Read(~/.ssh'],
+      ['credentials: environment dump', 'Bash(env:'],
+      ['credentials: auth tooling', 'Bash(gh auth:'],
+      ['production: cloud CLI', 'Bash(aws:'],
+      ['production: cluster', 'Bash(kubectl:'],
+      ['production: remote shell', 'Bash(ssh:'],
+      ['external cost: publish', 'Bash(npm publish:'],
+      ['destructive: push', 'Bash(git push:'],
+      ['destructive: history rewrite', 'Bash(git reset --hard:'],
+      ['destructive: recursive delete', 'Bash(rm -rf:'],
+      ['destructive: database reset', 'Bash(pnpm db:reset:'],
+      ['self-modification: gate records', 'Write(./.artifacts/gates/'],
+      ['self-modification: the floor itself', 'Write(./.claude/autopilot-permissions.json'],
+      ['self-modification: forging a gate', 'Bash(pnpm flow record:'],
+    ];
+    const uncovered = classes.filter(([, prefix]) => !covers(prefix)).map(([name]) => name);
+    if (uncovered.length > 0) return `no deny rule covers: ${uncovered.join('; ')}`;
+
+    // Ordinary repository-local development must still run unattended, or the supervisor fails
+    // closed onto its own gates.
+    const ordinary = ['Bash(pnpm gates)', 'Bash(pnpm test:*)', 'Bash(git commit:*)'];
+    const missing = ordinary.filter((a) => !allow.includes(a));
+    if (missing.length > 0) return `ordinary development is not allowed: ${missing.join(', ')}`;
+
+    // Every entry must be a rule. A `$comment` string inside these arrays would be parsed as
+    // one by the CLI and quietly weaken the file.
+    const malformed = [...deny, ...allow].filter((r) => !RULE_SHAPE.test(r));
+    return expect(
+      malformed.length === 0,
+      `every entry must be a Tool(pattern) rule; got ${JSON.stringify(malformed)}`,
+    );
+  });
+
+  // ── safety: the repair bound cannot widen by accident ────────────────────────────────
+
+  await scenario(
+    44,
+    'the standing repair bound is 2 attempts, and an attempt IS a strategy',
+    () => {
+      const p = resolveRepairPolicy({ exists: () => true });
+      if ('error' in p) return `the default must resolve; got ${p.error}`;
+      return (
+        expect(
+          STANDING_REPAIR_BOUND === 2,
+          `CLAUDE.md trigger 5 is two; got ${String(STANDING_REPAIR_BOUND)}`,
+        ) ??
+        expect(p.bound === 2, `the default bound must be 2; got ${String(p.bound)}`) ??
+        expect(!p.overridden, 'the default must not read as an override') ??
+        expect(p.charter === null, 'the default has no charter') ??
+        expect(
+          STANDING_AUTHORITY.includes('CLAUDE.md') && STANDING_AUTHORITY.includes('trigger 5'),
+          `the standing authority must cite the rule; got ${STANDING_AUTHORITY}`,
+        ) ??
+        expect(
+          describeRepairPolicy(p).includes('attempt'),
+          'the description must name the unit being counted',
+        ) ??
+        expect(
+          DEFAULT_OPTIONS.repair.bound === STANDING_REPAIR_BOUND,
+          `the supervisor default must be the standing bound; got ${String(DEFAULT_OPTIONS.repair.bound)}`,
+        )
+      );
+    },
+  );
+
+  await scenario(
+    45,
+    'widening the bound is refused unless it names an authority that exists',
+    () => {
+      const bare = resolveRepairPolicy({ bound: 3, exists: () => true });
+      const ghost = resolveRepairPolicy({
+        bound: 3,
+        charter: 'docs/decisions/9999-does-not-exist.md',
+        exists: () => false,
+      });
+      const authorised = resolveRepairPolicy({
+        bound: 3,
+        charter: 'docs/decisions/0011-autopilot-run-charter.md',
+        exists: () => true,
+      });
+      const tighter = resolveRepairPolicy({ bound: 1, exists: () => true });
+      const orphanCharter = resolveRepairPolicy({
+        charter: 'docs/decisions/0011-autopilot-run-charter.md',
+        exists: () => true,
+      });
+      const zero = resolveRepairPolicy({ bound: 0, exists: () => true });
+      return (
+        expect(
+          'error' in bare && bare.error.includes('--charter'),
+          `--max-repairs 3 alone must be refused, naming the fix; got ${JSON.stringify(bare)}`,
+        ) ??
+        expect(
+          'error' in bare && bare.error.includes('An attempt IS a strategy'),
+          'the refusal must say why raising the count is not a rename',
+        ) ??
+        expect('error' in ghost, 'an authority nobody can read is not an authority') ??
+        expect(
+          !('error' in authorised) &&
+            authorised.bound === 3 &&
+            authorised.overridden &&
+            authorised.charter === 'docs/decisions/0011-autopilot-run-charter.md',
+          `a charter-authorised widening must be accepted and recorded; got ${JSON.stringify(authorised)}`,
+        ) ??
+        expect(
+          !('error' in authorised) && authorised.authority.includes('0011'),
+          'the recorded authority must name the record, not just say "override"',
+        ) ??
+        expect(
+          !('error' in tighter) && tighter.bound === 1 && tighter.overridden,
+          'tightening needs no authority, and is still recorded as a change',
+        ) ??
+        expect('error' in orphanCharter, '--charter without --max-repairs changes nothing') ??
+        expect('error' in zero, 'a bound of zero would escalate before trying anything')
+      );
+    },
+  );
+
+  await scenario(
+    46,
+    'a run records the bound and the posture it started under, before any worker',
+    async () => {
+      const w = world({ steps: { default: ['DONE'] } }, { maxIterations: 1 });
+      const authorised = resolveRepairPolicy({
+        bound: 3,
+        charter: 'docs/decisions/0011-autopilot-run-charter.md',
+        exists: () => true,
+      });
+      if ('error' in authorised) return `fixture policy failed: ${authorised.error}`;
+      const r = await supervise(
+        {
+          ...w.options,
+          repair: authorised,
+          permission: { mode: 'bypassPermissions', bypassed: true, source: 'test' },
+        },
+        w.deps(() => dispatchAction('p9.a')),
+        SCHEMA,
+      );
+      const onDisk = readState(w.stateDir);
+      const journal = readJournal(w.stateDir);
+      const start = journal.find((j) => j.transition === 'START -> RUNNING');
+      return (
+        expect(
+          onDisk?.repairBound === 3 && (onDisk.repairAuthority ?? '').includes('0011'),
+          `the widened bound and its authority must be on disk; got ${JSON.stringify({ bound: onDisk?.repairBound, authority: onDisk?.repairAuthority })}`,
+        ) ??
+        expect(
+          onDisk?.permissionMode === 'bypassPermissions' && onDisk.permissionBypassed === true,
+          'a bypassed run must be recorded as bypassed, not left to look ordinary',
+        ) ??
+        expect(start !== undefined, 'the run start must be journalled with both bounds') ??
+        expect(
+          (start?.detail ?? '').includes('repair bound') &&
+            (start?.detail ?? '').includes('bypassPermissions'),
+          `the journal line must carry both; got ${start?.detail ?? ''}`,
+        ) ??
+        expect(r.state.revision > 0, 'the record must be written before the loop returns')
+      );
+    },
+  );
+
+  await scenario(
+    47,
+    'the exhaustion escalation quotes the bound it actually ran under',
+    async () => {
+      const w = world({ steps: { default: ['REPAIR_REQUIRED'] } }, { maxIterations: 10 });
+      const tight = resolveRepairPolicy({ bound: 1, exists: () => true });
+      if ('error' in tight) return `fixture policy failed: ${tight.error}`;
+      const r = await supervise(
+        { ...w.options, repair: tight },
+        w.deps(() => dispatchAction('p9.a')),
+        SCHEMA,
+      );
+      return (
+        expect(r.status === 'ESCALATED', `expected ESCALATED; got ${r.status}`) ??
+        expect(
+          w.launches().length === 2,
+          `a bound of 1 must escalate after 2 launches; got ${String(w.launches().length)}`,
+        ) ??
+        expect(
+          (r.escalation?.reason ?? '').includes('Bound: 1 attempt(s)'),
+          `the escalation must quote the bound it ran under; got ${r.escalation?.reason ?? ''}`,
+        ) ??
+        expect((r.escalation?.reason ?? '').includes('CLAUDE.md'), 'and the authority that set it')
+      );
+    },
+  );
+
+  await scenario(
+    39,
+    'the one shelled command line quotes here, and refuses what quoting cannot contain',
+    () => {
+      const spaced = shellCommandLine({
+        command: 'claude',
+        args: ['--settings', 'C:/Program Files/repo/.claude/autopilot-permissions.json'],
+        env: {},
+      });
+      // `&&` inside a double-quoted argument is inert on both cmd.exe and sh — quoting IS the
+      // correct handling for it, and throwing would break legitimate arguments. What quoting
+      // cannot contain is a quote character or an expansion, so those throw.
+      const quoted = shellCommandLine({ command: 'claude', args: ['rm -rf / && echo'], env: {} });
+      const threw = (arg: string): string => {
+        try {
+          shellCommandLine({ command: 'claude', args: ['--print', arg], env: {} });
+          return '';
+        } catch (e: unknown) {
+          return e instanceof Error ? e.message : String(e);
+        }
+      };
+      const cases = ['a"b', '%PATH%', '$(id)', 'a`id`b', `x${String.fromCharCode(10)}y`];
+      const survived = cases.filter((c) => threw(c) === '');
+      return (
+        expect(
+          spaced ===
+            'claude "--settings" "C:/Program Files/repo/.claude/autopilot-permissions.json"',
+          `a path with a space must be quoted, not refused; got ${spaced}`,
+        ) ??
+        expect(
+          quoted === 'claude "rm -rf / && echo"',
+          `an inert metacharacter must be quoted, not thrown; got ${quoted}`,
+        ) ??
+        expect(
+          survived.length === 0,
+          `these must throw and did not: ${JSON.stringify(survived)}`,
+        ) ??
+        expect(
+          threw('a"b').includes('shell metacharacters'),
+          'the refusal must say what it is refusing',
         )
       );
     },

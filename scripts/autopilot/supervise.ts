@@ -57,10 +57,13 @@ import {
   type Verdict,
 } from './progression.ts';
 import { buildBrief } from './bootstrap.ts';
+import { describeRepairPolicy, standingPolicy, type RepairPolicy } from './repair-policy.ts';
 import {
   newSessionId,
   newWorkerId,
   runWorker,
+  type ClaudeOptions,
+  type PermissionPosture,
   type WorkerResult,
   type WorkerSpec,
   type WorkerTask,
@@ -79,8 +82,14 @@ export interface SuperviseOptions {
   stateDir: string;
   /** Hard stop on the loop itself. A supervisor that never returns cannot be reasoned about. */
   maxIterations: number;
-  /** Materially different repair strategies allowed before trigger 5 fires. `CLAUDE.md`: two. */
-  maxRepairs: number;
+  /**
+   * How many materially different, evidence-driven strategies before trigger 5 fires, and the
+   * rule that set that number. An attempt IS a strategy — `scripts/autopilot/repair-policy.ts`
+   * is where that is stated once and where a widened bound has to name its authority.
+   */
+  repair: RepairPolicy;
+  /** The resolved worker permission posture, recorded so a bypassed run can never look normal. */
+  permission: PermissionPosture;
   /** Rotations allowed on one node before a rotation is treated as a spent repair attempt. */
   maxRotations: number;
   /** Concurrent workers when the lane decision says parallel. */
@@ -94,7 +103,8 @@ export interface SuperviseOptions {
 
 export const DEFAULT_OPTIONS: Omit<SuperviseOptions, 'root' | 'stateDir'> = {
   maxIterations: 200,
-  maxRepairs: 2,
+  repair: standingPolicy(),
+  permission: { mode: 'auto', bypassed: false, source: 'default (fail closed)' },
   maxRotations: 8,
   concurrency: 3,
   workerTimeoutMs: 90 * 60_000,
@@ -415,7 +425,7 @@ async function dispatchWorker(
     reportPath,
     workerId,
     attempt,
-    maxAttempts: ctx.opts.maxRepairs,
+    maxAttempts: ctx.opts.repair.bound,
     state: ctx.state,
     failures: unresolvedFailures(ctx.state),
     handoffs: handoffsFor(ctx.opts.root, node),
@@ -719,7 +729,8 @@ function escalationForRepairExhaustion(
     node,
     reason:
       `${String(spent)} materially different repair attempt(s) spent on ` +
-      `${node ?? `the ${segment ?? '?'} gate`} and it is still RED. ${detail}`,
+      `${node ?? `the ${segment ?? '?'} gate`} and it is still RED. ` +
+      `Bound: ${describeRepairPolicy(ctx.opts.repair)}. ${detail}`,
     options: [
       'supply the missing diagnosis or decision, then `pnpm autopilot resume`',
       "change the packet's scope or acceptance criteria in the plan, then resume",
@@ -758,7 +769,7 @@ async function handleGate(
     evidence: outcome.evidence,
   });
   const spent = bumpRepair(ctx, segment, null);
-  if (spent > ctx.opts.maxRepairs) {
+  if (spent > ctx.opts.repair.bound) {
     return escalationForRepairExhaustion(
       ctx,
       segment,
@@ -842,7 +853,7 @@ async function handleDispatch(ctx: Ctx, action: FlowAction): Promise<StepResult>
         if (launches >= ctx.opts.maxRotations) {
           const spent = bumpRepair(ctx, segment, node);
           setNode(ctx, node, { status: 'REPAIR', launches: 0 });
-          if (spent > ctx.opts.maxRepairs) {
+          if (spent > ctx.opts.repair.bound) {
             return escalationForRepairExhaustion(
               ctx,
               segment,
@@ -870,7 +881,7 @@ async function handleDispatch(ctx: Ctx, action: FlowAction): Promise<StepResult>
             ...(result.report?.evidence ?? []),
           ],
         });
-        if (spent > ctx.opts.maxRepairs) {
+        if (spent > ctx.opts.repair.bound) {
           return escalationForRepairExhaustion(
             ctx,
             segment,
@@ -1059,7 +1070,11 @@ export function shellRunner(command: string, cwd: string): CommandResult {
   };
 }
 
-export function defaultDeps(root: string, schemaPath: string): SuperviseDeps {
+export function defaultDeps(
+  root: string,
+  schemaPath: string,
+  claude: ClaudeOptions = {},
+): SuperviseDeps {
   return {
     now: () => new Date(),
     deriveAction: async () => {
@@ -1067,7 +1082,7 @@ export function defaultDeps(root: string, schemaPath: string): SuperviseDeps {
       return nextAction();
     },
     runCommand: shellRunner,
-    launchWorker: (spec) => runWorker(spec, { schemaPath }),
+    launchWorker: (spec) => runWorker(spec, { schemaPath, claude }),
     log: (line) => {
       console.log(line);
     },
@@ -1096,7 +1111,32 @@ export async function supervise(
 
   // A stop request is consumed at the start of a run, not carried into it.
   clearStop(options.stateDir);
-  save(ctx, (s) => ({ ...s, stopRequested: false }));
+  save(ctx, (s) => ({
+    ...s,
+    stopRequested: false,
+    repairBound: options.repair.bound,
+    repairAuthority: options.repair.authority,
+    permissionMode: options.permission.mode,
+    permissionBypassed: options.permission.bypassed,
+  }));
+
+  // Both safety bounds are announced and journalled before the first worker exists. A run that
+  // was widened, or that skipped the permission floor entirely, must never read afterwards like
+  // a run that was not.
+  journal(ctx, 'START -> RUNNING', {
+    detail:
+      `repair bound: ${describeRepairPolicy(options.repair)}; ` +
+      `permission mode: ${options.permission.mode} (${options.permission.source})`,
+  });
+  deps.log(`  repair bound    ${describeRepairPolicy(options.repair)}`);
+  deps.log(`  permissions     ${options.permission.mode} — ${options.permission.source}`);
+  if (options.permission.bypassed) {
+    deps.log(
+      '  WARNING         bypassPermissions skips every check, including ' +
+        '.claude/autopilot-permissions.json. The CLAUDE.md escalation classes are NOT ' +
+        'enforceable in this run.',
+    );
+  }
 
   let lastAction: FlowAction | null = null;
   let signature = '';

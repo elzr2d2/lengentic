@@ -169,6 +169,13 @@ become disposable; no `/clear`, no manual resume. Mechanism: `docs/AUTOPILOT_SUP
 Why: `docs/decisions/0012-session-supervisor-owns-progression.md`. The manual procedure in the
 `autopilot` skill is unchanged and is the debugging path.
 
+It **fails closed** (`docs/decisions/0013`). Workers run under `--permission-mode auto` plus the
+deterministic deny floor in `.claude/autopilot-permissions.json`, which outranks both the allow
+list and the classifier, so triggers 1 and 4 stay enforceable instead of depending on a worker
+to self-report. `bypassPermissions` needs an exact environment opt-in and is recorded when used.
+A `--max-repairs` above the standing two must name the record authorising it — an attempt IS a
+strategy, so raising the count raises the escalation bar.
+
 Who runs, and when, is `.claude/rules/agent-activation.json`. Agents are conditional tools,
 not a mandatory pipeline. Do not run Architect, Validator and Reviewer after every minor edit.
 

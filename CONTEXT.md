@@ -139,6 +139,17 @@ before a commit. Never ask an agent to verify what a gate can verify.
 **Handoff** — the JSON an agent returns, shaped by `.claude/rules/handoff.schema.json` and
 checked by a hook. `owner` is who acts **next**, never the reporting agent.
 
+**Repair attempt** — one materially different, evidence-driven **strategy** against a red.
+Attempt and strategy are the same unit; re-running a command is neither, and so is the same fix
+applied twice. `CLAUDE.md` trigger 5 bounds it at **two**. A record that raises the bound raises
+the escalation bar — it does not rename the unit — so `pnpm autopilot` refuses a higher
+`--max-repairs` unless it names the record authorising it (`scripts/autopilot/repair-policy.ts`).
+
+**Fail closed** — an unattended actor that cannot establish it is permitted does not proceed.
+The supervisor's workers run under a deterministic deny floor
+(`.claude/autopilot-permissions.json`) that outranks both the allow list and the `auto`
+classifier; a posture the supervisor does not recognise stops the run rather than widening it.
+
 **Backlog** — `BACKLOG.md`. Where anything valuable and unnecessary for the current DoD
 goes, the moment it appears. With its `Source`, or it is unactionable later.
 

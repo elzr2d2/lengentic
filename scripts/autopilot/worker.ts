@@ -173,8 +173,82 @@ export interface LaunchCommand {
 
 export interface ClaudeOptions {
   model?: string | undefined;
+  /** Resolved by `resolvePermissionPosture`. Never defaulted at the call site. */
   permissionMode?: string | undefined;
+  /** Path to the deny/allow floor passed to `--settings`. */
+  permissionsFile?: string | undefined;
   maxBudgetUsd?: string | undefined;
+}
+
+// ── permission posture ────────────────────────────────────────────────────────────────
+
+/**
+ * The default posture for an autonomous worker: **fail closed**.
+ *
+ * `auto` is the judgement layer — its shipped rules already allow ordinary local repository
+ * operations and deny Production Deploy, Credential Exploration, Irreversible Local Destruction
+ * and Data Exfiltration. But it is a classifier, not a gate: measured against a scratch
+ * repository it permitted `git push --force`
+ * (`.artifacts/evidence/autopilot/permission-posture.md`, probe 1). So the classifier is not
+ * load-bearing on its own. `.claude/autopilot-permissions.json` is the deterministic floor
+ * underneath it, and `deny` beats both `allow` and the classifier — measured, probe 3.
+ *
+ * `bypassPermissions` skips every check, including that floor. It is therefore not reachable by
+ * default, by a typo, or by a flag: it needs `AUTOPILOT_PERMISSION_MODE=bypassPermissions`
+ * spelled exactly, and the supervisor records and announces that it was used.
+ */
+// Typed as `string`, not as its literal, on purpose: the checks that assert this is not
+// `bypassPermissions` must be real runtime checks that survive someone changing the value,
+// not comparisons the compiler folds away.
+export const DEFAULT_PERMISSION_MODE: string = 'auto';
+
+/** Modes a supervised worker may run under. `plan` and `manual` cannot act; `dontAsk` and
+ * `acceptEdits` can, under the floor. Anything not on this list is refused rather than passed
+ * through to the CLI — an unrecognised posture must not become a permissive one. */
+export const SUPERVISED_PERMISSION_MODES = [
+  'auto',
+  'acceptEdits',
+  'dontAsk',
+  'bypassPermissions',
+] as const;
+
+export interface PermissionPosture {
+  mode: string;
+  /** True only for `bypassPermissions` — the one posture where the floor does not apply. */
+  bypassed: boolean;
+  /** Where the mode came from, for the journal and for `pnpm autopilot status`. */
+  source: string;
+}
+
+/**
+ * Resolve the worker permission mode from the environment, failing closed on anything the
+ * supervisor does not recognise. Returns an error rather than a mode so the caller must decide
+ * what to do about it; there is no fallback that quietly widens the posture.
+ */
+export function resolvePermissionPosture(
+  env: NodeJS.ProcessEnv,
+): PermissionPosture | { error: string } {
+  const raw = env.AUTOPILOT_PERMISSION_MODE;
+  if (raw === undefined || raw === '') {
+    return {
+      mode: DEFAULT_PERMISSION_MODE,
+      bypassed: false,
+      source: 'default (fail closed)',
+    };
+  }
+  if (!(SUPERVISED_PERMISSION_MODES as readonly string[]).includes(raw)) {
+    return {
+      error:
+        `AUTOPILOT_PERMISSION_MODE="${raw}" is not one of ` +
+        `${SUPERVISED_PERMISSION_MODES.join(' | ')}. Refusing to start: an unrecognised ` +
+        'permission posture must not fall back to a permissive one.',
+    };
+  }
+  return {
+    mode: raw,
+    bypassed: raw === 'bypassPermissions',
+    source: 'AUTOPILOT_PERMISSION_MODE (explicit opt-in)',
+  };
 }
 
 /**
@@ -183,8 +257,12 @@ export interface ClaudeOptions {
  * `--session-id` is supplied rather than discovered so the supervisor can name the session in
  * durable state BEFORE the process exists — a worker that dies in its first second is still
  * addressable for `claude --resume`. `--print` makes it non-interactive; there is nobody to
- * answer a prompt. The permission mode is bypass by default because an autonomous run cannot
- * pause on a permission dialog, and is overridable for anyone who wants a narrower posture.
+ * answer a prompt.
+ *
+ * The permission mode is `auto` and the deny/allow floor rides along on `--settings`. Neither
+ * is defaulted here: `opts.permissionMode` arrives already resolved by
+ * `resolvePermissionPosture`, and an absent one falls back to the closed default rather than to
+ * the open one. See that function for why the classifier alone is not enough.
  *
  * The brief is NOT an argument. It is multi-kilobyte Markdown with newlines, quotes and
  * backticks, and Windows resolves `claude` through a `.cmd` shim that needs a shell — putting
@@ -198,7 +276,8 @@ export function claudeLaunch(spec: WorkerSpec, opts: ClaudeOptions = {}): Launch
   } else {
     args.push('--session-id', spec.sessionId);
   }
-  args.push('--permission-mode', opts.permissionMode ?? 'bypassPermissions');
+  args.push('--permission-mode', opts.permissionMode ?? DEFAULT_PERMISSION_MODE);
+  if (opts.permissionsFile !== undefined) args.push('--settings', opts.permissionsFile);
   if (opts.model !== undefined) args.push('--model', opts.model);
   if (opts.maxBudgetUsd !== undefined) args.push('--max-budget-usd', opts.maxBudgetUsd);
   return {
@@ -254,7 +333,10 @@ export function resolveLaunch(
  * — never reaches this function; it goes down stdin.
  */
 export function shellCommandLine(launch: LaunchCommand): string {
-  const unsafe = launch.args.filter((a) => !/^[A-Za-z0-9._:@=\-\\/]+$/.test(a));
+  // A denylist, not an allowlist: a repository path may legitimately contain a space, and a
+  // space inside double quotes is safe on both cmd.exe and sh. What is never safe is a
+  // character that closes the quoting or starts an expansion.
+  const unsafe = launch.args.filter((a) => /["%$`\r\n]/.test(a));
   if (unsafe.length > 0) {
     throw new Error(
       `refusing to build a shell command line containing ${JSON.stringify(unsafe)} — ` +

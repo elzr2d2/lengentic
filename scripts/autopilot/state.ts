@@ -97,6 +97,17 @@ export interface SupervisorState {
   escalation: Escalation | null;
   /** Mirrors the stop flag file at the moment of the last write. The file is authoritative. */
   stopRequested: boolean;
+  /**
+   * The two safety bounds this run started under, written before the first worker exists.
+   * They are here rather than only in the journal so `pnpm autopilot status` can never show a
+   * widened or bypassed run as an ordinary one, and so a run resumed from disk keeps the bound
+   * it was authorised for. Optional only because a state file written before this field existed
+   * must still load.
+   */
+  repairBound?: number;
+  repairAuthority?: string;
+  permissionMode?: string;
+  permissionBypassed?: boolean;
 }
 
 export class StaleStateError extends Error {
