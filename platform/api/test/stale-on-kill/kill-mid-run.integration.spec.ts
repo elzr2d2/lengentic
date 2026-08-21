@@ -11,7 +11,12 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { AllExceptionsFilter } from '../../src/common/all-exceptions.filter';
-import type { RunDetailView } from '@lengentic/shared/read';
+import {
+  RUNS_LIST_MAX_LIMIT,
+  type RunDetailView,
+  type RunListView,
+  type RunSummaryView,
+} from '@lengentic/shared/read';
 
 /**
  * `p2.stale-on-kill` — the eleventh Phase 2 node, added after the wave 2 Reviewer filed C1
@@ -148,28 +153,59 @@ describe('A real host process killed mid-run leaves its Run reporting STALE on t
   let port: number;
 
   /**
-   * Polls the live API — never the row — until the server's own `lastEventAt` for `runId`
-   * is older than `STALE_TEST_MS`, i.e. until the staleness predicate's time condition is
-   * satisfied server-side. Returns the view read at that moment, so the caller asserts on
-   * a response that was produced while the run was genuinely past the threshold.
+   * Polls the live API's LIST endpoint until `controlRunId` is reported `STALE`, and returns
+   * the subject and the control **as they appeared in that one response**.
+   *
+   * ## Why the list, and why a control run
+   *
+   * The obvious wait — poll until the test process computes `now - lastEventAt > threshold`
+   * — is not decisive, and the wave-3 Validator proved it: the server derives a response's
+   * `status` from its OWN, earlier, `now`, and the HTTP round trip sits between the two
+   * readings. So that loop can accept a response whose status was computed *before* the real
+   * crossing and then assert `COMPLETED` on it vacuously. Measured: with the RUNNING-only
+   * guard removed from `runs/stale.ts`, the old wait caught the mutation 3/13 times, and on
+   * a re-run at this commit 0/8. A probabilistic mutation probe is how a green that lies
+   * gets written twice.
+   *
+   * This wait removes the test's clock from the argument entirely. `runs.service.ts:41`
+   * reads the clock **once per list request, for the whole page** — deliberately, so that
+   * "two runs with identical `lastEventAt` land on opposite sides of the threshold within
+   * one response" cannot happen. Both runs below are therefore derived from a single server
+   * `now`. The caller asserts:
+   *
+   *   control.status === 'STALE'                    =>  now - control.lastEventAt  > threshold
+   *   subject.lastEventAt <= control.lastEventAt    =>  now - subject.lastEventAt >= the above
+   *                                                 =>  now - subject.lastEventAt  > threshold
+   *
+   * Both premises are read off that same response, so the time half of the staleness
+   * predicate holds for the subject **by construction**, with no timing margin and no
+   * reference to `Date.now()` in this process. Whatever the subject then reports can only
+   * come from the stored-status half of the predicate.
    */
-  const waitForApiIdleBeyondThreshold = async (
-    runId: string,
+  const waitForControlStaleInSameResponse = async (
+    subjectRunId: string,
+    controlRunId: string,
     timeoutMs: number,
-  ): Promise<RunDetailView> => {
+  ): Promise<{ subject: RunSummaryView; control: RunSummaryView }> => {
     const deadline = Date.now() + timeoutMs;
-    let last: RunDetailView | undefined;
+    let last: RunListView | undefined;
     for (;;) {
-      const response = await request(app.getHttpServer()).get(`/v1/runs/${runId}`);
+      const response = await request(app.getHttpServer())
+        .get('/v1/runs')
+        .query({ limit: RUNS_LIST_MAX_LIMIT });
       if (response.status === 200) {
-        last = response.body as RunDetailView;
-        const idleMs = Date.now() - Date.parse(last.lastEventAt);
-        if (idleMs > STALE_TEST_MS) return last;
+        last = response.body as RunListView;
+        const subject = last.runs.find((run) => run.id === subjectRunId);
+        const control = last.runs.find((run) => run.id === controlRunId);
+        if (subject !== undefined && control !== undefined && control.status === 'STALE') {
+          return { subject, control };
+        }
       }
       if (Date.now() >= deadline) {
         throw new Error(
-          `timed out after ${timeoutMs}ms waiting for run ${runId} to be idle beyond ` +
-            `${STALE_TEST_MS}ms as the live API reports it; last seen: ${JSON.stringify(last)}`,
+          `timed out after ${timeoutMs}ms waiting for control run ${controlRunId} to report ` +
+            `STALE alongside subject ${subjectRunId} in one GET /v1/runs response; last seen: ` +
+            JSON.stringify(last),
         );
       }
       await yieldToEventLoop();
@@ -329,21 +365,61 @@ describe('A real host process killed mid-run leaves its Run reporting STALE on t
     expect(match, `stdout: ${stdout}`).not.toBeNull();
     const runId = match![1]!;
 
-    // Wait past the same real threshold the positive case relies on, so a derivation that
-    // ignores stored status and reports STALE for any sufficiently-idle run — the false
-    // positive that would destroy trust in the Run Explorer — is exactly what this
-    // assertion catches.
+    // The control: a REAL abandoned run, spawned only now — after the subject process has
+    // already exited 0 above — so the server stamps its `lastEventAt` strictly later than
+    // the subject's. It is killed immediately, so it can never advance again and is
+    // guaranteed to cross the threshold.
     //
-    // The wait lands on an observable condition, not a duration: it polls the live API
-    // until the server's OWN `lastEventAt` is further in the past than the threshold the
-    // server was configured with. That is strictly stronger than sleeping for
-    // `STALE_TEST_MS`, which would only assume the test's wall clock and the server's
-    // agree. When this returns, `now - lastEventAt > STALE_RUN_THRESHOLD_MS` holds on the
-    // server side — the exact predicate `runs/stale.ts` evaluates — so a status of
-    // COMPLETED below can only come from the stored terminal state winning.
-    const view = await waitForApiIdleBeyondThreshold(runId, WAIT_FOR_STALE_TIMEOUT_MS);
-    expect(view.status).toBe('COMPLETED');
-    expect(view.status).not.toBe('STALE');
+    // Why a second run rather than a longer wait: the control is what makes the crossing
+    // OBSERVABLE in the server's own terms. `STALE` on the control is the server telling us,
+    // from its own single clock read, that the threshold has been passed — a fact this test
+    // process is otherwise not able to establish about the server without racing it. See
+    // `waitForControlStaleInSameResponse`.
+    const control = spawnHost('abandoned-run.ts', port, 'stale-on-kill-completed-control');
+    let controlStderr = '';
+    control.stderr.on('data', (chunk: Buffer) => (controlStderr += chunk.toString('utf8')));
+
+    const controlLine = await waitForLine(control, 'RUN-STARTED ', WAIT_FOR_LINE_TIMEOUT_MS);
+    const controlRunId = controlLine.slice('RUN-STARTED '.length).trim();
+    expect(
+      controlRunId,
+      `expected a non-empty control runId; fixture stderr: ${controlStderr}`,
+    ).not.toBe('');
+
+    control.kill('SIGKILL');
+    const controlExit = await onExit(control);
+    expect(
+      controlExit.code,
+      `control host exit was not a forced termination: ${JSON.stringify(controlExit)}`,
+    ).not.toBe(0);
+
+    const { subject, control: controlView } = await waitForControlStaleInSameResponse(
+      runId,
+      controlRunId,
+      WAIT_FOR_STALE_TIMEOUT_MS,
+    );
+
+    // Premise 1, read off the server's response: at that single `now`, the control had been
+    // idle longer than `STALE_RUN_THRESHOLD_MS`.
+    expect(controlView.status).toBe('STALE');
+
+    // Premise 2, read off the SAME response: the subject's last event is no later than the
+    // control's. `<=` rather than `<` on purpose — it is all the arithmetic needs (it makes
+    // the subject's idle time at least the control's), and it cannot fail spuriously if both
+    // stamps ever land in one millisecond.
+    expect(Date.parse(subject.lastEventAt)).toBeLessThanOrEqual(
+      Date.parse(controlView.lastEventAt),
+    );
+
+    // Therefore `now - subject.lastEventAt > STALE_RUN_THRESHOLD_MS` held server-side for
+    // the subject too, in the very response being asserted on. The time half of the
+    // staleness predicate is satisfied by construction, so this can only be COMPLETED
+    // because the stored terminal status won — which is exactly the false positive that
+    // would destroy trust in the Run Explorer, and exactly what the positive test above
+    // needs to be able to fail.
+    expect(subject.status).toBe('COMPLETED');
+    expect(subject.status).not.toBe('STALE');
+    expect(subject.id).toBe(runId);
 
     const row = await prisma.client.run.findUnique({ where: { id: runId } });
     expect(row?.status).toBe('COMPLETED');
