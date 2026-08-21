@@ -719,6 +719,32 @@
       "note": "Probe re-pointed from `telemetry|ingest` to `STALE` on 2026-08-20. p2.ingest-endpoint was granted platform/api/test/telemetry.integration.spec.ts for its F1 regression suite, and the old pattern would have been satisfied by that filename alone — this node would have reported DONE on another node's deliverable, before writing a line. STALE derivation (ADR 0005 §4) is this node's own and appears in no other lane's file. If a later lane starts writing STALE into platform/api/test, re-point this probe again rather than letting it drift."
     },
     {
+      "id": "p2.stale-on-kill",
+      "risk": "medium",
+      "changeClass": "behavior",
+      "validate": ["pnpm --filter @lengentic/api test:integration kill-mid-run"],
+      "own": {
+        "allowed": ["platform/api/test/stale-on-kill/**"]
+      },
+      "phase": 2,
+      "lane": "test",
+      "title": "Killing a real host mid-run leaves a Run the live API derives as STALE",
+      "owner": "validator",
+      "needs": ["p2.runs-api", "p2.sdk-core", "p2.integration-tests", "env.docker"],
+      "probes": [
+        {
+          "kind": "path",
+          "path": "platform/api/test/stale-on-kill/kill-mid-run.integration.spec.ts"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/api/test/stale-on-kill",
+          "pattern": "SIGKILL"
+        }
+      ],
+      "note": "The eleventh Phase 2 node, added 2026-08-21 after the wave 2 Reviewer filed C1 and the human ruled on it. MVP_PLAN_V3.md:1599 - `Killing the script mid-run leaves a Run that derives as STALE` - was UNBOUND: both halves existed and neither joined the other. `platform/telemetry-sdk/test/process-exit.spec.ts:81` spawns a real host and proves it exits 0 with the API down; `run-lifecycle.integration.spec.ts:596` derives STALE from a stored row under a controlled clock. Nothing killed a process mid-run and then read STALE off the live API for the run it abandoned. Phase 2 was 10/10 when this was found, so no later node could carry it; two cheaper readings were put to the human (rule that Phase 3's happy path discharges it; rewrite the DoD line to match the code) and both were declined - the second on its merits, because amending the line to match the code moves the goalposts. This node must kill a REAL separately-spawned host process mid-run and then read STALE off the running API over HTTP, not off a stored row under an injected clock: reading the row is what `p2.integration-tests` already does, and a node that repeats it discharges nothing. The directory `platform/api/test/stale-on-kill/**` is this node's alone - no other lane writes there - so the path probe cannot be satisfied by anyone else's deliverable (`pnpm check:probes`, and the lesson of a554020, where a probe matching prose rather than an artifact reported DONE on work never done)."
+    },
+    {
       "id": "p3.scaffold",
       "phase": 3,
       "lane": "playground",
