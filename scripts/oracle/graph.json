@@ -100,6 +100,7 @@
     "p2.runs-api": ["13", "PHASE 2"],
     "p2.dashboard-runs": ["13", "PHASE 2"],
     "p2.integration-tests": ["6", "12", "PHASE 2"],
+    "p2.stale-on-kill": ["PHASE 2", "13", "16"],
     "p3.scaffold": ["4", "PHASE 3"],
     "p3.mock-provider": ["PHASE 3"],
     "p3.seeded-clock": ["17", "PHASE 3"],
