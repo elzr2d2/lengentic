@@ -2013,7 +2013,7 @@ Closes when a bare-specifier import from `playground/` into a forbidden platform
 
 ## Discovered in the first live supervised run (2026-08-21)
 
-### `flow next` skips an UNRECORDED gate when any later phase already has landed work
+### ~~`flow next` skips an UNRECORDED gate when any later phase already has landed work~~ — FIXED 2026-08-21
 
 **Source:** the first `pnpm autopilot` run against the live derived state, immediately after
 `docs/decisions/0013`. Captured in `.artifacts/evidence/autopilot/live-dogfood.md`.
@@ -2062,3 +2062,39 @@ written disables the phase gate for every segment except the last.
 Note what did NOT save this. `scripts/autopilot/progression.ts` refuses to record a gate whose
 sources disagree — but it is only reached when a gate action is returned. A gate that is never
 asked for is never held. The invariant sits one layer above the hole.
+
+**Resolved in the Coordinator session of 2026-08-21.** Evidence:
+`.artifacts/evidence/harness/flow-segment-selection-gate-skip.md`. `pnpm check:flow` scenarios 13
+and 14, written red first, mutation-probed; 14/14.
+
+**The trigger-6 call above does not hold, and that is why this was fixed rather than asked.**
+The claimed conflict is "never reopen a completed phase" versus "never step over an unrecorded
+gate". The first is not a project rule — it is a comment in `flow.ts` stating an implementation
+intent. `CLAUDE.md` does carry a rule about what completion means: GREEN is four sources that
+must agree, and a gate record is the pointer to that proof. A segment whose gate never ran was
+therefore never _completed_, so choosing "never step over an unrecorded gate" invalidates
+nothing. The entry's own next sentence concedes the point: "That intent is right for a segment
+that WAS gated. It is wrong for one that never was."
+
+Scenario 8 was kept, not overruled. The discriminator is membership of the record regime — a
+segment holding **zero** gate records predates `pnpm flow record` and stays closed by history
+(phases 0, 1 and 5a); a segment holding any record owes the rest. Scenario 8's fixture has no
+records, so it passes unchanged, and the fix is one commit to revert.
+
+### `p4.*` and `p7.*` probe DONE while Phase 3 is entirely TODO
+
+**Source:** third candidate in the segment-selection diagnosis above; not addressed by that fix.
+
+Under the amended order `0 -> 1 -> 5a -> 2 -> 3 -> 4 -> 5b -> 6 -> 7`, `pnpm oracle status`
+reports Phase 4 at 1/6 and Phase 7 at 1/5 with Phase 3 at 1/7. Those landed states are what made
+`laterWorkStarted` true for segment 2 in the first place. `pnpm check:probes` already WARNs on
+all five Phase 7 nodes.
+
+If those probes are satisfiable by another node's deliverable, this is the oracle-must-not-lie
+hazard that already ate both wave-3 analyzer packets
+(`.artifacts/evidence/5a/oracle-lint-proof.md`), the segment-selection bug was downstream of it,
+and the same false DONE states will mislead somewhere else. If they are genuinely done work that
+landed early, the states are honest and only the WARN needs retiring.
+
+**Trigger:** before the Phase 4 gate, or the next time `check:probes` WARNs are triaged —
+whichever comes first. Not before the Phase 2 and Phase 3 gates, which do not depend on it.

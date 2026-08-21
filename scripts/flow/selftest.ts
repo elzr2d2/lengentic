@@ -329,6 +329,91 @@ export function run_(): number {
     );
   });
 
+  scenario(
+    13,
+    'a segment already inside the record regime is never historically closed while it owes a gate',
+    () => {
+      // The discriminator is not "did later work land" — it is "was this segment ever gated
+      // under the record regime". A segment with zero records predates `pnpm flow record`
+      // and is closed by history (scenario 8). A segment that HAS records is inside the
+      // regime, so an uncovered DONE packet is a gate it still owes, whatever landed after.
+      const world9Done = () =>
+        world([
+          node({ id: 'a', phase: 9, state: 'DONE', readiness: 'DONE' }),
+          node({ id: 'b', phase: 9, state: 'DONE', readiness: 'DONE' }),
+          node({ id: 'c', phase: 9, state: 'DONE', readiness: 'DONE' }),
+          node({ id: 'z', phase: 10, state: 'PARTIAL', readiness: 'IN-PROGRESS' }),
+        ]);
+      // Waves 1-2 recorded; the third packet never appeared in any record.
+      const owesWave = run({
+        byId: world9Done(),
+        segments: SEGS,
+        records: [waveRecord('9', ['a', 'b'])],
+      });
+      // Every packet wave-covered, but the phase gate never ran.
+      const owesPhase = run({
+        byId: world9Done(),
+        segments: SEGS,
+        records: [waveRecord('9', ['a', 'b']), waveRecord('9', ['c'])],
+      });
+      // Fully gated: history closes it and flow moves on, exactly as scenario 8.
+      const settled = run({
+        byId: world9Done(),
+        segments: SEGS,
+        records: [waveRecord('9', ['a', 'b', 'c']), phaseRecord('9')],
+      });
+      return (
+        expect(
+          owesWave.action === 'WAVE_GATE' && owesWave.segment === '9',
+          `an uncovered DONE packet owes its wave gate; got ${owesWave.action} in ${owesWave.segment}`,
+        ) ??
+        expect(
+          owesWave.packets?.join(',') === 'c',
+          `the gate covers only the uncovered packet; got ${owesWave.packets?.join(',')}`,
+        ) ??
+        expect(
+          owesPhase.action === 'PHASE_GATE' && owesPhase.segment === '9',
+          `a wave-covered segment still owes its phase gate; got ${owesPhase.action} in ${owesPhase.segment}`,
+        ) ??
+        expect(
+          settled.action === 'DISPATCH' && settled.segment === '10',
+          `a fully gated segment is closed; got ${settled.action} in ${settled.segment}`,
+        )
+      );
+    },
+  );
+
+  scenario(
+    14,
+    'ADVANCE_PHASE only ever moves forward — a checkpoint ahead of the owed gate does not skip it',
+    () => {
+      // The supervisor handles ADVANCE_PHASE worker-free, on the premise that the previous
+      // segment is delivered AND gated. Firing it backwards would declare a segment complete
+      // that never ran its gate, with no worker in the loop to notice.
+      const action = run({
+        byId: world([
+          node({ id: 'a', phase: 9, state: 'DONE', readiness: 'DONE' }),
+          node({ id: 'b', phase: 9, state: 'DONE', readiness: 'DONE' }),
+          node({ id: 'c', phase: 9, state: 'DONE', readiness: 'DONE' }),
+          node({ id: 'z', phase: 10, state: 'PARTIAL', readiness: 'IN-PROGRESS' }),
+        ]),
+        segments: SEGS,
+        records: [waveRecord('9', ['a', 'b'])],
+        checkpointSegment: '10',
+      });
+      return (
+        expect(
+          action.action !== 'ADVANCE_PHASE',
+          `expected the owed gate, not a backwards advance; got ${action.from}->${action.to}`,
+        ) ??
+        expect(
+          action.action === 'WAVE_GATE' && action.segment === '9',
+          `expected WAVE_GATE in 9; got ${action.action} in ${action.segment}`,
+        )
+      );
+    },
+  );
+
   scenario(9, 'G: the diagnosis class routes Diagnostician first, then Builder', () => {
     const activation = loadActivation();
     const rule = lifecycleOf('diagnosis', activation);

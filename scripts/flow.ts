@@ -245,24 +245,41 @@ export function transition(inputs: FlowInputs): FlowAction {
     };
   }
 
-  // The current segment: the first with outstanding work, or — when a segment's work is all
-  // done but nothing after it has started — the first whose phase gate is still unrecorded.
-  // A finished segment with later work already landed is historically closed; re-gating it
-  // would reopen a completed phase.
+  // The current segment: the first with outstanding work, or the first that still owes a
+  // gate. A segment owes a gate while any DONE packet is uncovered by a wave record, or its
+  // phase record is missing.
+  //
+  // One exception, and its discriminator matters: a segment delivered before
+  // `pnpm flow record` existed has NO record and never will, so once later work has started
+  // history closes it — demanding a gate there is busywork forever. But "later work landed"
+  // is the wrong test on its own. A segment that HAS a record is inside the record regime,
+  // so an uncovered packet there is a debt, not a completed phase being reopened. Using
+  // `laterWorkStarted` alone let a phase with a mid-regime wave still ungated be dropped
+  // silently, and the supervisor then advanced past it worker-free — the gate was never
+  // skipped by a decision, it was skipped by a selection nobody could see.
   const nodes = (s: Segment): Resolved[] =>
     s.nodeIds
       .map((id) => byId.get(id))
       .filter((n): n is Resolved => n !== undefined && !n.optional);
   const laterWorkStarted = (i: number): boolean =>
     segs.slice(i + 1).some((s) => nodes(s).some((n) => n.state !== 'TODO'));
+  const waveCoveredIn = (segment: string): Set<string> =>
+    new Set(
+      records.filter((r) => r.gate === 'wave' && r.segment === segment).flatMap((r) => r.packets),
+    );
 
   let current: Segment | null = null;
   for (let i = 0; i < segs.length; i += 1) {
     const s = segs[i];
     if (!s) continue;
-    const outstanding = nodes(s).filter((n) => n.state !== 'DONE');
+    const segNodes = nodes(s);
+    const outstanding = segNodes.filter((n) => n.state !== 'DONE');
     const phaseGated = records.some((r) => r.gate === 'phase' && r.segment === s.id);
-    if (outstanding.length > 0 || (!phaseGated && !laterWorkStarted(i))) {
+    const covered = waveCoveredIn(s.id);
+    const owesGate = !phaseGated || segNodes.some((n) => n.state === 'DONE' && !covered.has(n.id));
+    const inRegime = records.some((r) => r.segment === s.id);
+    const closedByHistory = !inRegime && laterWorkStarted(i);
+    if (outstanding.length > 0 || (owesGate && !closedByHistory)) {
       current = s;
       break;
     }
@@ -275,10 +292,18 @@ export function transition(inputs: FlowInputs): FlowAction {
   // update the checkpoint and frame the next wave (wave-scoped, per frame-phase) before the
   // first dispatch of the new segment. A missing checkpoint skips the ceremony — a fresh
   // session resumes without confirmation unless a stop trigger fires.
+  //
+  // Forward only. The supervisor handles ADVANCE_PHASE deterministically and worker-free, on
+  // the premise that the segment being left behind is delivered AND gated. When the derived
+  // segment sits BEHIND the checkpoint, that premise is false by construction — something
+  // owed a gate back there — so the owed gate is returned instead, and no advance is offered.
+  const checkpointIndex = segs.findIndex((s) => s.id === inputs.checkpointSegment);
+  const currentIndex = segs.findIndex((s) => s.id === current.id);
   if (
     inputs.checkpointSegment != null &&
     inputs.checkpointSegment !== current.id &&
-    segs.some((s) => s.id === inputs.checkpointSegment)
+    checkpointIndex !== -1 &&
+    currentIndex > checkpointIndex
   ) {
     return {
       action: 'ADVANCE_PHASE',
@@ -295,9 +320,7 @@ export function transition(inputs: FlowInputs): FlowAction {
   const segNodes = nodes(current);
   const outstanding = segNodes.filter((n) => n.state !== 'DONE');
   const done = segNodes.filter((n) => n.state === 'DONE');
-  const covered = new Set(
-    records.filter((r) => r.gate === 'wave' && r.segment === current.id).flatMap((r) => r.packets),
-  );
+  const covered = waveCoveredIn(current.id);
   const uncovered = done.filter((n) => !covered.has(n.id));
   const uncoveredIds = new Set(uncovered.map((n) => n.id));
 
