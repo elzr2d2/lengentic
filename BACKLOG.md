@@ -2010,3 +2010,55 @@ a shared mechanical gate whose blast radius is the whole tree, and no Phase 3 no
 
 Closes when a bare-specifier import from `playground/` into a forbidden platform package fails
 `pnpm check:boundaries`, pinned by a fixture that goes green again when the rule is removed.
+
+## Discovered in the first live supervised run (2026-08-21)
+
+### `flow next` skips an UNRECORDED gate when any later phase already has landed work
+
+**Source:** the first `pnpm autopilot` run against the live derived state, immediately after
+`docs/decisions/0013`. Captured in `.artifacts/evidence/autopilot/live-dogfood.md`.
+**Trigger:** BLOCKING — before the next supervised run, and before Phase 2 is claimed complete.
+This is not a deferred improvement; it is a hole in the progression invariant and it is filed
+here only because closing it changes approved control-plane behaviour that has its own passing
+scenario (`pnpm check:flow` #8).
+
+Phase 2 stood at 11/11 with **neither** the wave-3 gate nor the phase gate recorded. The
+supervisor's reconcile worker cleared the stale `step: recovering`, and the very next
+`pnpm flow next` returned `ADVANCE_PHASE 2 -> 3`. It did not return `WAVE_GATE`. It did not
+return `PHASE_GATE`. Two gates that had never run were stepped over, and the supervisor —
+correctly, because it never dispatches by judgement — advanced.
+
+The mechanism is `scripts/flow.ts` `transition()`:
+
+```
+const outstanding = nodes(s).filter((n) => n.state !== 'DONE');
+const phaseGated  = records.some((r) => r.gate === 'phase' && r.segment === s.id);
+if (outstanding.length > 0 || (!phaseGated && !laterWorkStarted(i))) { current = s; break; }
+```
+
+`laterWorkStarted(i)` is true when ANY node in ANY later segment is not `TODO`. Under the
+amended execution order `0 -> 1 -> 5a -> 2 -> 3 -> 4 -> 5b -> 6 -> 7`, phases 4, 5 and 7 already
+carry landed nodes (`oracle status`: 1/6, 4/8, 1/5). So for segment 2 the guard is permanently
+true, segment 2 is treated as "historically closed", and its ungated state can never be
+selected again.
+
+The comment above it states the intent: "A finished segment with later work already landed is
+historically closed; re-gating it would reopen a completed phase." That intent is right for a
+segment that WAS gated. It is wrong for one that never was, and the code does not distinguish
+the two — `phaseGated` is computed and then discarded whenever `laterWorkStarted` is true.
+
+Why this is not a drive-by fix: `pnpm check:flow` scenario 8 ("a completed segment with later
+work already landed is historically closed") asserts today's behaviour deliberately. Changing
+it is a change to approved control-plane semantics, and two project rules genuinely conflict —
+never reopen a completed phase, versus never step over an unrecorded gate. That is `CLAUDE.md`
+trigger 6, and it is the human's call, not a repair.
+
+The shape of the fix, for whoever takes the packet: `laterWorkStarted` should suppress
+re-selection only for a segment that carries a **recorded phase gate**. An ungated segment with
+outstanding gate records stays selectable however much later work has landed — the amended
+execution order guarantees later phases will have landed work, so under v3 this guard as
+written disables the phase gate for every segment except the last.
+
+Note what did NOT save this. `scripts/autopilot/progression.ts` refuses to record a gate whose
+sources disagree — but it is only reached when a gate action is returned. A gate that is never
+asked for is never held. The invariant sits one layer above the hole.
