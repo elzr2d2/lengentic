@@ -1912,3 +1912,40 @@ forbids, and it would put an unreviewed change under a lane's feet mid-wave.
 Closes when `HealthReport` has exactly one declaration in the repository, with a test that
 fails if the API's health response and the dashboard's type disagree — not merely a shared
 type, because a shared type both sides import is still unverified against the actual JSON.
+
+## Discovered at the Phase 2 wave 2 gate (2026-08-21)
+
+### The Run detail page's JSX is unproven — placement never reaches a rendered assertion
+
+**Source:** `p2.dashboard-runs` carried this forward in `.artifacts/backlog/dashboard-runs-pending.md`;
+the wave 2 gate's S2 fix made it sharper rather than closing it. **Trigger:** the next change to
+`platform/dashboard/src/app/runs/[id]/page.tsx`, or Phase 6 when scenario runs must be shown to
+render their anomalies — whichever is first.
+
+`buildStepTree`, `countPlacement` and now `describeStepAnomalies` are all pure, all mutation-checked,
+all proven in the node environment. What no test touches is the JSX between them and a reader:
+whether `placement: 'orphaned'` actually produces the visible "orphaned · parent X not in this run"
+markup, whether `PlacementMark` is reached at all, whether the header renders the string
+`describeStepAnomalies` returns. The S2 fix deliberately pulled the header sentence OUT of the
+component so it could be proven without a DOM — which closes the sentence and leaves the wiring
+exactly as unproven as before.
+
+The blocker is unchanged: a component test needs `// @vitest-environment jsdom` and jsdom is not an
+installed devDependency, so it is a `platform/dashboard/package.json` write. No Phase 2 lane owns
+that file.
+
+Closes when a test renders the Run detail page with a tree containing a root, a nested step, an
+orphan and a cycle, and asserts all four are visible and labelled — and fails when a `case` is
+removed from `PlacementMark`.
+
+### Neither `Run.metadata` nor `Step.metadata` reaches the screen
+
+**Source:** `p2.dashboard-runs`, carried forward. **Trigger:** Phase 4, when metadata stops being
+an empty object in practice — §13's payload-safety work is what starts putting real content there.
+
+Both fields are in the read contract and neither page renders them. Not a defect today: nothing
+writes anything worth showing. It becomes one the moment a caller uses metadata to carry the
+context a human needs to interpret a run, and finds the Dashboard silently dropping it.
+
+Closes when both are rendered, or when a decision records that metadata is deliberately not a
+Dashboard surface and says where a caller is expected to read it instead.
