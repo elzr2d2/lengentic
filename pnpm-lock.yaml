@@ -84,6 +84,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@lengentic/telemetry-sdk':
+        specifier: workspace:*
+        version: link:../telemetry-sdk
       '@nestjs/cli':
         specifier: ^11.0.10
         version: 11.0.24(@swc/core@1.15.47(@swc/helpers@0.5.23))(@types/node@26.2.0)(esbuild@0.28.2)(lightningcss@1.33.0)(postcss@8.5.26)(prettier@3.9.6)
