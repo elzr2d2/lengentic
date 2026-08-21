@@ -80,10 +80,14 @@ above are otherwise untestable without waiting real seconds or standing up a rea
   and the shutdown deadline all run on it, so a test drives them by moving a fake clock.
   The default is `systemScheduler`.
 
-`clock` (§17's `Clock`) is injected too, for `occurredAt`. §17 also calls for an injected
-`IdGenerator` with seeded implementations of both; that is `p2.sdk-injection`'s deliverable,
-and this package deliberately keeps its id generation internal rather than publishing a
-surface that packet would then have to change.
+`clock` (§17's `Clock`) and `idGenerator` (§17's `IdGenerator`) are injected too, for
+`occurredAt` and for every run/step/event id. The runtime defaults are `systemClock` (wall
+clock) and `systemIdGenerator` (UUIDv7, time-ordered). A mock scenario supplies
+`SeededClock`/`SeededIdGenerator` instead: two instances built from the same numeric seed
+produce the identical sequence of timestamps or ids, which is what makes replaying the same
+scenario twice byte-identical (`docs/decisions/0005-phase-2-wire-contract-gaps.md` depends
+on this for the seeded id half). A seeded id's version nibble is fixed to `f`, a value real
+UUIDv7 never produces, so a scenario id can never be mistaken for a runtime one.
 
 ### Timers and the host's event loop
 
@@ -98,6 +102,5 @@ against a real spawned process in `test/process-exit.spec.ts`.
 - §15 payload safety — redaction, 32KB-per-field truncation with a `*Truncated` flag, and
   the `captureToolIO` opt-out. Today an event over §12's 64KB per-event cap is dropped and
   counted (`stats().droppedTooLarge`) rather than truncated.
-- §17's `IdGenerator` injection and the seeded Clock/IdGenerator pair.
 - Decision, ModelCall, ToolCall and Error events. The wire contract carries `run.*` and
   `step.*` only.

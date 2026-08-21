@@ -23,8 +23,11 @@ export type { DiagnosticSink, TelemetryDiagnostic, TelemetryDiagnosticCode } fro
 export { createHttpTransport } from './transport';
 export type { HttpTransportOptions, TelemetryTransport, TransportResult } from './transport';
 
-export { systemClock } from './clock';
+export { SeededClock, systemClock } from './clock';
 export type { Clock } from './clock';
+
+export { SeededIdGenerator, systemIdGenerator } from './ids';
+export type { IdGenerator } from './ids';
 
 export { systemScheduler } from './scheduler';
 export type { CancelTimer, Scheduler } from './scheduler';

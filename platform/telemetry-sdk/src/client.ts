@@ -13,7 +13,6 @@ import {
 } from './diagnostics';
 import { buildEnvelope, checkEnvelope } from './events';
 import { createRun, type EventRecorder, type RunHandle, type StartRunInput } from './handles';
-import { newId } from './ids';
 import type { CancelTimer } from './scheduler';
 import type { TransportResult } from './transport';
 
@@ -97,7 +96,7 @@ class Client implements TelemetryClient, EventRecorder {
   }
 
   nextId(): string {
-    return newId();
+    return this.config.idGenerator.next();
   }
 
   noteIgnoredCompletion(entityId: string): void {
@@ -162,7 +161,7 @@ class Client implements TelemetryClient, EventRecorder {
     }
 
     const envelope = buildEnvelope({
-      eventId: newId(),
+      eventId: this.config.idGenerator.next(),
       type,
       entityId,
       runId,

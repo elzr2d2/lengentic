@@ -2,6 +2,7 @@ import { INGEST_LIMITS } from '@lengentic/shared';
 
 import { systemClock, type Clock } from './clock';
 import { silentSink, type DiagnosticSink } from './diagnostics';
+import { systemIdGenerator, type IdGenerator } from './ids';
 import { systemScheduler, type Scheduler } from './scheduler';
 import { createHttpTransport, type TelemetryTransport } from './transport';
 
@@ -37,6 +38,7 @@ export interface TelemetryConfig {
   readonly shutdownTimeoutMs?: number | undefined;
   readonly transport?: TelemetryTransport | undefined;
   readonly clock?: Clock | undefined;
+  readonly idGenerator?: IdGenerator | undefined;
   readonly scheduler?: Scheduler | undefined;
   readonly onDiagnostic?: DiagnosticSink | undefined;
 }
@@ -52,6 +54,7 @@ export interface ResolvedTelemetryConfig {
   readonly shutdownTimeoutMs: number;
   readonly transport: TelemetryTransport;
   readonly clock: Clock;
+  readonly idGenerator: IdGenerator;
   readonly scheduler: Scheduler;
   readonly onDiagnostic: DiagnosticSink;
 }
@@ -172,6 +175,7 @@ export function resolveConfig(config: TelemetryConfig): ResolvedTelemetryConfig 
     ),
     transport: resolveTransport(config),
     clock: config.clock ?? systemClock,
+    idGenerator: config.idGenerator ?? systemIdGenerator,
     scheduler: config.scheduler ?? systemScheduler,
     onDiagnostic: config.onDiagnostic ?? silentSink,
   };
