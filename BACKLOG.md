@@ -1847,14 +1847,38 @@ touching Postgres. That is luck, not design.
 **Workaround used, deliberately not committed:** the Builder sidestepped it with a throwaway
 _database_ (`lane_p2_run_liveness_db`) rather than a schema, and touched no committed file.
 
-**Fix, not yet decided between two shapes.** Either (a) thread `schema` through
-`createDatabaseClient` into `PrismaPg`'s second argument and keep parsing it out of
-`DATABASE_URL`, so the printed instructions become true; or (b) drop the schema pretence from
-`scripts/lanes.ts` and print a per-lane **database** instead, which is what actually isolates
-under this adapter. (b) is less code and cannot be silently re-broken by an adapter upgrade;
-(a) keeps one Postgres database and matches what the comments already claim. Whichever is
-chosen needs a test that _fails_ when isolation regresses — the entire cost of this entry is
-that nothing asserted the isolation worked.
+**Shape decided 2026-08-21 — (b), a per-lane database.** Two candidates were on the table:
+(a) thread `schema` through `createDatabaseClient` into `PrismaPg`'s second argument and keep
+parsing it out of `DATABASE_URL`, so the printed instructions become true; or (b) drop the
+schema pretence from `scripts/lanes.ts` and print a per-lane **database** instead, which is
+what actually isolates under this adapter.
+
+Decided by the Coordinator at the Phase 2 wave 2 gate rather than escalated, because a
+preference is inferable from project rules — `CLAUDE.md` `## Plan discipline`: "Prefer the
+simplest solution satisfying the current Definition of Done", and prefer the reversible option
+under uncertainty. Three reasons, in order of weight:
+
+1. **(b) is the only shape with a demonstrated working instance in this repository.** The
+   `p2.run-liveness` Builder isolated itself with a throwaway database and it worked, on this
+   Prisma version, against this adapter, on this machine. (a) rests on a reading of `PrismaPg`'s
+   constructor signature and has never been run here.
+2. **The failure mode that produced this entry was silent**, and (b) cannot be silently
+   re-broken by an adapter upgrade: a missing database errors loudly, a dropped `schema`
+   parameter does not.
+3. **(b) is less code**, and it deletes a comment that currently claims something false rather
+   than adding machinery to make the false claim true.
+
+**What (a) buys that is now given up, stated so it is not re-litigated as an oversight:** one
+Postgres database for the whole repo, and instructions matching the comments already written.
+Reopen only on evidence that per-lane databases are too expensive to create — which is a
+measurement nobody has taken, not a prediction.
+
+**Still required, and not weakened by the decision:** a test that _fails_ when isolation
+regresses. The entire cost of this entry is that nothing asserted the isolation worked, and
+choosing the loud-failure shape reduces that risk without removing it. Migrations must run per
+lane database in worktree setup — fold this into the same packet as the standing
+`pnpm -r --filter '!@lengentic/dashboard' run build` fix, since both are "the worktree arrives
+unusable" and both belong in one setup step.
 
 Closes when two lanes can concurrently run the API integration suite against the same
 Postgres instance without seeing each other's rows, proven by a test that goes red if the
