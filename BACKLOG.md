@@ -1977,3 +1977,36 @@ Closes when the rule distinguishes a _duration wait_ (blocking, whatever the arg
 expression) from a _poll interval inside a condition-terminated loop_ (allowed), and
 `scripts/check-integrity.spec.ts` — or whatever proves the rules — pins both directions with a
 fixture that fails when either half is removed.
+
+## Discovered building the Playground scaffold (2026-08-21, Phase 3 wave 1)
+
+### Every cross-package workspace import is invisible to `pnpm check:boundaries`
+
+**Source:** `p3.scaffold`, proved in `.artifacts/evidence/3/scaffold-boundary-proof.md`.
+**Trigger:** before the Phase 3 gate, or the first time a boundary rule between two workspace
+packages is relied on as the only evidence for a Definition-of-Done line — whichever is first.
+
+`playground/index.ts` imports `@lengentic/telemetry-sdk`. dependency-cruiser's JSON reporter
+reports `playground/index.ts -> []`: the specifier resolves through the package `exports` map
+to `platform/telemetry-sdk/dist/index.js`, and `.dependency-cruiser.cjs` excludes `dist` from
+the graph, so the edge is dropped before any rule sees it. The same is true of
+`platform/api -> @lengentic/shared` and of every other `workspace:*` edge in the repository —
+the cruise reports 317 dependencies and not one of them crosses a package.
+
+What the config does still catch is a **relative deep import**
+(`../platform/telemetry-sdk/src/transport`), which is the shape a violation would realistically
+take from inside `playground/**`, and the proof above shows it discriminating: deep import
+`exit=1`, the same path shape at `src/index` `exit=0`. So the rules are not decorative. But
+`playground-not-to-api`, `playground-not-to-other-platform-packages` and
+`sdk-depends-on-shared-only` are today enforced against only one of the two import shapes, and
+a bare `import { PrismaClient } from '@lengentic/database'` inside `playground/` would cruise
+clean.
+
+Deliberately not fixed here: the repair is either resolving `exports` to source instead of
+`dist` (an `enhancedResolveOptions` change felt by every package) or narrowing the `dist`
+exclusion (which pulls generated JS into the graph and slows every cruise). Both are changes to
+a shared mechanical gate whose blast radius is the whole tree, and no Phase 3 node owns that.
+`p3.scaffold` owns three files under `playground/`.
+
+Closes when a bare-specifier import from `playground/` into a forbidden platform package fails
+`pnpm check:boundaries`, pinned by a fixture that goes green again when the rule is removed.
