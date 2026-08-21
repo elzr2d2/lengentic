@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { MetadataSchema, RunStatusSchema, TimestampSchema } from '@lengentic/shared';
+import { RunStatusSchema } from '../schema/status';
+import { MetadataSchema, TimestampSchema } from '../schema/primitives';
 
 /**
  * The **read model** for `GET /v1/runs` and `GET /v1/runs/:id`.
@@ -11,13 +12,15 @@ import { MetadataSchema, RunStatusSchema, TimestampSchema } from '@lengentic/sha
  * read time and never written to a row. Widening the stored enum would make the two the
  * same object, and the next writer stores `STALE`.
  *
- * **Placement is a known open item.** The settled destination for this vocabulary is
- * `platform/shared/read/**` (BACKLOG.md, "`STALE` needs a read-model vocabulary" — Architect
- * option B), so that `p2.dashboard-runs` can import the response contract instead of
- * hand-declaring a twin. `platform/shared/**` is outside this lane's `allowed_paths`
- * (`platform/api/src/**`), so the module lives here and is written to be moved wholesale:
- * it imports only from `@lengentic/shared` and `zod`, and nothing in it knows about Prisma,
- * Nest or this package. See the lane handoff's `follow_up_required`.
+ * **Why it lives in `platform/shared/read/**` and not in the API.** Every response consumer
+ * needs this vocabulary, and `check:boundaries` forbids the dashboard importing
+ * `platform/api/src/**`. Left in the API it would be hand-declared a second time at each
+ * consumer, and the twin would drift. It is reachable only through the `@lengentic/shared/read`
+ * subpath, deliberately not through `@lengentic/shared`: the SDK imports the root entry, and
+ * an ingestion-side author who can see `STALE` is one refactor away from storing it.
+ *
+ * Nothing here knows about Prisma, Nest or HTTP — it imports `zod` and this package's own
+ * schema primitives, and nothing else.
  */
 
 /**
@@ -26,7 +29,7 @@ import { MetadataSchema, RunStatusSchema, TimestampSchema } from '@lengentic/sha
  * Written out rather than spread from `RUN_STATUSES`, so that widening the stored enum is a
  * loud compile-and-test event here instead of a silent widening of the response. Both
  * directions of the relationship — every stored status is representable, and `STALE` never
- * leaks back into the stored enum — are asserted in `run-view.spec.ts`.
+ * leaks back into the stored enum — are asserted in `test/read/run-view.spec.ts`.
  */
 export const RUN_VIEW_STATUSES = Object.freeze([
   'RUNNING',

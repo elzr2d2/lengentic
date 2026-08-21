@@ -2,7 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { RunsController } from './runs.controller';
 import type { RunsService } from './runs.service';
-import type { RunDetailView, RunListView } from './run-view';
+import type { RunDetailView, RunListView } from '@lengentic/shared/read';
 
 /**
  * Seam: `RunsController`'s two handlers, with `RunsService` faked. The controller does
@@ -11,7 +11,7 @@ import type { RunDetailView, RunListView } from './run-view';
  *
  * The pipes are deliberately NOT exercised here: calling a handler as a plain method skips
  * Nest's pipe chain entirely, so an assertion about `limit` defaulting would pass with the
- * pipe deleted. The schema those pipes run is tested directly in `run-view.spec.ts`, and the
+ * pipe deleted. The schema those pipes run is tested directly in the read model's own spec, and the
  * wiring is an integration concern (`platform/api/test/**`, owned by `p2.integration-tests`).
  */
 const EMPTY_PAGE: RunListView = { runs: [], limit: 50, offset: 0, hasMore: false };

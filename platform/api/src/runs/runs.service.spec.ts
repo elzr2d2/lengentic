@@ -3,7 +3,7 @@ import type { Clock } from '../common/clock';
 import type { RunRecord, StepRecord } from './run-record';
 import { RunsService } from './runs.service';
 import type { RunsRepository } from './runs.repository';
-import { RunDetailViewSchema, RunListViewSchema } from './run-view';
+import { RunDetailViewSchema, RunListViewSchema } from '@lengentic/shared/read';
 
 /**
  * Seam: `RunsService`, observed through its two public methods. Everything the endpoints do

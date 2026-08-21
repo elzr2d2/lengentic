@@ -9,6 +9,17 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./read": {
+      "types": "./dist/read/index.d.ts",
+      "default": "./dist/read/index.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "read": [
+        "./dist/read/index.d.ts"
+      ]
     }
   },
   "files": [

@@ -7,7 +7,7 @@ import {
   type RunDetailView,
   type RunListView,
   type RunsListQuery,
-} from './run-view';
+} from '@lengentic/shared/read';
 
 /**
  * `GET /v1/runs` and `GET /v1/runs/:id`. `main.ts` sets the global prefix `v1`, so this

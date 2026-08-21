@@ -1,5 +1,5 @@
 import type { RunStatus } from '@lengentic/shared';
-import type { RunViewStatus } from './run-view';
+import type { RunViewStatus } from '@lengentic/shared/read';
 
 /**
  * Everything the STALE rule reads. All four are inputs, none is ambient:

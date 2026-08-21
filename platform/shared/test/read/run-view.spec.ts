@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { RUN_STATUSES } from '@lengentic/shared';
+import { RUN_STATUSES } from '../../schema/status';
+import * as publicEntry from '../../index';
 import {
   RUNS_LIST_DEFAULT_LIMIT,
   RUNS_LIST_MAX_LIMIT,
   RUN_VIEW_STATUSES,
   RunViewStatusSchema,
   RunsListQuerySchema,
-} from './run-view';
+} from '../../read';
 
 /**
  * Seam: the read-model vocabulary itself, plus the query contract of `GET /v1/runs`.
@@ -73,5 +74,17 @@ describe('RunsListQuerySchema', () => {
 
   it('rejects a non-numeric limit', () => {
     expect(RunsListQuerySchema.safeParse({ limit: 'all' }).success).toBe(false);
+  });
+});
+
+describe('the root entry stays ingestion-only', () => {
+  it('does not re-export the read vocabulary', () => {
+    // `platform/telemetry-sdk` imports `@lengentic/shared`, and the SDK is the public
+    // artifact. An ingestion-side author who can see `STALE` from the root entry is one
+    // refactor away from persisting it — which ADR 0005 decision 4 forbids. The read model
+    // is reachable only through `@lengentic/shared/read`.
+    expect(Object.keys(publicEntry)).not.toContain('RUN_VIEW_STATUSES');
+    expect(Object.keys(publicEntry)).not.toContain('RunViewStatusSchema');
+    expect(Object.keys(publicEntry)).not.toContain('RunDetailViewSchema');
   });
 });

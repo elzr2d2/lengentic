@@ -1194,6 +1194,24 @@ Closes when `p2.runs-api` ships the read model with a test that asserts a run wh
 is older than `STALE_RUN_THRESHOLD_MS` reports `STALE` while its stored `status` is still
 `RUNNING` — both halves asserted, because either alone passes on a wrong implementation.
 
+**Addressed 2026-08-21**, in two commits rather than one, because the lane could not reach the
+destination. `p2.runs-api` shipped the vocabulary at `platform/api/src/runs/run-view.ts` —
+`platform/shared/**` is outside its `allowed_paths`, and it correctly refused to widen — with the
+module written to relocate wholesale and the gap recorded in its `follow_up_required`. The
+Coordinator then moved it verbatim to `platform/shared/read/`.
+
+Both closing assertions exist. The derivation: `platform/api/src/runs/stale.spec.ts` — negative
+cases first, `RUNNING` at exactly the threshold, `STALE` one millisecond past it, and a stored
+`COMPLETED` never decaying. The enum pair: `platform/shared/test/read/run-view.spec.ts` — every
+stored status is representable in the view, and `RUN_STATUSES` does not contain `STALE`.
+
+**One thing the entry did not ask for and the move added.** `read/**` is reachable only through
+the `@lengentic/shared/read` subpath export, never from `@lengentic/shared`. The root entry is
+what `platform/telemetry-sdk` imports, and an ingestion-side author who can see `STALE` there is
+one refactor away from persisting it. Guarded mechanically by the `the root entry stays
+ingestion-only` case in the same spec; mutation-checked by re-exporting `read` from `index.ts`
+→ `1 failed | 60 passed`.
+
 ### `entityId === runId` consistency check for run events — dropped at S4, re-add only with a citation
 
 **Source:** Recovery of `p2.shared-schema` at `c39f4d2`,

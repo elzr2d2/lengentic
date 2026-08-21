@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "rootDir": "." },
-  "include": ["index.ts", "schema/**/*.ts"]
+  "include": ["index.ts", "schema/**/*.ts", "read/**/*.ts"]
 }

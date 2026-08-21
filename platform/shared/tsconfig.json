@@ -7,6 +7,6 @@
     "rootDir": ".",
     "noEmit": false
   },
-  "include": ["index.ts", "schema/**/*.ts", "test/**/*.ts", "vitest.config.mts"],
+  "include": ["index.ts", "schema/**/*.ts", "read/**/*.ts", "test/**/*.ts", "vitest.config.mts"],
   "exclude": ["dist", "node_modules"]
 }

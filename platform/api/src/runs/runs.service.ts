@@ -10,7 +10,7 @@ import type {
   RunSummaryView,
   RunsListQuery,
   StepView,
-} from './run-view';
+} from '@lengentic/shared/read';
 
 /**
  * Reads runs. The only place the derived/stored status split is resolved.
