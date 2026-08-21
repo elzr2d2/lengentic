@@ -150,3 +150,164 @@ code {
   border-radius: 4px;
   padding: 0.1em 0.35em;
 }
+
+/* ---------------------------------------------------------------------------
+   Runs — list and detail.
+
+   `.status-live` is RUNNING, distinct from `.status-warn`, which is STALE. They are two
+   states, not two shades of one: STALE is derived from `lastEventAt` and means the run
+   stopped speaking, and giving them the same colour would hide exactly the signal the
+   derivation exists to produce.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --live: #2f5d9e;
+  --orphan: #8a4fa8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --live: #7fa8e0;
+    --orphan: #c398d9;
+  }
+}
+
+.status-live {
+  color: var(--live);
+}
+
+a {
+  color: var(--accent);
+}
+
+.note-inline {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  margin: 0 0 1rem;
+}
+
+.note-alarm {
+  color: var(--down);
+}
+
+.run-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.run-row {
+  padding: 0.75rem 0;
+}
+
+.run-row + .run-row {
+  border-top: 1px solid var(--border);
+}
+
+.run-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  text-decoration: none;
+}
+
+.run-row-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.run-row-version {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.run-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+  overflow-wrap: anywhere;
+}
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.875rem;
+}
+
+.pager-disabled {
+  color: var(--text-muted);
+}
+
+.step-branch {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.step-branch .step-branch {
+  /* The nesting is the tree. A child is indented from its parent and carries a rule back
+     to it, so "nested under" is readable without opening the payload. */
+  margin-left: 0.6rem;
+  padding-left: 0.9rem;
+  border-left: 1px solid var(--border);
+}
+
+.step-node {
+  padding: 0.5rem 0;
+}
+
+.step-node + .step-node {
+  border-top: 1px solid var(--border);
+}
+
+.step-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.step-name {
+  font-weight: 600;
+}
+
+.step-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-top: 0.25rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.placement {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  border-radius: 4px;
+  padding: 0.1em 0.45em;
+  border: 1px solid currentColor;
+  overflow-wrap: anywhere;
+}
+
+.placement-orphaned {
+  color: var(--orphan);
+}
+
+.placement-cycle {
+  color: var(--down);
+}
+
+.placement code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+}

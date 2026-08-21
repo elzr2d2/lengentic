@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { fetchHealth, type HealthResult } from '@/lib/api';
 
 // A status page that renders a cached snapshot is a status page that lies.
@@ -16,9 +17,19 @@ export default async function StatusPage() {
         <PlatformStatus health={health} />
       </section>
 
+      <section className="card">
+        <h2 className="card-title">Telemetry</h2>
+        <div className="row">
+          <span className="row-label">Runs</span>
+          <Link href="/runs">Browse runs &rarr;</Link>
+        </div>
+      </section>
+
       <p className="note">
-        Phase 1 of 7. This page exists to prove the Dashboard reaches the API and the API reaches
-        PostgreSQL. Runs, Steps, and the Run Explorer arrive in Phase 2.
+        This page proves the Dashboard reaches the API and the API reaches PostgreSQL. &ldquo;Browse
+        runs&rdquo; reads <code>GET /v1/runs</code>; a run&rsquo;s page reads{' '}
+        <code>GET /v1/runs/:id</code> and renders its Steps as the tree their{' '}
+        <code>parentStepId</code>s describe.
       </p>
     </>
   );
