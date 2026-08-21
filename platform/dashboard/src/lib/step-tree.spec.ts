@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { StepView } from '@lengentic/shared/read';
-import { buildStepTree, countPlacement, countStepNodes, type StepNode } from './step-tree';
+import {
+  buildStepTree,
+  countPlacement,
+  countStepNodes,
+  describeStepAnomalies,
+  type StepNode,
+} from './step-tree';
 
 /**
  * Seam under test: `buildStepTree`, a pure function (see its doc comment). Confirmed with
@@ -194,5 +200,42 @@ describe('buildStepTree', () => {
     expect(countPlacement(tree, 'nested')).toBe(2); // 'n' under 'r', 'b' under 'a'
     expect(countPlacement(tree, 'orphaned')).toBe(1);
     expect(countPlacement(tree, 'cycle')).toBe(1);
+  });
+});
+
+describe('describeStepAnomalies', () => {
+  it('says nothing when every step is placed under a real parent or at a root', () => {
+    const tree = buildStepTree([step('r', null), step('n', 'r')]);
+
+    expect(describeStepAnomalies(tree)).toBe('');
+  });
+
+  it('reports orphans', () => {
+    const tree = buildStepTree([step('r', null), step('x', 'ghost')]);
+
+    expect(describeStepAnomalies(tree)).toBe(' · 1 orphaned');
+  });
+
+  it('reports a parent cycle, which the header used to omit while counting orphans', () => {
+    // The regression this test exists for: `countPlacement(tree, 'cycle')` was implemented
+    // and tested, and the header called it for 'orphaned' only. A reader of "2 steps" on a
+    // run whose entire step list is an impossible parent chain was told nothing was wrong.
+    const tree = buildStepTree([step('a', 'b'), step('b', 'a')]);
+
+    expect(describeStepAnomalies(tree)).toBe(' · 1 in a parent cycle');
+  });
+
+  it('reports both, in the order the header renders them', () => {
+    const tree = buildStepTree([
+      step('r', null),
+      step('n', 'r'),
+      step('x', 'ghost'),
+      step('a', 'b'),
+      step('b', 'a'),
+    ]);
+
+    // Sourced from the placement counts the test above already pins independently:
+    // 1 orphaned ('x'), 1 cycle ('a'); 'b' is nested beneath 'a' and is not counted twice.
+    expect(describeStepAnomalies(tree)).toBe(' · 1 orphaned · 1 in a parent cycle');
   });
 });

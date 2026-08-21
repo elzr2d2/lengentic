@@ -20,7 +20,14 @@ export const systemIdGenerator: IdGenerator = {
 
 /**
  * UUIDv7: a 48-bit big-endian millisecond timestamp, the version nibble, then random bits.
- * Time-ordered, so ids emitted by the runtime path sort the way they were created.
+ *
+ * Time-ordered **to the millisecond**, and no finer. There is no intra-millisecond counter:
+ * bytes 6-15 are `crypto.getRandomValues` after the version and variant bits, so two ids
+ * minted inside the same millisecond sort by their random tails, not by which was created
+ * first. The SDK batches, so same-millisecond ids are the normal case rather than the edge.
+ * Nothing depends on the stronger reading today — `merge-rules.ts` needs a deterministic
+ * total order for the `occurredAt` tie-break, which a random tail supplies — but anything
+ * that comes to need true creation order has to add the counter, not assume it.
  */
 function uuidv7(): string {
   const ms = BigInt(Date.now());
@@ -50,8 +57,10 @@ function toUuidString(bytes: Uint8Array): string {
  * §17's seeded IdGenerator. Two instances constructed with the same `seed` produce the
  * identical sequence of ids when `.next()` is called the same number of times, which is
  * what makes replaying a mock scenario byte-identical. The version nibble is fixed to `f`
- * — a value real UUIDv7 never produces — so a seeded id can never be mistaken for one the
- * runtime generator made.
+ * — a value real UUIDv7 never produces — so a consumer that looks CAN tell a seeded id from
+ * a runtime one. Nothing looks today: `platform/shared/schema/primitives.ts`'s `IdSchema` is
+ * a bounded non-empty string with no UUID shape check, so the ingestion path accepts `f` and
+ * `7` identically. The nibble is a convention with no enforcement point, not a guarantee.
  */
 export class SeededIdGenerator implements IdGenerator {
   private readonly random: () => number;

@@ -73,12 +73,40 @@ describe('SeededClock', () => {
     expect(second - first).toBe(5_000);
   });
 
-  it('is independent of the real system clock', () => {
-    const seeded = new SeededClock(3).now().getTime();
-    const real = systemClock.now().getTime();
+  it('is a function of the seed alone, not of when the test runs', () => {
+    // The property that actually holds. The previous form of this test asserted the seeded
+    // instant was more than a second away from `Date.now()`, which is a statement about
+    // today's date rather than about the design: `clock.ts` places every seeded start inside
+    // [2026-01-01, 2027-01-01), a window that CONTAINS the present, and seeds landing within
+    // a second of now are possible in principle. Pinning the exact instant is the structural
+    // claim — this assertion holds identically on any machine, on any date, forever.
+    const clock = new SeededClock(3);
 
-    // A seeded scenario is fixed at a reference epoch (2026-01-01 + a seed-derived offset
-    // within one year), which is not "now" by any realistic system clock skew.
-    expect(Math.abs(real - seeded)).toBeGreaterThan(1_000);
+    expect(clock.now().toISOString()).toBe('2026-09-20T21:11:11.853Z');
+    expect(clock.now().toISOString()).toBe('2026-09-20T21:11:12.853Z');
+  });
+
+  it('is the half of the seam that does not track the host clock', () => {
+    // Paired with the assertion above so neither claim stands alone: the runtime default
+    // DOES track the host clock, which is exactly what the seeded implementation replaces.
+    const before = Date.now();
+    const real = systemClock.now().getTime();
+    const after = Date.now();
+
+    expect(real).toBeGreaterThanOrEqual(before);
+    expect(real).toBeLessThanOrEqual(after);
+  });
+
+  it('does not read the host clock at all', () => {
+    // The independence claim, made structurally rather than by comparing instants: replace
+    // the global `Date.now` with a value nothing in [2026-01-01, 2027-01-01) could produce
+    // and the seeded output does not move.
+    const realDateNow = Date.now;
+    Date.now = () => 0;
+    try {
+      expect(new SeededClock(3).now().toISOString()).toBe('2026-09-20T21:11:11.853Z');
+    } finally {
+      Date.now = realDateNow;
+    }
   });
 });

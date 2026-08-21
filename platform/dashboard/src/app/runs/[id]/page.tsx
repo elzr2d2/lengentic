@@ -2,7 +2,12 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import type { RunDetailView, StepView } from '@lengentic/shared/read';
 import { fetchRunDetail } from '@/lib/runs-api';
-import { buildStepTree, countPlacement, countStepNodes, type StepNode } from '@/lib/step-tree';
+import {
+  buildStepTree,
+  countStepNodes,
+  describeStepAnomalies,
+  type StepNode,
+} from '@/lib/step-tree';
 import { RunStatusBadge } from '../run-status-badge';
 import { FetchFailureCard } from '../fetch-failure';
 
@@ -60,7 +65,7 @@ function RunSummaryCard({ run }: { run: RunDetailView }) {
 function StepsCard({ run }: { run: RunDetailView }) {
   const tree = buildStepTree(run.steps);
   const rendered = countStepNodes(tree);
-  const orphaned = countPlacement(tree, 'orphaned');
+  const anomalies = describeStepAnomalies(tree);
 
   if (run.steps.length === 0) {
     return (
@@ -75,7 +80,7 @@ function StepsCard({ run }: { run: RunDetailView }) {
     <section className="card">
       <h2 className="card-title">
         {String(run.steps.length)} step{run.steps.length === 1 ? '' : 's'}
-        {orphaned > 0 ? ` · ${String(orphaned)} orphaned` : ''}
+        {anomalies}
       </h2>
 
       {/* `buildStepTree` places every step exactly once. Stating the count out loud means a

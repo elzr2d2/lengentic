@@ -13,6 +13,19 @@ import type { StepView } from '@lengentic/shared/read';
  *
  * So placement is total: **every input step appears exactly once in the output**, and the
  * reason it sits where it does is on the node, for the page to show.
+ *
+ * Totality is stated over *distinct step ids*, which is the precondition the read path
+ * already guarantees: `Step.id` is a global primary key (`platform/api/prisma/schema.prisma`),
+ * and `RunDetailView.steps` is built from one `step.findMany({ where: { runId } })`, so no
+ * caller in the system can hand this function two steps sharing an id. Where it matters:
+ * `placed` is keyed by `step.id`, so `[{id:'a',parent:null}, {id:'a',parent:'a'}]` yields one
+ * node from two inputs, and the page's own count alarm would then fire on a Dashboard defect
+ * that is not one. Left keyed by id rather than by array index deliberately — the precondition
+ * holds for every present and planned caller (Phase 6 mock scenarios reach the Dashboard
+ * through the SDK and the database like any other run, not by hand-building `StepView[]`), and
+ * writing the precondition down is cheaper than defending against a shape the schema makes
+ * unreachable. A future caller that constructs `StepView[]` outside the DB read path
+ * invalidates this note; re-keying `placed` by array index is the fix if that day comes.
  */
 export type StepPlacement =
   /** `parentStepId === null` — a root step, which §13 makes a deliberate signal. */
@@ -115,5 +128,27 @@ export function countPlacement(nodes: readonly StepNode[], placement: StepPlacem
     (total, node) =>
       total + (node.placement === placement ? 1 : 0) + countPlacement(node.children, placement),
     0,
+  );
+}
+
+/**
+ * The anomaly clause the Steps header states out loud, or `''` when the tree is well formed.
+ *
+ * Both malformed placements are reported, not just orphans. `StepPlacement` gives `cycle` and
+ * `orphaned` the same rationale — rendered at top level *and marked*, because promoting either
+ * silently would assert something about the run the Dashboard cannot know — so a header that
+ * counts one and omits the other tells a reader scanning "12 steps · 2 orphaned" that
+ * orphans are the only anomaly on a run that also contains an impossible parent chain.
+ *
+ * Kept out of the page component so it can be proven in a node environment: the seam is the
+ * sentence, not the JSX around it.
+ */
+export function describeStepAnomalies(nodes: readonly StepNode[]): string {
+  const orphaned = countPlacement(nodes, 'orphaned');
+  const cycle = countPlacement(nodes, 'cycle');
+
+  return (
+    (orphaned > 0 ? ` · ${String(orphaned)} orphaned` : '') +
+    (cycle > 0 ? ` · ${String(cycle)} in a parent cycle` : '')
   );
 }

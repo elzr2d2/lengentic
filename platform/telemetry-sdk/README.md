@@ -82,12 +82,16 @@ above are otherwise untestable without waiting real seconds or standing up a rea
 
 `clock` (§17's `Clock`) and `idGenerator` (§17's `IdGenerator`) are injected too, for
 `occurredAt` and for every run/step/event id. The runtime defaults are `systemClock` (wall
-clock) and `systemIdGenerator` (UUIDv7, time-ordered). A mock scenario supplies
+clock) and `systemIdGenerator` (UUIDv7, time-ordered to the millisecond — there is no
+intra-millisecond counter, so ids minted inside one millisecond sort by their random tails).
+A mock scenario supplies
 `SeededClock`/`SeededIdGenerator` instead: two instances built from the same numeric seed
 produce the identical sequence of timestamps or ids, which is what makes replaying the same
 scenario twice byte-identical (`docs/decisions/0005-phase-2-wire-contract-gaps.md` depends
 on this for the seeded id half). A seeded id's version nibble is fixed to `f`, a value real
-UUIDv7 never produces, so a scenario id can never be mistaken for a runtime one.
+UUIDv7 never produces, so a consumer that checks can tell a scenario id from a runtime one.
+Nothing checks today — `IdSchema` validates length, not UUID shape — so the nibble is a
+convention available to a future consumer, not an enforced boundary.
 
 ### Timers and the host's event loop
 
