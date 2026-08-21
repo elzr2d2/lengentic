@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start --port 3000",
     "typecheck": "tsc --noEmit",
-    "test": "node -e \"process.stdout.write('no unit tests in @lengentic/dashboard\\n')\""
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@lengentic/shared": "workspace:*",
@@ -20,6 +21,7 @@
   "devDependencies": {
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.4",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.10"
   }
 }
