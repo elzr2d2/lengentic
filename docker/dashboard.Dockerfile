@@ -19,6 +19,7 @@ FROM base AS build
 # the file present at all, `pnpm install` dies on MODULE_NOT_FOUND before it installs anything.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
 COPY .husky ./.husky
+COPY platform/shared/package.json ./platform/shared/
 COPY platform/dashboard/package.json ./platform/dashboard/
 
 # Hoisted node_modules, inside the image only.
@@ -38,6 +39,11 @@ COPY platform/dashboard/package.json ./platform/dashboard/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile --config.node-linker=hoisted --filter "@lengentic/dashboard..."
 
+# `@lengentic/shared` is a build-time dependency of the dashboard, not just a type-only one:
+# `src/lib/runs-api.ts` imports `@lengentic/shared/read`, whose `exports` resolve only into
+# `platform/shared/dist/**`. `.dockerignore` excludes `**/dist`, so the directory is absent
+# from the context and has to be produced inside the image before `next build` traces it.
+COPY platform/shared ./platform/shared
 COPY platform/dashboard ./platform/dashboard
 
 # NEXT_PUBLIC_ values are inlined at build time, not read at runtime. The default is the
@@ -52,7 +58,8 @@ ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 # expectations, reports it as "installed by a different package manager" and silently
 # re-installs the whole workspace before `next build` starts — restoring the symlink farm
 # and the crash with it.
-RUN pnpm --config.node-linker=hoisted --filter @lengentic/dashboard build
+RUN pnpm --config.node-linker=hoisted --filter @lengentic/shared build \
+ && pnpm --config.node-linker=hoisted --filter @lengentic/dashboard build
 
 
 FROM base AS runtime
