@@ -46,10 +46,12 @@ import type { IngestResponse } from '@lengentic/shared';
  *   `RangeError` inside the fold itself), not a mocked throw.
  *
  * F3 in the tester-reverify sense (§12's dedup ledger gap — a re-posted eventId that never
- * became a per-key/per-event winner is misclassified ACCEPTED) is NOT covered by fixes in
- * this file. It is deferred to `p2.idempotency` by human ruling
- * (`.artifacts/evidence/2/f3-ruling.md`); the "KNOWN GAP" test below documents it without
- * claiming it closed.
+ * became a per-key/per-event winner is misclassified ACCEPTED) is NOT fixed by anything in
+ * this file. It was deferred to `p2.idempotency` by human ruling
+ * (`.artifacts/evidence/2/f3-ruling.md`) and ADR 0009, which built ADR 0005 §1's
+ * `IngestedEvent` ledger. The last test below WAS the standing red documenting that gap; it
+ * is now the regression test for its closure, and asserts the ledger row rather than only
+ * the reported status. `p2.integration-tests` flipped it on 2026-08-21.
  *
  * Same container-and-migration pattern as `health.integration.spec.ts`, plus applying the
  * real `@lengentic/database` migrations (`prisma migrate deploy`) since this file talks to
@@ -526,7 +528,7 @@ describe('Telemetry ingestion against a real Postgres (integration)', () => {
     }, 30_000);
   });
 
-  describe('F3 in the tester-reverify sense (§12 dedup ledger gap): deferred to p2.idempotency, not this lane', () => {
+  describe('F3 in the tester-reverify sense (§12 dedup ledger gap): closed by the IngestedEvent ledger p2.idempotency built, ADR 0009', () => {
     it('reposting the WINNING start eventId across two requests is DUPLICATE, not a second ACCEPTED', async () => {
       const { service, prisma } = await newTrio(connectionString);
       try {
@@ -543,22 +545,27 @@ describe('Telemetry ingestion against a real Postgres (integration)', () => {
       }
     }, 30_000);
 
-    it('KNOWN GAP (documented, not a regression): reposting a start eventId that LOST the tie-break across two requests is misclassified ACCEPTED again, not DUPLICATE', async () => {
-      // This documents the gap `telemetry.service.ts`'s `collectKnownEventIds` doc comment
-      // now honestly describes: only the WINNING start event's id survives across requests
-      // (`startEventId`, one column). Closing it for real needs a persisted per-start-event
-      // ledger schema.prisma does not have — out of `platform/api/src/**`'s reach. Fail-safe
-      // either way: no second row, no error, the state resolves identically regardless. This
-      // is the same class of gap the tester's F3 covers at the entity level (dedup ledger,
-      // `.artifacts/evidence/2/f3-ruling.md`), deferred to `p2.idempotency` by human ruling —
-      // this test documents it, it does not close it.
+    it('reposting a start eventId that LOST the tie-break across two requests is DUPLICATE — the IngestedEvent ledger records losers, not only winners (ADR 0009 A-7)', async () => {
+      // Flipped by `p2.integration-tests`, 2026-08-21. This case was RED-as-documentation
+      // for two sessions: under the entity-state-derived interim only the WINNING start
+      // event's id survived across requests (`startEventId`, one column), so a re-posted
+      // loser was re-classified ACCEPTED forever. `p2.idempotency` closed that gap by
+      // building ADR 0005 §1's `IngestedEvent` ledger — which is why the assertion below is
+      // on the LEDGER as well as on the status. A status assertion alone would go green
+      // again on a re-introduced provenance derivation that happened to guess right for one
+      // event; the ledger row is the thing that makes the DUPLICATE true.
+      //
+      // ADR 0009's own Detection fixture — the four-event D2.2 replay asserting
+      // `accepted:0, duplicate:4` — lives in `run-lifecycle.integration.spec.ts`, this
+      // lane's own file. This test keeps the narrower loser-specific case where the gap was
+      // first observed.
       const { service, repository, prisma } = await newTrio(connectionString);
       try {
         const entityId = 'dedup-loser-run';
 
         // First request: two start events for a never-before-seen entity. The earlier
-        // occurredAt (evt-early) wins startEventId; evt-late loses and leaves no ledger
-        // trace of its own.
+        // occurredAt (evt-early) wins startEventId; evt-late loses and, before the ledger
+        // existed, left no trace of its own anywhere.
         const first = await service.ingest([
           runStartedEvent(entityId, {
             eventId: 'evt-late',
@@ -574,6 +581,17 @@ describe('Telemetry ingestion against a real Postgres (integration)', () => {
         const before = await repository.loadRun(entityId);
         expect(before?.startEventId).toBe('evt-early');
 
+        // The loser is on the ledger even though it owns no column on the row. This is the
+        // assertion that distinguishes a real ledger from entity-state provenance.
+        const ledgerAfterFirst = await prisma.client.ingestedEvent.findMany({
+          where: { runId: entityId },
+          select: { eventId: true },
+        });
+        expect(ledgerAfterFirst.map((row) => row.eventId).sort()).toEqual([
+          'evt-early',
+          'evt-late',
+        ]);
+
         // Second, separate request: repost the LOSING event from the first request.
         const second = await service.ingest([
           runStartedEvent(entityId, {
@@ -582,13 +600,19 @@ describe('Telemetry ingestion against a real Postgres (integration)', () => {
           }),
         ]);
 
-        // Documents the gap: this SHOULD be DUPLICATE per §12, and today is not.
-        expect(second.results[0]).toMatchObject({ status: 'ACCEPTED' });
+        // §12: "Re-posting a known eventId is a no-op." Known means known, not known-and-won.
+        expect(second.results[0]).toMatchObject({ status: 'DUPLICATE' });
+        expect({ accepted: second.accepted, duplicate: second.duplicate }).toEqual({
+          accepted: 0,
+          duplicate: 1,
+        });
 
-        // Fail-safe: no new row, state unchanged (still evt-early's fields as the winner).
+        // No new row, state unchanged (still evt-early's fields as the winner), and the
+        // replay did not append a second ledger entry for the same (runId, eventId).
         const after = await repository.loadRun(entityId);
         expect(after?.startEventId).toBe('evt-early');
         expect(after?.startedAt).toBe(before?.startedAt);
+        expect(await prisma.client.ingestedEvent.count({ where: { runId: entityId } })).toBe(2);
       } finally {
         await prisma.onModuleDestroy();
       }
