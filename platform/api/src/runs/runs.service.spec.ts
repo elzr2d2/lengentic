@@ -23,6 +23,25 @@ const THIRTY_MINUTES_MS = 1_800_000;
 
 const FIXED_CLOCK: Clock = { now: () => NOW };
 
+/**
+ * A clock that is strictly later on every reading, by `stepMs`.
+ *
+ * Every other clock double in this repository is constant, which makes "the service reads the
+ * clock once for the whole page" and "the service reads it once per row" produce identical
+ * output — so the invariant `runs.service.ts` states in a comment, and that
+ * `test/stale-on-kill/kill-mid-run.integration.spec.ts` builds its entire soundness argument
+ * on, was pinned by nothing. Inverting the service to a per-row reading left 155/155 unit and
+ * 40/40 integration tests green. Time that moves between readings is what tells the two
+ * apart.
+ */
+function advancingClock(start: Date, stepMs: number): Clock {
+  let reads = 0;
+
+  return {
+    now: () => new Date(start.getTime() + reads++ * stepMs),
+  };
+}
+
 function runRecord(overrides: Partial<RunRecord> & Pick<RunRecord, 'id'>): RunRecord {
   return {
     traceId: overrides.id,
@@ -66,8 +85,12 @@ function fakeRepository(runs: readonly RunRecord[], steps: readonly StepRecord[]
   } as unknown as RunsRepository;
 }
 
-function serviceOver(runs: readonly RunRecord[], steps: readonly StepRecord[] = []): RunsService {
-  return new RunsService(fakeRepository(runs, steps), FIXED_CLOCK, THIRTY_MINUTES_MS);
+function serviceOver(
+  runs: readonly RunRecord[],
+  steps: readonly StepRecord[] = [],
+  clock: Clock = FIXED_CLOCK,
+): RunsService {
+  return new RunsService(fakeRepository(runs, steps), clock, THIRTY_MINUTES_MS);
 }
 
 describe('RunsService.list', () => {
@@ -177,6 +200,37 @@ describe('RunsService.list', () => {
 
     expect(page.runs).toStrictEqual([]);
     expect(page.hasMore).toBe(false);
+  });
+
+  it('derives every run in one page from a single clock reading, so two identical runs cannot straddle the threshold', async () => {
+    // The invariant `runs.service.ts` states out loud, made observable.
+    //
+    // Both runs carry the SAME `lastEventAt`, placed exactly `THIRTY_MINUTES_MS` before the
+    // clock's first reading. Expected values come from `MVP_PLAN_V3.md:595` —
+    // `STALE = status == RUNNING AND now - lastEventAt > STALE_RUN_THRESHOLD` — not from the
+    // implementation: idle time exactly equal to the threshold is not *greater than* it, so
+    // both rows are RUNNING.
+    //
+    // Under a per-row clock reading that arithmetic changes for the second row and only the
+    // second row: it is derived from `NOW + 1ms`, idle by `THIRTY_MINUTES_MS + 1`, and reports
+    // STALE. Two runs identical in every input then disagree about their status inside one
+    // response, which is precisely what the single reading exists to make impossible — and
+    // what `test/stale-on-kill/kill-mid-run.integration.spec.ts` assumes when it concludes
+    // `subject.lastEventAt <= control.lastEventAt` and `control === STALE` imply the subject
+    // was past the threshold too.
+    const lastEventAt = new Date(NOW.getTime() - THIRTY_MINUTES_MS);
+    const service = serviceOver(
+      [runRecord({ id: 'run-a', lastEventAt }), runRecord({ id: 'run-b', lastEventAt })],
+      [],
+      advancingClock(NOW, 1),
+    );
+
+    const page = await service.list({ limit: 50, offset: 0 });
+
+    expect(page.runs.map((run) => [run.id, run.lastEventAt, run.status])).toStrictEqual([
+      ['run-a', '2026-08-21T11:30:00.000Z', 'RUNNING'],
+      ['run-b', '2026-08-21T11:30:00.000Z', 'RUNNING'],
+    ]);
   });
 
   it('produces a page that satisfies the published response schema', async () => {

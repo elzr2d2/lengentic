@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync, spawn, type ChildProcessByStdio } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import { createInterface } from 'node:readline';
@@ -101,46 +101,162 @@ interface HostExit {
   readonly signal: NodeJS.Signals | null;
 }
 
-function spawnHost(
-  fixture: string,
-  port: number,
-  workflowVersion: string,
-): ChildProcessByStdio<null, Readable, Readable> {
-  return spawn(
+type HostChild = ChildProcessByStdio<null, Readable, Readable>;
+
+/**
+ * A spawned fixture process plus everything it has said so far.
+ *
+ * The two accumulators are attached by `spawnHost` rather than by each test, so no failure
+ * path can reach a diagnostic message with the child's own output missing. Both are read as
+ * functions, not captured strings: a message built at rejection time must show what the child
+ * had written by then, not what it had written when the wait started.
+ */
+interface SpawnedHost {
+  readonly child: HostChild;
+  readonly stdout: () => string;
+  readonly stderr: () => string;
+}
+
+/**
+ * Every host this file has spawned and not yet reaped.
+ *
+ * Killing each child on the happy path is not enough, and the phase-gate Reviewer filed
+ * exactly why: `waitForLine` can reject and an `expect` can throw, and every `child.kill()`
+ * in this file sits *after* both. So on any failing path a fixture that was deliberately
+ * written never to end is left running, with nothing in the file responsible for it.
+ *
+ * How bad that gets today is measured rather than assumed, and it is milder than it looks:
+ * `abandoned-run.ts` awaits a promise that never resolves, but the SDK unrefs its only timer
+ * (`platform/telemetry-sdk/src/scheduler.ts:33`, `keepProcessAlive` defaults false), so once
+ * the flush is done the child's ref'd event loop is empty and node exits 0 by itself. Forcing
+ * a throw between the spawn and the kill with this reaper removed left zero surviving fixture
+ * processes (`.artifacts/evidence/2/phase-gate/repair-1/raw/S2-no-afterEach-orphan-RED.txt`,
+ * plus the self-exit probe beside it).
+ *
+ * Which is the argument for the reaper, not against it: "no live child is left behind" is
+ * currently true only as a consequence of one default in a package this file does not own,
+ * and a fixture that later holds any ref'd handle — a server, an interval, a `keepProcessAlive`
+ * client — turns a red test into a CI job that hangs to its 20-minute timeout and reads as
+ * infrastructure flake. A tracked set reaped in `afterEach` makes it true here, and secures
+ * what no per-test `finally` can: a child spawned before a throw is killed even when the throw
+ * lands between the spawn and whatever was going to guard it.
+ */
+const liveHosts = new Set<HostChild>();
+
+function spawnHost(fixture: string, port: number, workflowVersion: string): SpawnedHost {
+  const child = spawn(
     process.execPath,
     ['--import', 'tsx', path.join(FIXTURES_DIR, fixture), String(port), workflowVersion],
     { stdio: ['ignore', 'pipe', 'pipe'] },
   );
+
+  liveHosts.add(child);
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')));
+  child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
+
+  return { child, stdout: () => stdout, stderr: () => stderr };
 }
 
-function onExit(child: ChildProcessByStdio<null, Readable, Readable>): Promise<HostExit> {
+/** SIGKILLs `child` if it is still running, and resolves once the OS has reported it gone. */
+function killAndWait(child: HostChild): Promise<void> {
+  // Already gone: `close` has fired and will not fire again, so awaiting it would hang.
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    child.once('close', () => resolve());
+    child.kill('SIGKILL');
+  });
+}
+
+function onExit(child: HostChild): Promise<HostExit> {
   return new Promise((resolve) => {
     child.on('close', (code, signal) => resolve({ code, signal }));
   });
 }
 
-/** Resolves with the first stdout line starting with `prefix`. Rejects on timeout or error. */
-function waitForLine(
-  child: ChildProcessByStdio<null, Readable, Readable>,
-  prefix: string,
-  timeoutMs: number,
-): Promise<string> {
+/** What the child's own exit says, for a failure message. Unknown until the OS reports it. */
+function describeExit(child: HostChild): string {
+  if (child.exitCode !== null) return `exited with code ${String(child.exitCode)}`;
+  if (child.signalCode !== null) return `was killed by ${child.signalCode}`;
+
+  return 'had not exited yet';
+}
+
+/**
+ * Resolves with the first stdout line starting with `prefix`.
+ *
+ * Rejects on three things rather than one — the deadline, a spawn error, and the child's own
+ * output ending — and every rejection carries the child's accumulated stderr.
+ *
+ * Both additions are the same finding twice. With `platform/telemetry-sdk/dist` absent, the
+ * fixture dies on an unresolvable import inside a few hundred milliseconds; the shape this
+ * replaces then sat for the full deadline and reported `timed out after 15000ms waiting for a
+ * line starting "RUN-STARTED "` — 15,026ms spent to say nothing about
+ * `Cannot find package '@lengentic/telemetry-sdk'`, which the child had already written to a
+ * stderr this function never read
+ * (`.artifacts/evidence/2/phase-gate/repair-1/raw/S1-cold-sdk-dist-RED.txt`). A wait that
+ * hides the cause diagnoses the test instead of the fixture.
+ *
+ * The "child is gone" signal is readline's `close`, not the child process's. A host that
+ * prints its line and dies in the same breath emits both, and readline drains every buffered
+ * line before closing — so taking the process event directly would race a delivered line
+ * against the exit that followed it and reject a wait that had in fact succeeded.
+ */
+function waitForLine(host: SpawnedHost, prefix: string, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    const rl = createInterface({ input: child.stdout });
-    const timer = setTimeout(() => {
-      rl.close();
-      reject(new Error(`timed out after ${timeoutMs}ms waiting for a line starting "${prefix}"`));
-    }, timeoutMs);
-    rl.on('line', (line) => {
-      if (line.startsWith(prefix)) {
-        clearTimeout(timer);
-        rl.close();
-        resolve(line);
-      }
-    });
-    child.on('error', (error: unknown) => {
+    const rl = createInterface({ input: host.child.stdout });
+    let settled = false;
+
+    // `settle` reads `timer` and `timer`'s callback calls `failWith`, so one of the three has
+    // to be named before it is defined. Both directions are safe here because every one of
+    // these is only ever *invoked* from an event handler — a line, a stream close, a spawn
+    // error, or the timeout itself — and the whole block below is initialised synchronously
+    // before any of those can run.
+    const settle = (outcome: () => void): void => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      reject(error instanceof Error ? error : new Error(String(error)));
+      rl.close();
+      outcome();
+    };
+
+    const failWith = (reason: string): void => {
+      const stderr = host.stderr();
+      settle(() => {
+        reject(
+          new Error(
+            `${reason}; host ${describeExit(host.child)}; fixture stderr: ` +
+              (stderr === '' ? '(empty)' : stderr),
+          ),
+        );
+      });
+    };
+
+    const timer = setTimeout(() => {
+      failWith(`timed out after ${String(timeoutMs)}ms waiting for a line starting "${prefix}"`);
+    }, timeoutMs);
+
+    rl.on('line', (line: string) => {
+      if (!line.startsWith(prefix)) return;
+
+      settle(() => {
+        resolve(line);
+      });
+    });
+
+    // Fires after readline has emitted every line the child managed to write. Reaching it
+    // unsettled means the line never came and is not going to.
+    rl.on('close', () => {
+      failWith(`host stdout closed before a line starting "${prefix}" arrived`);
+    });
+
+    host.child.on('error', (error: unknown) => {
+      failWith(
+        `host process failed to start: ${error instanceof Error ? error.message : String(error)}`,
+      );
     });
   });
 }
@@ -167,11 +283,14 @@ describe('A real host process killed mid-run leaves its Run reporting STALE on t
    * a re-run at this commit 0/8. A probabilistic mutation probe is how a green that lies
    * gets written twice.
    *
-   * This wait removes the test's clock from the argument entirely. `runs.service.ts:41`
-   * reads the clock **once per list request, for the whole page** — deliberately, so that
-   * "two runs with identical `lastEventAt` land on opposite sides of the threshold within
-   * one response" cannot happen. Both runs below are therefore derived from a single server
-   * `now`. The caller asserts:
+   * This wait removes the test's clock from the argument entirely. `RunsService.list` reads
+   * the clock **once per list request, for the whole page** — deliberately, so that "two runs
+   * with identical `lastEventAt` land on opposite sides of the threshold within one response"
+   * cannot happen. That property is a premise of everything below, so it is pinned where it
+   * lives rather than assumed here: `src/runs/runs.service.spec.ts`, "derives every run in one
+   * page from a single clock reading", drives the service with a clock that advances between
+   * readings and goes red on a per-row inversion that leaves the rest of the suite green.
+   * Both runs below are therefore derived from a single server `now`. The caller asserts:
    *
    *   control.status === 'STALE'                    =>  now - control.lastEventAt  > threshold
    *   subject.lastEventAt <= control.lastEventAt    =>  now - subject.lastEventAt >= the above
@@ -305,30 +424,41 @@ describe('A real host process killed mid-run leaves its Run reporting STALE on t
     prisma = app.get(PrismaService);
   }, 180_000);
 
+  /**
+   * No test in this file can leave a live child process behind — however it failed, and
+   * whether or not it reached its own `kill`. Runs after a failing test as well as a passing
+   * one, which is the whole point: the paths that skip a `kill` are exactly the failing ones.
+   */
+  afterEach(async () => {
+    const hosts = [...liveHosts];
+    liveHosts.clear();
+
+    await Promise.all(hosts.map(killAndWait));
+  });
+
   afterAll(async () => {
     await app?.close();
     await container?.stop();
   });
 
   it('a real host process, killed with SIGKILL mid-run, leaves a Run that GET /v1/runs/:id derives as STALE — the stored row stays RUNNING', async () => {
-    const child = spawnHost('abandoned-run.ts', port, 'stale-on-kill-abandoned');
-    let stderr = '';
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
+    const host = spawnHost('abandoned-run.ts', port, 'stale-on-kill-abandoned');
 
-    const line = await waitForLine(child, 'RUN-STARTED ', WAIT_FOR_LINE_TIMEOUT_MS);
+    const line = await waitForLine(host, 'RUN-STARTED ', WAIT_FOR_LINE_TIMEOUT_MS);
     const runId = line.slice('RUN-STARTED '.length).trim();
-    expect(runId, `expected a non-empty runId; fixture stderr: ${stderr}`).not.toBe('');
+    expect(runId, `expected a non-empty runId; fixture stderr: ${host.stderr()}`).not.toBe('');
 
     // The row exists and is RUNNING *before* anything is killed — this is what rules out
     // the SIGKILL race named in the work packet. If this fails, the run never landed and
     // killing the process below would prove nothing.
     const before = await prisma.client.run.findUnique({ where: { id: runId } });
-    expect(before?.status, `fixture stderr: ${stderr}`).toBe('RUNNING');
+    expect(before?.status, `fixture stderr: ${host.stderr()}`).toBe('RUNNING');
 
     // The real kill. `abandoned-run.ts` never calls run.complete() or shutdown() — SIGKILL
-    // is the only way this process ever ends.
-    child.kill('SIGKILL');
-    const exit = await onExit(child);
+    // is the only way this process ever ends. (`afterEach` would kill it too; this stays
+    // because the kill is the behaviour under test, not just cleanup.)
+    host.child.kill('SIGKILL');
+    const exit = await onExit(host.child);
     // A clean exit(0) here would mean the fixture returned from `main()` on its own —
     // which it structurally cannot, since it awaits a promise that never resolves. Any
     // close event this test observes is therefore the kill taking effect, not the script
@@ -351,18 +481,20 @@ describe('A real host process killed mid-run leaves its Run reporting STALE on t
   }, 40_000);
 
   it('a host process that completes normally and calls shutdown() is never reported STALE, even after the same threshold has passed — the negative fixture the STALE assertion above needs to be able to fail', async () => {
-    const child = spawnHost('completed-run.ts', port, 'stale-on-kill-completed');
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString('utf8')));
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
+    const host = spawnHost('completed-run.ts', port, 'stale-on-kill-completed');
 
-    const exit = await onExit(child);
-    expect(exit.code, `stdout: ${stdout}\nstderr: ${stderr}`).toBe(0);
-    expect(stderr).toBe('');
+    const exit = await onExit(host.child);
+    // Exit 0 is the whole claim about this fixture: `completed-run.ts` reaches the end of
+    // `main()` only by completing the run and awaiting `shutdown()`. There is deliberately no
+    // companion `expect(stderr).toBe('')` — it pinned nothing (this fixture has no stderr
+    // path at all; the `DELIVERY-INCOMPLETE` write that does exist lives in `abandoned-run.ts`
+    // and exits 1, which the assertion above already catches) while standing ready to fail on
+    // a node or tsx warning that says nothing about the run. stderr stays where it is useful:
+    // in the failure message, and in `waitForLine`'s rejections.
+    expect(exit.code, `stdout: ${host.stdout()}\nstderr: ${host.stderr()}`).toBe(0);
 
-    const match = /RUN-COMPLETED (\S+)/.exec(stdout);
-    expect(match, `stdout: ${stdout}`).not.toBeNull();
+    const match = /RUN-COMPLETED (\S+)/.exec(host.stdout());
+    expect(match, `stdout: ${host.stdout()}`).not.toBeNull();
     const runId = match![1]!;
 
     // The control: a REAL abandoned run, spawned only now — after the subject process has
@@ -376,18 +508,16 @@ describe('A real host process killed mid-run leaves its Run reporting STALE on t
     // process is otherwise not able to establish about the server without racing it. See
     // `waitForControlStaleInSameResponse`.
     const control = spawnHost('abandoned-run.ts', port, 'stale-on-kill-completed-control');
-    let controlStderr = '';
-    control.stderr.on('data', (chunk: Buffer) => (controlStderr += chunk.toString('utf8')));
 
     const controlLine = await waitForLine(control, 'RUN-STARTED ', WAIT_FOR_LINE_TIMEOUT_MS);
     const controlRunId = controlLine.slice('RUN-STARTED '.length).trim();
     expect(
       controlRunId,
-      `expected a non-empty control runId; fixture stderr: ${controlStderr}`,
+      `expected a non-empty control runId; fixture stderr: ${control.stderr()}`,
     ).not.toBe('');
 
-    control.kill('SIGKILL');
-    const controlExit = await onExit(control);
+    control.child.kill('SIGKILL');
+    const controlExit = await onExit(control.child);
     expect(
       controlExit.code,
       `control host exit was not a forced termination: ${JSON.stringify(controlExit)}`,

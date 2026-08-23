@@ -83,9 +83,17 @@ function StepsCard({ run }: { run: RunDetailView }) {
         {anomalies}
       </h2>
 
-      {/* `buildStepTree` places every step exactly once. Stating the count out loud means a
-          regression that drops one is visible on the page instead of looking like a run that
-          genuinely had fewer steps — which is the whole failure mode this tree exists to avoid. */}
+      {/* `buildStepTree` places every step exactly once, and this compares its output against
+          the response it was built from — so a placement that drops a step is visible on the
+          page instead of looking like a run that genuinely had fewer steps.
+
+          What it does NOT watch is this component. `rendered` counts nodes in the tree, and
+          `StepBranch` below renders from that same tree, so both sides of the comparison move
+          together: a `StepBranch` that stops recursing prints "4 steps" above a single `<li>`
+          and this alarm stays silent. That gap was real and unwatched until the Phase 2 gate.
+          The alarm for it is `../runs-pages.spec.ts`, "renders the whole step tree, nested",
+          which reads the step ids and their nesting depth back out of the emitted markup —
+          the only side of the comparison the tree cannot supply. */}
       {rendered === run.steps.length ? null : (
         <p className="note-inline note-alarm">
           {String(run.steps.length - rendered)} step(s) in the response are not on this page. That

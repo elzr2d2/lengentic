@@ -39,6 +39,14 @@ export class RunsService {
   async list(query: RunsListQuery): Promise<RunListView> {
     // A single clock reading for the whole page. Reading it per run would let two runs with
     // identical `lastEventAt` land on opposite sides of the threshold within one response.
+    //
+    // Enforced, not merely asserted here: `runs.service.spec.ts` derives a two-run page under
+    // a clock that advances 1ms per reading, so moving this call inside the `map` below turns
+    // that page's second row STALE and the test red. It was stated only in this comment until
+    // the Phase 2 gate, and the inversion passed 155/155 unit and 40/40 integration tests —
+    // every clock double in the tree was constant, which makes the two readings
+    // indistinguishable. `test/stale-on-kill/kill-mid-run.integration.spec.ts` rests its whole
+    // soundness argument on this property.
     const now = this.clock.now();
 
     const records = await this.repository.listRuns(query.limit + 1, query.offset);

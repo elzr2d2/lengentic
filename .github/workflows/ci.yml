@@ -112,8 +112,16 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @lengentic/database build
 
+      # No build step here on purpose. What this job has to compile is a property of the
+      # tests, not of the workflow, so it is declared once — `pretest:integration` in
+      # `platform/api/package.json` — and pnpm runs it ahead of the suite here and on a
+      # developer's machine alike. A build step listed only in CI rots silently: the suite
+      # keeps passing locally off a `dist/` some earlier `pnpm build` left behind, and the
+      # first anyone hears of the gap is a red CI run. That is exactly how the SDK import in
+      # `test/stale-on-kill/fixtures/*.ts` — resolved by a spawned `node --import tsx` child,
+      # outside vitest, so no alias rescues it — reached `main` unbuilt by this job.
+      #
       # Testcontainers starts its own PostgreSQL. GitHub runners ship a Docker daemon, so
       # this is the job that actually exercises the database path.
       - run: pnpm test:integration
