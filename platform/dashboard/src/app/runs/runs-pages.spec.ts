@@ -71,6 +71,19 @@ const RUN_BETA = {
  * correct tree" is about: a root, a child, a grandchild, and a second child of the root that
  * failed. `parentStepId` is what the API sends — the tree is the Dashboard's to build, and
  * whether it also *renders* it is what this fixture is here to decide.
+ *
+ * ## Why no step's `id` is its `name`
+ *
+ * It used to be — every step here was `id: 'root-step', name: 'root-step'` — and the phase-gate
+ * Tester measured what that cost. `emittedSteps` below reads the id out of the `.step-meta`
+ * `<code>`; with `id === name` it cannot tell "the page printed the id" from "the page printed
+ * the name", so making that `<code>` print `node.step.name` left the whole suite green
+ * (D2b, `.artifacts/evidence/2/phase-gate-2/tester/README.md` §2). A fixture whose two fields
+ * are indistinguishable makes every assertion about either one of them weaker than it reads.
+ *
+ * The ids are ordinal-prefixed (`step-01-…`) so a wrong *placement* names itself in the diff
+ * as well: the ordinals are the fixture's declaration order, the depths below are its
+ * `parentStepId` chain, and the two are deliberately not the same fact.
  */
 const RUN_WITH_TREE = {
   id: 'run-tree',
@@ -84,12 +97,12 @@ const RUN_WITH_TREE = {
   lastEventAt: '2026-08-21T11:05:00.000Z',
   metadata: null,
   steps: [
-    step({ id: 'root-step', parentStepId: null, name: 'root-step' }),
-    step({ id: 'child-step', parentStepId: 'root-step', name: 'child-step' }),
-    step({ id: 'grandchild-step', parentStepId: 'child-step', name: 'grandchild-step' }),
+    step({ id: 'step-01-root', parentStepId: null, name: 'root-step' }),
+    step({ id: 'step-02-child', parentStepId: 'step-01-root', name: 'child-step' }),
+    step({ id: 'step-03-grandchild', parentStepId: 'step-02-child', name: 'grandchild-step' }),
     step({
-      id: 'sibling-step',
-      parentStepId: 'root-step',
+      id: 'step-04-sibling',
+      parentStepId: 'step-01-root',
       name: 'sibling-step',
       status: 'FAILED',
     }),
@@ -195,6 +208,81 @@ function emittedSteps(markup: string): [string, number][] {
   return emitted;
 }
 
+/**
+ * Every step **name** the page emitted, in document order.
+ *
+ * A separate reading from `emittedSteps` on purpose. That one watches the `.step-meta`
+ * `<code>` — ids and nesting — and stays green with the `.step-name` span deleted and every
+ * step rendered nameless (D2d, Tester §2). Identity and placement are one claim about the
+ * page; "and it says which step each one is" is another, and it needs its own oracle.
+ */
+function emittedStepNames(markup: string): string[] {
+  return [...markup.matchAll(/<span class="step-name">([^<]*)<\/span>/g)].map((m) => m[1] ?? '');
+}
+
+/**
+ * The run detail page's summary card, as the reader sees it: its heading, and every
+ * `label → value` row in it.
+ *
+ * ## Why it is sliced out of the markup rather than asserted with `toContain`
+ *
+ * `expect(markup).toContain('>FAILED<')` was the only thing this file said about the detail
+ * page's summary card, and the phase-gate Tester showed it is satisfied by
+ * `sibling-step`'s own status badge further down the page — so it stayed true while
+ * `RunSummaryCard` was made to render *nothing at all*: no workflow name, no version, no run
+ * id, no trace id, no badge, no timestamps (D2c). An unscoped substring assertion about a
+ * card is a claim about the whole document, and the page has more than one card.
+ *
+ * So the card is located first — it is the first `<section class="card">` the page emits —
+ * and only then read. If `RunSummaryCard` emits no section, the first one becomes the steps
+ * card and the returned rows are its (none), which is a mismatch rather than a pass.
+ *
+ * The values are tag-stripped, so `<span class="value">1.4.0</span>`, `<code>run-tree</code>`
+ * and `<time …>2026-…Z</time>` all read as their text. What is asserted is what a reader
+ * would see, not which element the page happened to choose.
+ */
+function summaryCard(markup: string): { title: string; rows: [string, string][] } {
+  const section = /<section class="card">([\s\S]*?)<\/section>/.exec(markup);
+  if (section === null) return { title: '(no card on the page)', rows: [] };
+
+  const body = section[1] ?? '';
+  const title = /<h2 class="card-title">([\s\S]*?)<\/h2>/.exec(body)?.[1] ?? '(no card title)';
+
+  const rows = [
+    ...body.matchAll(/<div class="row"><span class="row-label">([^<]*)<\/span>([\s\S]*?)<\/div>/g),
+  ].map((match): [string, string] => [match[1] ?? '', stripTags(match[2] ?? '')]);
+
+  return { title: stripTags(title), rows };
+}
+
+/**
+ * One entry per `<li class="run-row">` the list page emitted — the four fields the row is
+ * made of, each read from its own element.
+ *
+ * `workflowVersion` is in here because deleting it from the row left this suite, `typecheck`
+ * and `eslint` all green (D2e, Tester §2), and the Phase 2 DoD prose names it: "start a Run
+ * with a `workflowVersion` … The Dashboard shows the resulting Run." A Run shown without the
+ * field the sentence names does not discharge the sentence.
+ */
+function runRows(markup: string): { name: string; version: string; status: string; id: string }[] {
+  return [...markup.matchAll(/<li class="run-row">([\s\S]*?)<\/li>/g)].map((match) => {
+    const row = match[1] ?? '';
+
+    return {
+      name: /<span class="run-row-name">([^<]*)<\/span>/.exec(row)?.[1] ?? '(no name element)',
+      version:
+        /<span class="run-row-version">([^<]*)<\/span>/.exec(row)?.[1] ?? '(no version element)',
+      status: /<span class="status status-[a-z]+">([^<]*)<\/span>/.exec(row)?.[1] ?? '(no badge)',
+      id: /<code>([^<]*)<\/code>/.exec(row)?.[1] ?? '(no id element)',
+    };
+  });
+}
+
+/** The text a reader sees, with whatever markup carried it removed. */
+function stripTags(fragment: string): string {
+  return fragment.replaceAll(/<[^>]*>/g, '');
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -220,6 +308,27 @@ describe('GET /runs — the run list page', () => {
     // The paired negative: "No runs" is a real state of this page (asserted below), so its
     // absence here is what makes the assertions above mean "these runs" and not "some runs".
     expect(markup).not.toContain('No runs');
+  });
+
+  it('renders each run as its own row — workflow name, workflow version, derived status and id', async () => {
+    // D2e's alarm on the list page. The expected rows are the two fixtures' own fields,
+    // transcribed by hand in the order the stub answers with — never read back off the
+    // render, and never derived from anything the page computed.
+    //
+    // A row at a time, rather than four `toContain`s over the whole document: `toContain`
+    // cannot say which row a value landed in, and — as `>FAILED<` proved on the detail page —
+    // a value belonging to some *other* element keeps an unscoped substring assertion true
+    // while the element under test is gone.
+    stubApi({
+      '/v1/runs?limit=50&offset=0': { status: 200, body: listOf([RUN_ALPHA, RUN_BETA]) },
+    });
+
+    const markup = await renderPage(RunsPage({ searchParams: Promise.resolve({}) }));
+
+    expect(runRows(markup)).toStrictEqual([
+      { name: 'checkout-agent', version: '1.4.0', status: 'RUNNING', id: 'run-alpha' },
+      { name: 'refund-agent', version: '0.2.0', status: 'STALE', id: 'run-beta' },
+    ]);
   });
 
   it('says the API has recorded no runs when the list really is empty', async () => {
@@ -311,15 +420,109 @@ describe('GET /runs/[id] — the run detail page', () => {
     const markup = await renderPage(RunDetailPage({ params: Promise.resolve({ id: 'run-tree' }) }));
 
     expect(emittedSteps(markup)).toStrictEqual([
-      ['root-step', 0],
-      ['child-step', 1],
-      ['grandchild-step', 2],
-      ['sibling-step', 1],
+      ['step-01-root', 0],
+      ['step-02-child', 1],
+      ['step-03-grandchild', 2],
+      ['step-04-sibling', 1],
     ]);
     expect(markup).toContain('4 steps');
     // The failed sibling's own stored status, which is never replaced by the run's.
     expect(markup).toContain('>FAILED<');
     expect(markup).not.toContain('not on this page');
+  });
+
+  it('names every step it renders, in document order', async () => {
+    // D2d's alarm. The assertion above reads the `.step-meta` `<code>`, so the whole
+    // `.step-name` span can be deleted — every step rendered nameless, a tree of anonymous
+    // rows — with it still green. A step id is which step this is; the name is what it did,
+    // and it is the only one of the two a reader can act on.
+    //
+    // Expected: the fixture's four `name` fields in declaration order, which is also the
+    // order `buildStepTree` must emit them (root, its first child, that child's child, then
+    // the root's second child). Neither the names nor the order is read off the render.
+    stubApi({ '/v1/runs/run-tree': { status: 200, body: RUN_WITH_TREE } });
+
+    const markup = await renderPage(RunDetailPage({ params: Promise.resolve({ id: 'run-tree' }) }));
+
+    expect(emittedStepNames(markup)).toStrictEqual([
+      'root-step',
+      'child-step',
+      'grandchild-step',
+      'sibling-step',
+    ]);
+    // The paired negative. `StepBranch` prints this placeholder when a step has no name yet,
+    // so its absence is what makes the four names above "these steps' names" rather than
+    // "four strings the page happened to emit".
+    expect(markup).not.toContain('(no step.started event yet)');
+  });
+
+  it('renders the run summary card — the workflow, its version, both ids, the derived status and every instant the API sent', async () => {
+    // D2c's and D2e's alarm on the detail page. Until this existed, `RunSummaryCard` could be
+    // made to render NOTHING — no workflow name, no version, no run id, no trace id, no
+    // status badge, no timestamps — and this file stayed 31/31, because the only thing it
+    // said about the card was `toContain('>FAILED<')`, which `sibling-step`'s own badge
+    // satisfies from inside the steps card further down.
+    //
+    // The DoD prose is what fixes the field list: "start a Run with a `workflowVersion` …
+    // The Dashboard shows the resulting Run" (MVP_PLAN_V3.md:1599-1602). A Run shown without
+    // the field the sentence names is not that Run.
+    //
+    // Expected values are `RUN_WITH_TREE`'s own fields — the body the stub is answering with
+    // — transcribed by hand, in the order `RunSummaryCard` states them.
+    stubApi({ '/v1/runs/run-tree': { status: 200, body: RUN_WITH_TREE } });
+
+    const markup = await renderPage(RunDetailPage({ params: Promise.resolve({ id: 'run-tree' }) }));
+
+    expect(summaryCard(markup)).toStrictEqual({
+      title: 'checkout-agent',
+      rows: [
+        ['Status', 'FAILED'],
+        ['Workflow version', '1.4.0'],
+        ['Run id', 'run-tree'],
+        ['Trace id', 'trace-tree'],
+        ['Started', '2026-08-21T11:00:00.000Z'],
+        ['Completed', '2026-08-21T11:05:00.000Z'],
+        ['Received', '2026-08-21T11:00:00.000Z'],
+        ['Last event', '2026-08-21T11:05:00.000Z'],
+      ],
+    });
+  });
+
+  it('says so in place of each field the API had no value for, rather than omitting the row', async () => {
+    // The paired negative for the card above, and the reason its eight rows mean "these
+    // values" instead of "eight rows". A run whose `run.started` event has not arrived has no
+    // workflow name and no version (§12 lets any event create the row), and a running one has
+    // no `completedAt`. The card must still be the same card — same rows, same order — with
+    // the missing values named as missing.
+    stubApi({
+      '/v1/runs/run-tree': {
+        status: 200,
+        body: {
+          ...RUN_WITH_TREE,
+          workflowName: null,
+          workflowVersion: null,
+          status: 'RUNNING',
+          completedAt: null,
+          steps: [],
+        },
+      },
+    });
+
+    const markup = await renderPage(RunDetailPage({ params: Promise.resolve({ id: 'run-tree' }) }));
+
+    expect(summaryCard(markup)).toStrictEqual({
+      title: '(no run.started event yet)',
+      rows: [
+        ['Status', 'RUNNING'],
+        ['Workflow version', '—'],
+        ['Run id', 'run-tree'],
+        ['Trace id', 'trace-tree'],
+        ['Started', '2026-08-21T11:00:00.000Z'],
+        ['Completed', '—'],
+        ['Received', '2026-08-21T11:00:00.000Z'],
+        ['Last event', '2026-08-21T11:05:00.000Z'],
+      ],
+    });
   });
 
   it('marks a step whose parent never arrived instead of promoting it to a root', async () => {
@@ -330,14 +533,17 @@ describe('GET /runs/[id] — the run detail page', () => {
         status: 200,
         body: {
           ...RUN_WITH_TREE,
-          steps: [step({ id: 'lost-step', parentStepId: 'never-arrived', name: 'lost-step' })],
+          steps: [step({ id: 'step-09-lost', parentStepId: 'never-arrived', name: 'lost-step' })],
         },
       },
     });
 
     const markup = await renderPage(RunDetailPage({ params: Promise.resolve({ id: 'run-tree' }) }));
 
-    expect(emittedSteps(markup)).toStrictEqual([['lost-step', 0]]);
+    // Same reason as `RUN_WITH_TREE`: id and name differ, so this cannot pass on a page that
+    // prints the name where the id belongs.
+    expect(emittedSteps(markup)).toStrictEqual([['step-09-lost', 0]]);
+    expect(emittedStepNames(markup)).toStrictEqual(['lost-step']);
     expect(markup).toContain('1 step · 1 orphaned');
     expect(markup).toContain('not in this run');
   });

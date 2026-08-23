@@ -211,9 +211,16 @@ describe('RunsService.list', () => {
     // implementation: idle time exactly equal to the threshold is not *greater than* it, so
     // both rows are RUNNING.
     //
-    // Under a per-row clock reading that arithmetic changes for the second row and only the
-    // second row: it is derived from `NOW + 1ms`, idle by `THIRTY_MINUTES_MS + 1`, and reports
-    // STALE. Two runs identical in every input then disagree about their status inside one
+    // Under a per-row clock reading that arithmetic changes, and this goes red — but which
+    // rows move depends on the form the regression takes, so the mechanism is stated exactly.
+    // Move the reading INTO the `map` (the hoisted read at `runs.service.ts:50` gone) and the
+    // second row alone changes: it is derived from `NOW + 1ms`, idle by `THIRTY_MINUTES_MS +
+    // 1`, and reports STALE while the first stays RUNNING — the straddle this test is named
+    // for. ADD a per-row read while leaving the hoisted one in place and BOTH rows are derived
+    // from an advanced reading, so both report STALE and what is caught is the threshold
+    // boundary rather than a straddle. Measured both ways at the Phase 2 phase gate
+    // (`.artifacts/evidence/2/phase-gate-2/tester/README.md` §1, NM2 and NM2b). Either way two
+    // runs identical in every input can disagree about their status inside one
     // response, which is precisely what the single reading exists to make impossible — and
     // what `test/stale-on-kill/kill-mid-run.integration.spec.ts` assumes when it concludes
     // `subject.lastEventAt <= control.lastEventAt` and `control === STALE` imply the subject
