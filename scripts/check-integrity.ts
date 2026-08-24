@@ -54,13 +54,34 @@ const isTest = (p: string) => TEST_FILE.test(p);
 const isConfig = (p: string) => TEST_CONFIG.test(p);
 const isTestOrConfig = (p: string) => isTest(p) || isConfig(p);
 
+/**
+ * `node:test` does not only spell a focus or a skip as `test.only(...)` / `test.skip(...)`.
+ * It also takes them as an options object — `test('name', { skip: true }, fn)` — which the
+ * dotted-form patterns below cannot see. A suite written in that idiom could carry a hidden
+ * skip straight through a CLEAN scan, which is the exact failure this file exists to prevent.
+ * Matches `, { … key: … }` and deliberately ignores an explicit `false`.
+ */
+const nodeTestOption = (keys: string) =>
+  new RegExp(
+    // The lookahead sits directly after the colon and swallows its own whitespace. Written as
+    // `\s*(?!false)` instead, `\s*` backtracks to zero width and the lookahead then inspects a
+    // space rather than the value — so `{ skip: false }` would match.
+    String.raw`\b(describe|it|test|suite)\s*\([^)]*,\s*\{[^}]*\b(${keys})\s*:(?!\s*false\b)`,
+  );
+
+const NODE_TEST_ONLY = nodeTestOption('only');
+const NODE_TEST_SKIP = nodeTestOption('skip|todo');
+
 const RULES: Rule[] = [
   {
     id: 'focused-test',
     severity: 'BLOCK',
     what: 'Focused test — silently hides the rest of the suite',
     applies: isTest,
-    test: (line) => (/\b(describe|it|test|bench)\s*\.\s*only\s*\(/.test(line) ? 'focused' : null),
+    test: (line) =>
+      /\b(describe|it|test|bench)\s*\.\s*only\s*\(/.test(line) || NODE_TEST_ONLY.test(line)
+        ? 'focused'
+        : null,
   },
   {
     id: 'skipped-test',
@@ -68,7 +89,8 @@ const RULES: Rule[] = [
     what: 'Skipped test — required coverage that does not execute is not a pass',
     applies: isTest,
     test: (line) =>
-      /\b(describe|it|test)\s*\.\s*(skip|todo|failing)\s*\(|\bit\s*\.\s*skipIf\s*\(/.test(line)
+      /\b(describe|it|test)\s*\.\s*(skip|todo|failing)\s*\(|\bit\s*\.\s*skipIf\s*\(/.test(line) ||
+      NODE_TEST_SKIP.test(line)
         ? 'skipped'
         : null,
   },

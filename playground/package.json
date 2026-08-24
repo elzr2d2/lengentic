@@ -5,6 +5,7 @@
   "description": "The reference consumer. A mock agent that emits telemetry through the public SDK entry and nothing else — LenGentic's own proof that a host can be instrumented without importing the platform.",
   "main": "./index.ts",
   "scripts": {
+    "test": "node --import tsx --test \"**/*.spec.ts\" \"**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
@@ -12,6 +13,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "tsx": "^4.20.6"
   }
 }
