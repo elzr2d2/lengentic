@@ -1,71 +1,61 @@
 ---
 name: autopilot
-description: Drive development across already-approved MVP phases without per-step approval — capture the charter once, then frame, dispatch, gate and advance on evidence, escalating only on the six triggers. Use when the human asks for autonomous or unattended development, or says "autopilot".
+description: Drive development across already-approved MVP phases without per-step approval — capture the charter once, then execute what `pnpm flow next` returns, gate at the cheapest sufficient tier, and advance on evidence, escalating only on the six triggers. Use when the human asks for autonomous or unattended development, or says "autopilot".
 ---
 
 # Autopilot
 
-You are the Coordinator. That does not change here. Autopilot removes the **approval gate**
-between steps; it does not move the decision anywhere else. No subagent dispatches subagents,
-no subagent chooses the next phase, and every dispatch still routes through `pnpm lanes wave`.
+You are the Coordinator. Autopilot removes the **approval gate** between steps; it moves the
+decision nowhere else. No subagent dispatches subagents, no subagent chooses the next phase,
+and every dispatch still routes through `pnpm lanes wave` / `pnpm lanes decide`.
 
-Autopilot **owns** phase progression. If `/loop` is running underneath, it exists only to wake
-this session up for the next iteration — it never decides a phase, a wave, or a dispatch.
+**Core rule: do the cheapest sufficient thing.** Run the lowest validation tier that
+establishes the evidence, dispatch the fewest agents that produce it, re-read the least
+context that answers the question. Autopilot is an executor, not a ceremony engine. Removing
+overhead is the goal; removing a quality control is not.
 
-## Running this by hand, or having the supervisor run it
-
-`pnpm autopilot` executes everything below across sessions without a human: it derives the
-action from `pnpm flow next`, launches one disposable Claude worker per action, owns the GREEN
-check in §3 itself, and escalates only on the six triggers. A worker that runs out of context
-writes `ROTATE` and a fresh one continues the same task — the `/clear`-and-resume ceremony is
-gone. `docs/AUTOPILOT_SUPERVISOR.md` is the mechanism; `docs/decisions/0012` is why.
-
-This skill is the same loop performed by hand, and it stays the debugging path: run it when the
-question is _why did it do that_, or when you want to watch one phase closely. Nothing below
-changes depending on which is driving. If you are a supervised worker, you already have one
-task and one envelope to write — do that, and do not re-enter the loop.
+`pnpm autopilot` runs this loop across sessions without a human — one disposable worker per
+action, `ROTATE` when a worker runs out of context. `docs/AUTOPILOT_SUPERVISOR.md` is the
+mechanism, `docs/decisions/0012` is why. This skill is the same loop by hand and stays the
+debugging path. If you are a supervised worker you already have one task and one envelope:
+do that, do not re-enter the loop.
 
 ## 0. Charter — once per invocation
 
-Run `grill-with-docs`. Land the objective and the standing preferences as ADRs and glossary
-entries, per that skill.
+The charter is what makes trigger 3 answerable without asking the human twelve times. Land
+the objective and the standing preferences as a decision record before the first dispatch,
+and write its path into the checkpoint.
 
-This is not ceremony. Trigger 3 asks whether a preference can be inferred; the charter is what
-makes the answer yes. A preference never captured is a question you will ask the human twelve
-times.
-
-Write the charter path into the checkpoint before the first dispatch.
+Grill (`grilling`) **only** what the human's directive left open. A directive that already
+states the objective and the preferences **is** the charter — record it and move. Re-asking
+what was just answered is the overhead this skill exists to delete. `docs/decisions/0011` is
+the shape.
 
 ## 1. Resume — never restart
 
-Read state from disk before every iteration and continue from the **first incomplete action**.
-An autopilot that re-runs finished work burns the context window it needs later.
+Read state from disk and continue from the **first incomplete action**.
 
-| Order | Source                                           | Answers                                                                   |
-| ----- | ------------------------------------------------ | ------------------------------------------------------------------------- |
-| 1     | `.claude/autopilot.local.md`                     | which phase, which wave, which step, what recovery has already been tried |
-| 2     | `pnpm oracle status` / `pnpm lanes wave <phase>` | what is genuinely done and what is unblocked                              |
-| 3     | `.artifacts/handoffs/*.json`                     | per-lane `DONE` / `BLOCKED` with its evidence                             |
-
-**`pnpm lanes wave` exit codes are honest.** `PHASE_COMPLETE: no outstanding work in phase
-<phase>` with exit 0 means the phase is finished — check GREEN (§3), then advance; never enter
-recovery on it. A non-zero exit is a real failure (unknown phase, broken graph, unclassified
-node): RED, go to §4.
+| Order | Source                                       | Answers                                       |
+| ----- | -------------------------------------------- | --------------------------------------------- |
+| 1     | `pnpm flow next`                             | the one next action, with its steps           |
+| 2     | `pnpm oracle status` / `pnpm lanes wave <n>` | what is genuinely done and what is unblocked  |
+| 3     | `.artifacts/handoffs/*.json`                 | per-lane `DONE` / `BLOCKED` with its evidence |
+| 4     | `.claude/autopilot.local.md`                 | recovery history — and nothing else           |
 
 Rows 2 and 3 are authoritative on completion. The checkpoint is authoritative on **recovery
-history only** — it is the one fact with no other home. Where the checkpoint and `oracle`
-disagree about what is done, `oracle` wins and the checkpoint is corrected.
+history only**; where it disagrees with `oracle`, `oracle` wins and the checkpoint is
+corrected.
 
-**Reconcile `step: recovering` before honoring it.** A checkpoint frozen mid-recovery outlives
-the recovery whenever later work lands without the file being rewritten. Before resuming a
-recovery, re-check the named node against row 2. If the oracle reports it `DONE`, or reports it
-ready with the recovery's fix already on its lane branch, the recovery bookkeeping is stale:
-record the attempt's outcome from the evidence on disk, discard the `recovering` step, and
-re-enter the normal loop — the node's required agent chain re-verifies whatever the recovery
-produced. Recovery is resumed only for a red that is reproducible now; it is never resumed
-because the checkpoint says so.
+**`pnpm lanes wave` exit codes are honest.** `PHASE_COMPLETE` with exit 0 means the phase is
+finished — gate it (§3), then advance; never enter recovery on it. Non-zero is a real failure.
 
-The checkpoint:
+**Reconcile `step: recovering` before honoring it.** Re-check the named node against row 2.
+If the oracle reports it `DONE`, or ready with the recovery's fix already on its lane branch,
+the bookkeeping is stale: record the attempt's outcome from the evidence on disk, discard the
+`recovering` step, re-enter the loop. Recovery resumes only for a red reproducible **now**,
+never because the checkpoint says so.
+
+Checkpoint — rewrite at every step boundary, not only on failure:
 
 ```markdown
 ---
@@ -77,109 +67,208 @@ charter: docs/decisions/00NN-<slug>.md
 
 ## Recovery log
 
-### 5a / wave 3 / p5.det-candidate — attempt 1
+### 5a / wave 3 — gate: wave — attempt 1
 
 - diagnosis: <cause, with the evidence that established it>
-- fix: <what changed, and where>
+- fix: <the whole repair set, one entry — what changed and where>
 - narrow validation: <command> → <result>
 - outcome: spent | resolved
 ```
 
-Rewrite it at every step boundary. A checkpoint written only on failure is a checkpoint that is
-wrong exactly when it is needed.
+## 2. The loop — execute what `flow next` returns
 
-## 2. The phase loop
+`pnpm flow next` is the entry point at every iteration. It derives the action from the
+oracle's probes, the gate records and the checkpoint, and returns the action **with its
+steps**. Execute those steps. Re-deriving them in prose is the judgement dispatch `CLAUDE.md`
+forbids, and re-reading the roadmap to confirm what the control plane just told you is the
+context spend this skill exists to remove.
 
-Walk `MVP_PLAN_V3.md`'s execution order — `0 → 1 → 5a → 2 → 3 → 4 → 5b → 6 → 7` — starting at
-the first incomplete phase. Phase numbers are identity, not sequence.
+Execution order is `0 → 1 → 5a → 2 → 3 → 4 → 5b → 6 → 7`. Phase numbers are identity, not
+sequence — `flow next` already walks it.
 
-`pnpm flow next` drives the loop: run it at every iteration and execute the one action it
-returns — DISPATCH, WAVE_GATE, INTEGRATE, REPAIR, PHASE_GATE, ADVANCE_PHASE, BLOCKED,
-COMPLETE. It derives the action from the oracle's probes, the gate records under
-`.artifacts/gates/`, and the checkpoint; re-deriving it in prose is the judgement dispatch
-`CLAUDE.md` forbids.
+| Action          | Level  | Do                                                             |
+| --------------- | ------ | -------------------------------------------------------------- |
+| DISPATCH        | PACKET | §2.1 — Builders, concurrently, up to `max_concurrency`         |
+| INTEGRATE       | WAVE   | `pnpm lanes integrate <ids>`, merge in the printed order       |
+| WAVE_GATE       | WAVE   | §2.2                                                           |
+| PHASE_GATE      | PHASE  | §2.3                                                           |
+| ADVANCE_PHASE   | —      | triggers 2 and 3 against the next segment, rewrite frontmatter |
+| REPAIR          | —      | §4                                                             |
+| BLOCKED / ERROR | —      | trigger 5 — stop, report with evidence                         |
+| COMPLETE        | —      | done                                                           |
 
-For each phase:
+**Framing is conditional.** Run `frame-phase` for the next ready wave only when it has open
+decisions. `open decisions: none` means framing is complete — proceed straight to dispatch. An
+open decision the charter, `docs/decisions/` or the plan cannot settle is trigger 3: ask, do
+not default it.
 
-1. **Frame** — `frame-phase`. Its own rule stands: a phase framed with one open decision
-   remaining stops mid-wave. An open decision that the charter, `docs/decisions/` or the plan
-   cannot settle is trigger 3 — ask, do not default it.
-2. **Dispatch** — when `flow next` says DISPATCH: `pnpm lanes wave <phase>`, then the
-   `dispatch-lanes` procedure verbatim. Read `execution_decision`; never re-derive it.
-   Sequential is the default.
-3. **Gate** — the GREEN check in §3.
-4. **Advance** — GREEN advances immediately, no permission asked. Before advancing, check
-   triggers 2 and 3 against the _next_ phase — a phase whose framing is already known to need a
-   scope decision is asked about before it starts, not after a wave of Builders has shipped.
-5. **Checkpoint** — write it, then iterate.
+Then rewrite the checkpoint and ask `flow next` again. That is the whole loop.
+
+### 2.1 PACKET — Builder → targeted validation → DONE
+
+One Builder per packet. Builder owns implementation **and** the immediate repair of obvious
+failures — a failing assertion it just wrote is not a gate failure and does not need a second
+agent.
+
+Validation is the packet's own surface only: affected unit tests, relevant integration tests,
+typecheck and lint for the touched packages, the packet's `validate` commands, `pnpm lanes
+check <id>`. The pre-commit ladder (`scripts/precommit.ts`) covers the staged rest. **Never
+run `pnpm gates` per packet** — that is the wave gate's job, once, over the integrated wave.
+
+No Validator, Reviewer, Tester or Watchdog per packet unless the printed `review_cadence`
+block puts it there (only the `contract` class does), or an `activationConditions` entry in
+`.claude/rules/agent-activation.json` actually fires. Follow the printed cadence: never re-add
+a review it removed, never waive one it kept.
+
+Dispatch **every** packet `flow next` lists as dispatchable, concurrently, up to
+`max_concurrency` from `pnpm lanes decide` — do not serialize independent lanes by hand, and
+do not hold a ready lane back for a wave boundary that has not arrived. When the decision is
+`sequential`, that is the fifteen requirements failing, not a preference: read `blockers`,
+repair what is repairable, do not override it. Worktrees per `dispatch-lanes` §3. As each lane
+returns, validate it while the others keep working; no barrier, no idle Builder.
+
+### 2.2 WAVE — integration evidence only
+
+`pnpm gates` once over the integrated wave, plus the `perWave` agents `flow next` prints (one
+dispatch each, over the wave's **combined** diff), plus whatever interaction checks the
+changed components actually need. Flush `.artifacts/backlog/pending.md` into `BACKLOG.md`,
+then `pnpm flow record wave …`.
+
+Not `gates:full` — unless this wave is also the phase boundary, or a specific failure names an
+isolation problem.
+
+### 2.3 PHASE — the only full gate
+
+Only when every in-scope packet is `DONE` and wave-gated:
+
+1. `pnpm gates:full`
+2. `validate-phase` against the phase Definition of Done
+3. the `perPhase` agents `flow next` prints — Reviewer, and Tester where the class calls for it
+4. flush the pending backlog
+5. `pnpm flow record phase …` when GREEN
+
+GREEN advances **immediately, without asking**. Check triggers 2 and 3 against the next
+segment before its first dispatch — a phase already known to need a scope decision is asked
+about before it starts, not after a wave of Builders has shipped.
+
+### 2.4 Validation tiers
+
+| Tier   | Scope                                  | Cost            |
+| ------ | -------------------------------------- | --------------- |
+| FAST   | targeted tests, typecheck, lint, smoke | inside the lane |
+| PACKET | the packet's acceptance commands       | per packet      |
+| WAVE   | `pnpm gates` + integration checks      | once per wave   |
+| PHASE  | `gates:full` + DoD + Reviewer/Tester   | once per phase  |
+
+Always the lowest tier that establishes sufficient evidence. Re-validating an unchanged
+surface produces no new information.
 
 ## 3. GREEN — four sources that must agree
 
-GREEN is not an exit code and it is not an agent saying so. All four, together:
-
 | Source             | Satisfied by                                                  |
 | ------------------ | ------------------------------------------------------------- |
-| Required gates     | `pnpm gates` (or the packet's own `validate` commands) exit 0 |
+| Required gates     | `pnpm gates:full` (or the tier's own commands) exit 0         |
 | Definition of Done | `validate-phase` reports every checkbox met, with evidence    |
 | Expected artifacts | the phase's deliverables exist on disk, at their stated paths |
 | Failure evidence   | no earlier red is still unexplained                           |
 
-Any one alone is a green that lies. `pnpm gates` passing while a `NOT MET` checkbox stands is
-RED. A lane reporting `DONE` with a `deferred` acceptance criterion is RED — deferred, skipped
-and unknown are all unverified.
+Any one alone is a green that lies. Gates passing while a `NOT MET` checkbox stands is RED. A
+lane reporting `DONE` with a `deferred` acceptance criterion is RED — deferred, skipped and
+unknown are all unverified.
 
-**A finding tagged to another node is not an unexplained red for this node.** `review-diff` §5
-tags every finding `this-node`, a `<node-id>`, or `plan`. Only the `this-node` count feeds the
-Failure-evidence row. A `<node-id>` finding is explained the moment it is filed to
-`BACKLOG.md` with its trigger — it is that node's acceptance criterion, and holding this gate
-open on it makes every gate inherit the whole downstream design.
+**A finding tagged to another node is not an unexplained red for this node.** Only the
+`this-node` count feeds the Failure-evidence row; a `<node-id>` finding is explained the moment
+it is filed to `BACKLOG.md` with its trigger (`review-diff` §5).
 
-Agent cadence is **lifecycle-derived**: each change class in
-`.claude/rules/agent-activation.json` carries `perPacket` / `perWave` / `perPhase` /
-`conditional`, and `pnpm lanes wave` / `pnpm lanes decide` turn that into the printed
-`review_cadence` block mechanically — review per wave for feature, validation per wave and
-review at the phase gate for behavior, the full per-packet chain only for contract. Follow
-the printed cadence; never re-add a per-packet review the decision removed, and never waive
-one it kept.
+Anything short of all four is RED → §4.
 
-Anything short of all four is RED. Go to §4.
+## 4. Bounded repair — one set, two strategies, per gate
 
-## 4. Bounded recovery — two strategies, not two retries
+An attempt is a **materially different, evidence-driven strategy** — running the same command
+again is not one, and neither is the same fix applied twice.
 
-An attempt is a **materially different, evidence-driven strategy**. Running the same command
-again is not an attempt, and neither is the same fix applied twice.
+The attempt belongs to the **gate**, not to a finding. Collect every actionable finding from
+the failed gate into **one coherent repair set** and hand it to **one** Builder. One dispatch
+per finding is overhead, not rigour.
 
 ```
-attempt N, for N in 1..2:
-  diagnose          → Diagnostician, from BLOCKED — never from a guessed FAILED cause
-  targeted fix      → Builder, scoped to that diagnosed cause and nothing else
-  targeted validate → the narrowest command that exercises only this fix
-    failed  → this attempt is spent. Attempt N+1 must change the diagnosis or change
-              the fix strategy. Repeating either is not an attempt.
-    passed  → re-run the full §3 GREEN check, all four sources
+attempt N, for N in 1..2, against this gate:
+  diagnose      → only when the cause is unclear (Diagnostician, from BLOCKED).
+                  A reproduced, obvious cause goes straight to Builder.
+  repair        → one Builder, the whole set, scoped to the diagnosed causes
+  revalidate    → the failed layer again, plus the narrowest checks that prove no regression
+    failed  → this attempt is spent. N+1 must change the diagnosis or change the strategy.
+              The same fix twice, or the same command again, is not an attempt.
+    passed  → re-run the failed gate; §3 in full only if the failed gate was the phase gate
 ```
 
-Both attempts spent without GREEN → **trigger 5**. Stop. Report `BLOCKED` in the
-`dispatch-lanes` §7 shape, with both attempts' evidence quoted verbatim, and ask.
+Do not restart the phase workflow after a repair. Do not re-run tiers the repair could not
+have touched.
 
-Never retry silently. Never re-run until green — a second green does not erase a first red.
+Both attempts spent without GREEN → **trigger 5**. Stop, report `BLOCKED` in the
+`dispatch-lanes` §7 shape with both attempts' evidence quoted verbatim, ask. A standing record
+may raise the bound (ADR 0011 does, to three materially different strategies); an attempt IS a
+strategy, so raising the count raises the escalation bar and must name the record —
+`scripts/autopilot/repair-policy.ts` enforces that.
 
-One lane failing does not stop the others: `halts_if_failed` names exactly who must stop, and
-everything in `independent_of` keeps going.
+One lane failing does not stop the others: `halts_if_failed` names who must stop, everything in
+`independent_of` keeps going.
 
-## 5. The six triggers
+## 5. Dispatching agents — smallest useful context
 
-They are in `CLAUDE.md` `## Plan discipline`. Read them there; do not restate them from memory
-here or in a handoff — a trigger paraphrased is a trigger widened.
+Every dispatch carries: the objective, the acceptance criteria, the relevant files and modules,
+directly related decision records, the current diff where it applies, and the exact validation
+commands. `pnpm oracle packet <id>` produces exactly that for a packet. Never "read the plan",
+never "read the repo" — an agent may follow the imports it needs and should not explore past
+them.
 
-Check them **before** each dispatch and each phase advance. When one fires, stop and ask with
-the evidence attached. When none fires, decide, record the assumption, and continue.
+**Reviewer blocks the gate only on** correctness, regressions, DoD violations, architectural
+boundary violations, security/reliability, and maintainability hazards this diff introduced.
+Style preferences, speculative improvements, optional refactors, alternative designs and
+unrelated debt become `BACKLOG.md` items with their trigger — never blockers.
+
+**Tester** falsifies the claims the work makes; it never redesigns the implementation. At the
+phase gate it targets changed behavior, the DoD, regression boundaries and previously repaired
+failures. Re-investigating proven, unchanged behavior without evidence of regression is spend,
+not evidence.
+
+## 6. The six triggers
+
+They are in `CLAUDE.md` `## Plan discipline`. Read them there — a trigger paraphrased is a
+trigger widened. Check them **before** each dispatch and each phase advance. When one fires,
+stop and ask with the evidence attached. When none fires, decide, record the assumption, and
+continue. "Shall I continue?" is not one of them.
+
+## Reporting
+
+```text
+Phase 2 — 8/11 done
+Running: p2.foo + p2.bar
+Gate: not due
+Blocked: none
+```
+
+```text
+Phase 2 gate — RED
+Repair attempt: 1/2
+Findings: S1–S4, D1/D2
+Next: Builder → targeted validation → re-gate
+```
+
+Detail goes to `.artifacts/`; return paths, not pasted content. Do not narrate internal agent
+activity that does not change the execution state. Never omit a failure, a blocker, or missing
+evidence — concision applies to what you add, never to what you observed.
 
 ## Red flags
 
 | Thought                                 | Reality                                                           |
 | --------------------------------------- | ----------------------------------------------------------------- |
 | "Shall I confirm before continuing?"    | Not a trigger. Continue.                                          |
+| "I'll re-read the plan to be sure"      | `flow next` already answered. Read only what you will edit.       |
+| "I'll run `gates:full` to be safe"      | Wave gate is `pnpm gates`. The full gate is the phase boundary.   |
+| "One Builder per finding is cleaner"    | One coherent repair set, one dispatch. Attempts belong to gates.  |
+| "I'll run these lanes one at a time"    | `mode` and `max_concurrency` decided that. Never serialize more.  |
+| "Reviewer flagged style — gate is RED"  | Backlog it with its trigger. Only `this-node` correctness blocks. |
 | "Gates are green, that's GREEN"         | One of four sources. Check the other three.                       |
 | "I'll re-run the test, it might pass"   | A second green does not erase a first red. Not an attempt.        |
 | "Same fix, but more thorough"           | Not a second strategy. The attempt is already spent.              |
@@ -190,5 +279,5 @@ the evidence attached. When none fires, decide, record the assumption, and conti
 
 ## Done when
 
-The last phase in the execution order is GREEN by all four sources, or a trigger has fired and
-the human has the evidence. Report which of the two, and never both.
+`flow next` returns COMPLETE with the last phase GREEN by all four sources, or a trigger has
+fired and the human has the evidence. Report which of the two, never both.
