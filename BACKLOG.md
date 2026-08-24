@@ -2139,3 +2139,249 @@ phase gate; it blocks nothing there.
 not re-executed against `run-lifecycle.integration.spec.ts:594` directly (that catch is reasoned
 from reading, not run), and no mutation was attempted against `stale-threshold.provider.ts` or
 `runs.service.ts`'s single-clock-read invariant.
+
+## Discovered at the Phase 2 phase gate, repair 1 (2026-08-23)
+
+### `DATABASE_URL`'s `?schema=` is honoured by the Prisma CLI and ignored by the runtime client
+
+**Source:** Phase 2 phase gate, handed to the repair lane as an unfiled item and explicitly
+placed out of the repair's scope. Directly adjacent to the existing entry "Lane schema
+isolation is a no-op: `?schema=` is dropped, so every parallel lane writes to `public`"
+(`BACKLOG.md`, "Discovered in the p2.run-liveness repair (2026-08-21)") — read that one first;
+this is the half it states as a consequence rather than as the defect.
+
+One environment variable, two consumers, two different answers:
+
+- `prisma migrate deploy` / `prisma migrate dev` parse `?schema=` out of `DATABASE_URL` and
+  create and migrate **that** schema.
+- The runtime client does not. `platform/database/src/index.ts:23` builds
+  `new PrismaPg({ connectionString })`; `node-postgres` has no `schema` connection parameter,
+  and `PrismaPg` takes the schema as a separate second argument. The client resolves to
+  `public` whatever the URL says.
+
+So a `DATABASE_URL` carrying `?schema=X` migrates `X` and then reads and writes `public` — the
+tables exist, in the wrong place, and the first symptom is `relation "public.IngestedEvent"
+does not exist` (P2021 / 42P01) rather than anything naming the schema. Every checked-in URL
+in the tree carries `?schema=public` (`.env.example:12`, `.github/workflows/ci.yml:15`,
+`docker-compose.yml:37`, `docker/api.Dockerfile:44`, `README.md:79`), which is why nothing has
+diverged in practice: the parameter agrees with the value it is being ignored in favour of.
+
+**Deferred because** it is not a Phase 2 DoD line and the repair lane's scope boundary named it
+out. **Worth doing when** anything sets `?schema=` to something other than `public` — parallel
+lane isolation (the entry above, already trigger-tagged "before the next wave that dispatches
+two or more lanes touching Postgres"), a multi-tenant deployment, or a per-suite integration
+schema. **Already ruled out:** removing `?schema=` from the URLs to make the two agree by
+subtraction — the CLI needs it, and dropping it would silently move migrations rather than fix
+the divergence. The fix is to pass the schema to `PrismaPg` as its second argument, parsed from
+the same URL, so the two consumers read one value.
+
+### The SDK's counters lose events at shutdown-timeout: `recorded=10 delivered=0 droppedUndeliverable=0`
+
+**Source:** Phase 2 phase-gate Tester, "Running the script with the API down does not crash the
+script, harsher than the test" (`.artifacts/evidence/2/phase-gate/tester/README.md:85-102`,
+raw at `raw/hung-api-stdout.txt`). Recorded there as "observation only, not a defect". Handed
+to the repair lane as an unfiled item and placed out of its scope.
+
+The Tester re-ran the API-down case against a **black-hole** port — TCP accepted, never
+answered — instead of the closed port `platform/telemetry-sdk/test/process-exit.spec.ts:81`
+uses. That is a different code path (`requestTimeoutMs` / `AbortSignal`, not ECONNREFUSED).
+The host behaved correctly: `HOST_EXIT=0`, 6s elapsed, 0 bytes of stderr, no hang, no crash.
+
+The counters did not:
+
+    HOST-OK ... recorded=10 delivered=0 undeliverable=0
+
+At shutdown-timeout the ten events are accounted for in `queued` alone. A consumer reading only
+`delivered` and `droppedUndeliverable` — the two counters that read as "what happened to my
+events" — sees ten events vanish with no bucket claiming them. Contrast the reachable-but-
+erroring case (503 on every attempt), where the same host reports
+`recorded=10 delivered=0 undeliverable=10` and the arithmetic closes.
+
+**Deferred because** no Phase 2 DoD line covers SDK counter completeness, and the shipped
+behaviour under test — "does not crash the script" — is met. **Worth doing when** anything
+starts _asserting_ on these counters as an accounting identity: the natural invariant is
+`recorded == delivered + droppedUndeliverable + queued`, and Phase 6's mock scenarios plus any
+future SDK observability surface would want it to hold at shutdown as well as in flight. Note
+that `stale-on-kill/fixtures/abandoned-run.ts:51` already gates on `stats().delivered`, so the
+counters are load-bearing in at least one test today. **Not yet decided:** whether the fix is a
+`droppedOnShutdown` bucket of its own or folding the timed-out batch into
+`droppedUndeliverable` — they say different things to a reader and the choice is a small
+contract decision, not an implementation detail.
+
+---
+
+## Discovered at the Phase 2 phase gate, repair 2 (2026-08-23)
+
+### `fetchRunDetail` reads every non-2xx as "no such run", so an API outage renders Next's not-found page
+
+**Source:** Phase 2 phase-gate Tester, attempt 2, finding SR-1
+(`.artifacts/evidence/2/phase-gate-2/tester/README.md` §8, raw at `raw/SR1-404-oracle.txt`).
+Confirmed by mutation, not by reading. Handed to repair 2 and explicitly placed out of its
+scope — repair 2 owns the two blocking green-that-lies findings and nothing else.
+
+`platform/dashboard/src/lib/runs-api.ts:81-86` distinguishes 404 from every other non-2xx: a
+404 becomes `{ kind: 'not-found' }`, which `runs/[id]/page.tsx:23` turns into `notFound()`, and
+anything else becomes an HTTP-error failure card. Collapsing that — treating every non-2xx as
+`not-found` — leaves the dashboard suite at **31/31 EXIT=0**, because the only assertion on the
+branch is `rejects.toThrow()` at `runs-pages.spec.ts:366-374`, and `notFound()` and any other
+throw are the same event to it. There is no detail-page non-2xx test at all.
+
+Consequence if it ever regresses: a 503 from a degraded API renders "this run does not exist"
+— ERR-3's four error classes collapsed at the boundary, and the reader sent to look for a
+missing run instead of a sick service. Severity is low today (the code is correct; only the
+alarm is missing) and it is independent of the two findings repair 2 closed.
+
+**Worth doing when** anything else touches `runs-api.ts`'s failure classification, or at the
+next hardening pass over the Dashboard. **The fix is a test, not a change:** a detail-page case
+stubbing 503 that asserts the failure card and `HTTP 503` (the list page already has exactly
+this test), plus tightening `rejects.toThrow()` to name what `notFound()` actually throws so
+the 404 case and the outage case cannot satisfy one another. **Already ruled out:** asserting
+only that the two branches differ — that passes on any two distinct throws and is the same
+shape of oracle that let this through.
+
+---
+
+## Discovered at the Phase 2 phase gate, round 3 — scoped Reviewer over `2ebf0d8..ecb54df` (2026-08-24)
+
+### Create the `killAndWait` spawn-failure entry that two repairs both reported as already filed
+
+**Source:** Phase 2 phase-gate Reviewer, round 3, finding S1
+(`.artifacts/evidence/2/phase-gate-3/reviewer/review-diff.md`). Owner `p2.stale-on-kill`.
+Non-blocking.
+
+**This entry exists because the finding did not.** `.artifacts/evidence/2/phase-gate-2/repair-2/README.md:128`
+asserts "Reviewer S-2, Sc-2, Sc-4 — BACKLOG, untouched." For S-2 that was false:
+
+    $ grep -n "killAndWait\|liveHosts\|S-2\|spawn-failure" BACKLOG.md
+    (exit 1)
+    $ grep -n "killAndWait\|liveHosts\|S-2" .artifacts/backlog/pending.md
+    (exit 1)
+
+The finding was carried in prose across two repairs and never written down, while being cited
+twice as filed. `review-diff` §5 names this exact failure mode. Recording that here because the
+process defect is the more expensive half: a finding believed filed is never re-derived.
+
+**The technical substance, now at two sites.** `platform/api/test/nested-steps/nested-steps.integration.spec.ts:384-398`
+inlines the logic of `killAndWait` (`platform/api/test/stale-on-kill/kill-mid-run.integration.spec.ts:164-172`)
+without naming it:
+
+```ts
+if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+return new Promise<void>((resolve) => {
+  child.once('close', () => resolve());
+  child.kill('SIGKILL');
+});
+```
+
+On a spawn failure the child emits `error` then `close` while `exitCode` and `signalCode` both
+stay `null`. A reaper running after that `close` attaches a `once('close')` listener to a process
+that will never emit again, and the hook hangs to `hookTimeout: 180_000`.
+
+**Deferred because** it is reachable only if `spawn(process.execPath, ...)` itself fails, and no
+Phase 2 DoD line covers fixture-host teardown. It was never reproduced — the reasoning is from
+Node's `error`/`close` semantics, read against both files. **Worth doing when** the next test file
+spawns a fixture host, or anything changes `killAndWait`. **Prefer** extracting one shared helper
+over a third copy; the maintainability half of the finding is that the second copy carries no
+reference back to the first, so a fix at the named site silently misses it. **Already ruled out:**
+fixing only `kill-mid-run.integration.spec.ts` — that is what leaves the second site behind.
+
+**Trigger:** the next test file that spawns a fixture host, or any change to `killAndWait`.
+
+### `summaryCard()` couples to the summary card being first — file the trigger, do not loosen the oracle
+
+**Source:** Phase 2 phase-gate Reviewer, round 3, finding S3, reviewing a coupling the Builder
+flagged itself. Owner `p4.run-explorer` / `p4.run-summary`. Non-blocking.
+
+`platform/dashboard/src/app/runs/runs-pages.spec.ts`'s `summaryCard()` selects the **first**
+`<section class="card">` on `/runs/[id]`. Inserting a card above `RunSummaryCard` fails loudly.
+
+**The trade is correct as made and the Reviewer would not change it.** The alternative — a
+`data-testid` or stable class — means editing `runs/[id]/page.tsx` to suit a test, in a commit
+that correctly declared itself coverage-only and touched no product markup. The coupling also
+diagnoses itself rather than merely failing: mutation D2c's real output was
+`expected { title: '4 steps', rows: [] } to strictly equal { title: 'checkout-agent', …(1) }` —
+the intruding card names itself by its own title in the first field of the diff.
+
+**The residual risk is not the failure, it is the repair.** The natural response to that red is
+to loosen the oracle rather than add a hook, and a looser selector — any card containing a "Run
+id" row — reintroduces the exact defect this repair closed: an unscoped claim about the whole
+document. That is what this entry exists to say.
+
+**Worth doing when** a node adds a card above `RunSummaryCard`: add a stable hook to the page at
+that moment, and keep the oracle scoped. **Already ruled out:** widening the selector.
+
+**Trigger:** any node adding a `<section class="card">` above `RunSummaryCard` on `/runs/[id]` —
+`p4.run-explorer` and `p4.run-summary` are the named candidates.
+
+### The SDK counter entry's own stated condition is now met at a second site
+
+**Source:** Phase 2 phase-gate Reviewer, round 3, finding S2. Owner `p2.sdk-core`. Non-blocking.
+Amends "The SDK's counters lose events at shutdown-timeout" (flushed above, this same section
+group).
+
+That entry says it is worth doing "when anything starts _asserting_ on these counters as an
+accounting identity" and names `stale-on-kill/fixtures/abandoned-run.ts:51` as the first such
+site. `nested-steps.integration.spec.ts:426-428` is now the second — it asserts `recorded` is 10,
+`delivered` is 10 and `undeliverable` is 0. The condition is met; the entry is no longer waiting
+on a hypothetical.
+
+**Not a green that lies.** The Reviewer checked the direction of the risk: at shutdown-timeout
+the counters report `delivered=0`, so the new test goes **red**, not falsely green, and the
+parent-chain `toStrictEqual` catches missing steps regardless. Against a live local API with
+`requestTimeoutMs: 2_000` the path is not expected at all. This is a flake-surface note.
+
+**Trigger:** unchanged from the parent entry, but now firing on two call sites rather than one.
+
+### Two assertions in `nested-steps.integration.spec.ts` are unreachable under NEST-1, so their ability to fail is unproven
+
+**Source:** Phase 2 phase-gate Tester, round 3, declared unknowns
+(`.artifacts/evidence/2/phase-gate-3/tester/README.md`). Owner `p2.runs-api`. Non-blocking.
+
+NEST-1 reddens `nested-steps.integration.spec.ts` at the HTTP parent-chain assertion (`:328`).
+Vitest aborts the test there, so two later assertions in the same test **never execute** under
+that mutation and are therefore mutation-unverified:
+
+- the Postgres read-back at `~:344`, the spec's advertised **second interface** (response and
+  stored row must agree);
+- the name-to-status paired negative at `~:353`.
+
+They are not known-broken — they are unattested. The spec's headline claim is that it checks the
+chain twice, through two interfaces; only the first is proven capable of failing.
+
+**Deferred because** the alarm the repair owed is proven, and the DoD clause ("create nested
+Steps") is discharged by the assertion that does fire. **Worth doing when** anything changes the
+persistence edge for Steps, or the next time this file is touched. **The mutation that would
+prove it** must diverge storage from the response — mutating the read path alone cannot, since
+both assertions read the same chain. **Already ruled out:** reordering so the Postgres assertion
+runs first — that just moves the unproven half, it does not prove either.
+
+**Trigger:** any change to Step persistence or to `nested-steps.integration.spec.ts`.
+
+### `platform/telemetry-sdk/dist/` is gitignored, so `git status` cannot police a mutated build artifact
+
+**Source:** Phase 2 phase-gate Tester, round 3, residual risk 2. Owner `p2.sdk-core`.
+Non-blocking, but it is a **method** hazard for every future mutation pass.
+
+The spawned fixture host imports the SDK by package name through its `exports` map, which
+resolves to `dist/`, **not** `src/`. So a source mutation only reaches the host after a rebuild —
+and `dist/` is gitignored (`.gitignore:2`). Two consequences, in opposite directions:
+
+1. A mutation pass that forgets to rebuild gets a **false GREEN** — the RED it expected never
+   appears because the host is still running the pristine artifact. The round-3 Tester guarded
+   against exactly this by confirming `dist/handles.js:35` carried the mutation before trusting
+   NEST-1's red.
+2. A mutation pass that rebuilds but restores only `src/` leaves a **mutated artifact on disk**
+   that `git status --porcelain` reports as a clean tree. The next suite to run picks it up.
+
+The round-3 pass hash-verified the rebuilt artifact back to `e3056557a57ec0d964fea246f2cc5c7315a4f6d6`.
+That was discipline, not a mechanism.
+
+**Deferred because** no DoD line covers mutation-harness hygiene and the one pass that hit it
+handled it correctly. **Worth doing when** any future mutation pass targets the SDK — the cheap
+form is a documented pre/post `sha1sum` step in the mutation procedure; the stronger form is
+having the harness rebuild-and-verify rather than asking the agent to remember. **Already ruled
+out:** un-ignoring `dist/` — it is a build artifact and checking it in trades this hazard for a
+worse one.
+
+**Trigger:** the next mutation pass against `platform/telemetry-sdk`, or any change to how the
+fixture hosts resolve the SDK.
