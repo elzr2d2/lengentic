@@ -16,7 +16,7 @@
  * simulated latency the same way `platform/telemetry-sdk/test/support/fake-scheduler.ts`
  * drives the SDK's — a fake clock, not a real wait (`docs/ENGINEERING_STANDARDS.md` TEST-1).
  */
-import { systemScheduler, type Scheduler } from '@lengentic/telemetry-sdk';
+import { systemScheduler, type Scheduler } from '../index';
 
 import { hashToSeed, mulberry32 } from './prng';
 
@@ -96,7 +96,40 @@ export interface MockProviderConfig {
   readonly scheduler?: Scheduler;
 }
 
+/**
+ * `deriveSeed` folds `seed`/`contextSeed` through `^` and `mulberry32` folds it through
+ * `| 0` (`ToInt32`) — both lossless, and therefore collision-free between distinct inputs,
+ * only inside the 32-bit signed integer range. Outside it, `ToInt32` wraps: `NaN`, `1.5`,
+ * `2**32 + 1` and `1e21` all collapse to the same 32-bit value as some in-range seed, so
+ * "different seed → different output" silently stops holding for a caller who never sees an
+ * error. `failureRate` and `delayMs` are already validated; `seed`/`contextSeed` were the
+ * one config field that was not.
+ */
+const MIN_SEED = -(2 ** 31);
+const MAX_SEED = 2 ** 31 - 1;
+
+function isValidSeed(value: number): boolean {
+  return Number.isInteger(value) && value >= MIN_SEED && value <= MAX_SEED;
+}
+
+/** Split out of `validateConfig` to keep its own cyclomatic complexity under the repo's
+ *  ESLint ceiling — this is one self-contained check, not a shared branch. */
+function validateSeeds(config: MockProviderConfig): void {
+  if (!isValidSeed(config.seed)) {
+    throw new MockProviderConfigError(
+      `MockProvider: seed must be a 32-bit signed integer (${MIN_SEED}..${MAX_SEED}), got ${config.seed}`,
+    );
+  }
+  if (config.contextSeed !== undefined && !isValidSeed(config.contextSeed)) {
+    throw new MockProviderConfigError(
+      `MockProvider: contextSeed must be a 32-bit signed integer (${MIN_SEED}..${MAX_SEED}), got ${config.contextSeed}`,
+    );
+  }
+}
+
 function validateConfig(config: MockProviderConfig): void {
+  validateSeeds(config);
+
   const failureRate = config.failureRate ?? 0;
   if (!Number.isFinite(failureRate) || failureRate < 0 || failureRate > 1) {
     throw new MockProviderConfigError(
@@ -201,13 +234,21 @@ export class MockProvider {
     };
 
     return new Promise<MockProviderResponse>((resolve, reject) => {
+      // `keepProcessAlive: true`, not `false`. This timer's callback is what settles the
+      // promise the caller is `await`ing — foreground work, not ordinary background
+      // telemetry (`platform/telemetry-sdk/src/scheduler.ts`'s own `ScheduleOptions` doc).
+      // With `false` under the default `systemScheduler`, the timer is `unref()`'d and a
+      // short-lived script whose only remaining work is this `await` can exit 0 before the
+      // timer ever fires — no rejection, no resolution, no error, just an abandoned await.
+      // The timer is always bounded by `delay`, so keeping the process alive for it can
+      // never hang a caller that awaits `invoke()`.
       this.scheduler.schedule(
         () => {
           if (failed) reject(new MockProviderFailure(step, callIndex));
           else resolve(response);
         },
         delay,
-        { keepProcessAlive: false },
+        { keepProcessAlive: true },
       );
     });
   }

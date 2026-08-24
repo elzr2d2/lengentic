@@ -4,7 +4,7 @@
  * `seed.ts`/`telemetry.ts` directly, so this directory has one entry the same way the SDK
  * and the Playground composition root each have exactly one (`CLAUDE.md` `## Architecture`).
  */
-export { createSeededComponents } from './seed';
+export { createSeededComponents, SeededComponentsConfigError } from './seed';
 export type { SeededClockOptions, SeededComponents } from './seed';
 
 export { createSeededPlaygroundTelemetry } from './telemetry';

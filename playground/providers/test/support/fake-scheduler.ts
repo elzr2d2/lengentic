@@ -7,7 +7,7 @@
  * `mock-provider.spec.ts` assert `MockProvider`'s configured delay actually withholds
  * resolution, without a real wait (`docs/ENGINEERING_STANDARDS.md` TEST-1).
  */
-import type { CancelTimer, Scheduler } from '@lengentic/telemetry-sdk';
+import type { CancelTimer, Scheduler } from '../../../index';
 
 interface PendingTimer {
   readonly at: number;

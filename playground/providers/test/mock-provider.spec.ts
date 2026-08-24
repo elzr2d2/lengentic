@@ -214,3 +214,35 @@ void describe('MockProvider — misuse', () => {
     await assert.rejects(provider.invoke({ step: '' }), MockProviderConfigError);
   });
 });
+
+void describe('MockProvider — seed validation (R4: seed aliasing)', () => {
+  // `deriveSeed`/`mulberry32` fold `seed` through `ToInt32` (`| 0`), which is lossless only
+  // inside the 32-bit signed integer range. Outside it, distinct seeds a caller reasonably
+  // believes are different collapse to the same internal value —
+  // `.artifacts/evidence/3/wave2-gate/validator/raw/determinism-seed-collision.txt` measured
+  // this for the sibling `createSeededComponents`; the same root cause applies here.
+  void it('NEGATIVE — a valid boundary seed (32-bit min/max) is accepted', () => {
+    assert.doesNotThrow(() => new MockProvider({ seed: -(2 ** 31) }));
+    assert.doesNotThrow(() => new MockProvider({ seed: 2 ** 31 - 1 }));
+  });
+
+  void it('rejects seed: NaN, which would otherwise be byte-identical to seed 0', () => {
+    assert.throws(() => new MockProvider({ seed: Number.NaN }), MockProviderConfigError);
+  });
+
+  void it('rejects a non-integer seed', () => {
+    assert.throws(() => new MockProvider({ seed: 1.5 }), MockProviderConfigError);
+  });
+
+  void it('rejects a seed outside the 32-bit signed integer range', () => {
+    assert.throws(() => new MockProvider({ seed: 2 ** 32 + 1 }), MockProviderConfigError);
+    assert.throws(() => new MockProvider({ seed: 1e21 }), MockProviderConfigError);
+  });
+
+  void it('rejects an out-of-range contextSeed, independently of a valid seed', () => {
+    assert.throws(
+      () => new MockProvider({ seed: 1, contextSeed: 1 + 2 ** 32 }),
+      MockProviderConfigError,
+    );
+  });
+});

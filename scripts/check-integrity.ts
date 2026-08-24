@@ -21,6 +21,9 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import ts from 'typescript';
 
 const REPO = resolve(import.meta.dirname, '..');
 const ROOTS = ['platform', 'playground', 'spike', 'scripts'];
@@ -32,14 +35,33 @@ const INTEGRATION_FILE = /integration/i;
 
 type Severity = 'BLOCK' | 'WARN';
 
+interface ScanHit {
+  readonly line: number;
+  readonly text: string;
+  readonly reason: string;
+}
+
 interface Rule {
   id: string;
   severity: Severity;
   what: string;
   /** Which files this rule reads. */
   applies: (path: string) => boolean;
-  /** Line-level detector. Return a reason to report a hit. */
-  test: (line: string, path: string) => string | null;
+  /**
+   * Line-level detector. Return a reason to report a hit. Safe only for patterns that
+   * cannot be defeated by line-wrapping or hidden inside a string literal — see `scanFile`
+   * for anything that has to see a call's full, unwrapped argument list.
+   */
+  test?: (line: string, path: string) => string | null;
+  /**
+   * Whole-file, AST-based detector. Exists because a single line is the wrong shape for
+   * "does this test call carry a `{ skip: true }` option": prettier is free to wrap that
+   * call's arguments onto their own lines at this repo's own `printWidth`, and a test title
+   * is free to contain `)` or `, { skip: true }` as ordinary text. A real parse sees past
+   * both — an object literal argument's properties are unaffected by formatting and a
+   * string literal's contents are never mistaken for syntax.
+   */
+  scanFile?: (content: string, path: string) => ScanHit[];
 }
 
 interface Hit {
@@ -56,21 +78,148 @@ const isTestOrConfig = (p: string) => isTest(p) || isConfig(p);
 
 /**
  * `node:test` does not only spell a focus or a skip as `test.only(...)` / `test.skip(...)`.
- * It also takes them as an options object — `test('name', { skip: true }, fn)` — which the
- * dotted-form patterns below cannot see. A suite written in that idiom could carry a hidden
- * skip straight through a CLEAN scan, which is the exact failure this file exists to prevent.
- * Matches `, { … key: … }` and deliberately ignores an explicit `false`.
+ * It also takes them as an options object — `test('name', { skip: true }, fn)` — and as a
+ * runtime call inside the test body (`t.skip()` / `ctx.skip()`, node:test's own execution
+ * context). All three are AST shapes, not regex-matchable line patterns: the first is
+ * defeated by any `)` in the title and by prettier wrapping the call across lines, and a
+ * line-scoped regex cannot distinguish an object literal's own `skip:` property from the
+ * same text sitting inside a string literal.
+ *
+ * A parsed `ts.SourceFile` sidesteps all three at once — string contents are never syntax,
+ * and node boundaries do not care how the source text is wrapped onto lines.
  */
-const nodeTestOption = (keys: string) =>
-  new RegExp(
-    // The lookahead sits directly after the colon and swallows its own whitespace. Written as
-    // `\s*(?!false)` instead, `\s*` backtracks to zero width and the lookahead then inspects a
-    // space rather than the value — so `{ skip: false }` would match.
-    String.raw`\b(describe|it|test|suite)\s*\([^)]*,\s*\{[^}]*\b(${keys})\s*:(?!\s*false\b)`,
-  );
+const FOCUS_CALL_NAMES = new Set(['describe', 'it', 'test', 'bench']);
+const FOCUS_DOTTED_NAMES = new Set(['only']);
 
-const NODE_TEST_ONLY = nodeTestOption('only');
-const NODE_TEST_SKIP = nodeTestOption('skip|todo');
+const SKIP_OPTION_CALL_NAMES = new Set(['describe', 'it', 'test', 'suite']);
+const SKIP_DOTTED_NAMES = new Set(['skip', 'todo', 'failing', 'skipIf']);
+/** node:test's own execution-context parameter — conventionally named `t` or `ctx`. */
+const RUNTIME_SKIP_RECEIVERS = new Set(['t', 'ctx']);
+
+function parseTestFile(
+  content: string,
+  path: string,
+): { calls: ts.CallExpression[]; sourceFile: ts.SourceFile } {
+  const sourceFile = ts.createSourceFile(
+    path,
+    content,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  const calls: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) calls.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { calls, sourceFile };
+}
+
+function identifierName(expr: ts.Expression): string | null {
+  return ts.isIdentifier(expr) ? expr.text : null;
+}
+
+/** True only for the literal `false` — anything else (including a variable) is flagged, the
+ *  same "unknown is not evidence of false" posture the rest of this repo takes. */
+function isFalseLiteral(expr: ts.Expression): boolean {
+  return expr.kind === ts.SyntaxKind.FalseKeyword;
+}
+
+/** The first own property among `keys` in any object-literal argument, whose value is not
+ *  the literal `false`. Direct properties only — a property nested inside another object
+ *  literal argument (e.g. `{ plan: { steps: 2 } }`) does not count as this call's own option. */
+function findOptionProperty(
+  call: ts.CallExpression,
+  keys: ReadonlySet<string>,
+): ts.ObjectLiteralElementLike | null {
+  for (const arg of call.arguments) {
+    if (!ts.isObjectLiteralExpression(arg)) continue;
+    for (const prop of arg.properties) {
+      const name = prop.name !== undefined && ts.isIdentifier(prop.name) ? prop.name.text : null;
+      if (name === null || !keys.has(name)) continue;
+      if (ts.isPropertyAssignment(prop) && isFalseLiteral(prop.initializer)) continue;
+      return prop;
+    }
+  }
+  return null;
+}
+
+function lineOf(sourceFile: ts.SourceFile, pos: number): number {
+  return sourceFile.getLineAndCharacterOfPosition(pos).line + 1;
+}
+
+function textOfLine(content: string, line: number): string {
+  return (content.split(/\r?\n/)[line - 1] ?? '').trim();
+}
+
+export function focusedTestHits(content: string, path: string): ScanHit[] {
+  const { calls, sourceFile } = parseTestFile(content, path);
+  const hits: ScanHit[] = [];
+
+  for (const call of calls) {
+    const { expression } = call;
+
+    if (
+      ts.isPropertyAccessExpression(expression) &&
+      FOCUS_DOTTED_NAMES.has(expression.name.text) &&
+      FOCUS_CALL_NAMES.has(identifierName(expression.expression) ?? '')
+    ) {
+      const line = lineOf(sourceFile, expression.getStart());
+      hits.push({ line, text: textOfLine(content, line), reason: 'focused' });
+      continue;
+    }
+
+    const name = identifierName(expression);
+    if (name !== null && FOCUS_CALL_NAMES.has(name)) {
+      const prop = findOptionProperty(call, new Set(['only']));
+      if (prop !== null) {
+        const line = lineOf(sourceFile, prop.getStart());
+        hits.push({ line, text: textOfLine(content, line), reason: 'focused' });
+      }
+    }
+  }
+
+  return hits;
+}
+
+export function skippedTestHits(content: string, path: string): ScanHit[] {
+  const { calls, sourceFile } = parseTestFile(content, path);
+  const hits: ScanHit[] = [];
+
+  for (const call of calls) {
+    const { expression } = call;
+
+    if (ts.isPropertyAccessExpression(expression)) {
+      const receiver = identifierName(expression.expression);
+      const isSkipDotted =
+        receiver !== null &&
+        SKIP_OPTION_CALL_NAMES.has(receiver) &&
+        SKIP_DOTTED_NAMES.has(expression.name.text);
+      const isRuntimeSkip =
+        receiver !== null &&
+        RUNTIME_SKIP_RECEIVERS.has(receiver) &&
+        expression.name.text === 'skip';
+
+      if (isSkipDotted || isRuntimeSkip) {
+        const line = lineOf(sourceFile, expression.getStart());
+        hits.push({ line, text: textOfLine(content, line), reason: 'skipped' });
+        continue;
+      }
+    }
+
+    const name = identifierName(expression);
+    if (name !== null && SKIP_OPTION_CALL_NAMES.has(name)) {
+      const prop = findOptionProperty(call, new Set(['skip', 'todo']));
+      if (prop !== null) {
+        const line = lineOf(sourceFile, prop.getStart());
+        hits.push({ line, text: textOfLine(content, line), reason: 'skipped' });
+      }
+    }
+  }
+
+  return hits;
+}
 
 const RULES: Rule[] = [
   {
@@ -78,21 +227,14 @@ const RULES: Rule[] = [
     severity: 'BLOCK',
     what: 'Focused test — silently hides the rest of the suite',
     applies: isTest,
-    test: (line) =>
-      /\b(describe|it|test|bench)\s*\.\s*only\s*\(/.test(line) || NODE_TEST_ONLY.test(line)
-        ? 'focused'
-        : null,
+    scanFile: focusedTestHits,
   },
   {
     id: 'skipped-test',
     severity: 'WARN',
     what: 'Skipped test — required coverage that does not execute is not a pass',
     applies: isTest,
-    test: (line) =>
-      /\b(describe|it|test)\s*\.\s*(skip|todo|failing)\s*\(|\bit\s*\.\s*skipIf\s*\(/.test(line) ||
-      NODE_TEST_SKIP.test(line)
-        ? 'skipped'
-        : null,
+    scanFile: skippedTestHits,
   },
   {
     id: 'arbitrary-sleep',
@@ -162,15 +304,29 @@ function main(): void {
     const applicable = RULES.filter((rule) => rule.applies(rel));
     if (applicable.length === 0) continue;
 
-    const lines = readFileSync(file, 'utf8').split(/\r?\n/);
-    lines.forEach((text, index) => {
-      for (const rule of applicable) {
-        const reason = rule.test(text, rel);
-        if (reason !== null) {
-          hits.push({ rule, file: rel, line: index + 1, text: text.trim(), reason });
-        }
+    const content = readFileSync(file, 'utf8');
+
+    for (const rule of applicable) {
+      if (rule.scanFile === undefined) continue;
+      for (const hit of rule.scanFile(content, rel)) {
+        hits.push({ rule, file: rel, line: hit.line, text: hit.text, reason: hit.reason });
       }
-    });
+    }
+
+    const lineRules = applicable.filter(
+      (rule): rule is Rule & { test: NonNullable<Rule['test']> } => rule.test !== undefined,
+    );
+    if (lineRules.length > 0) {
+      const lines = content.split(/\r?\n/);
+      lines.forEach((text, index) => {
+        for (const rule of lineRules) {
+          const reason = rule.test(text, rel);
+          if (reason !== null) {
+            hits.push({ rule, file: rel, line: index + 1, text: text.trim(), reason });
+          }
+        }
+      });
+    }
   }
 
   const blocking = hits.filter((h) => h.rule.severity === 'BLOCK');
@@ -234,4 +390,10 @@ function walk(dir: string): string[] {
   });
 }
 
-main();
+function isDirectRun(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  return resolve(invoked).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
+}
+
+if (isDirectRun()) main();

@@ -14,12 +14,19 @@
  */
 import {
   createTelemetryClient,
+  SeededClock,
+  SeededIdGenerator,
+  systemScheduler,
+  type CancelTimer,
   type Clock,
   type DiagnosticSink,
   type IdGenerator,
+  type Scheduler,
   type StartRunInput,
   type TelemetryClient,
   type TelemetryConfig,
+  type TelemetryTransport,
+  type TransportResult,
 } from '@lengentic/telemetry-sdk';
 
 /**
@@ -55,3 +62,14 @@ export function createPlaygroundTelemetry(config: TelemetryConfig = {}): Telemet
  * `platform/shared/schema/**` owns (CLAUDE.md `## Types`).
  */
 export type { Clock, DiagnosticSink, IdGenerator, StartRunInput, TelemetryClient, TelemetryConfig };
+
+/**
+ * The rest of the SDK surface `playground/**` composes against — seeded determinism
+ * (`determinism/seed.ts`), the timer seam `MockProvider` schedules its simulated delay
+ * through (`providers/mock-provider.ts`), and the two test-only types the fake scheduler and
+ * recording transport under each `test/support` directory need to implement the SDK's own
+ * interfaces. Re-exported here rather than left to five separate direct imports, so this
+ * file stays the one place the Playground names the SDK (see the module doc above).
+ */
+export { SeededClock, SeededIdGenerator, systemScheduler };
+export type { CancelTimer, Scheduler, TelemetryTransport, TransportResult };

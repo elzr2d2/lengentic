@@ -26,11 +26,36 @@ export interface Topology {
   readonly runnableTaskCount: number;
   readonly dependencyCount: number;
   readonly unresolvedDependencyCount: number;
+  /**
+   * Condition 2's own knowledge predicate ("task dependencies are known"), carried
+   * separately from the counts below it. Without this field, `0` is simultaneously "the
+   * orchestrator never built a dependency graph" and "the graph is known and empty" — the
+   * exact hole `CONTEXT.md:82` ("Unknown is false") exists to close. Must be explicitly
+   * `true`; `'unknown'` (and the type system refusing any other value) is what makes
+   * ignorance here impossible to default past.
+   */
+  readonly dependenciesKnown: TriBool;
 }
 
 export interface Resources {
+  /**
+   * Read by no rule. §29's input table lists exactly `claimedResourceCount
+   * conflictingResourceCount sharedMutableState` — no opaque claim array — so this package's
+   * defensible reading is that the caller pre-computes conflicts and hands over only the
+   * count; the evaluator does not compare individual claims for equality itself. Recorded
+   * here, alongside the `RiskLevel` scale decision below, because it is an assumption with
+   * real consequence (it is what makes `conflictsChecked` below necessary in the first
+   * place) and previously was not written down anywhere.
+   */
   readonly claimedResourceCount: number;
   readonly conflictingResourceCount: number;
+  /**
+   * Condition 4's knowledge predicate ("resource claims do not conflict"), the same shape as
+   * `dependenciesKnown` above and for the same reason: `conflictingResourceCount: 0` must
+   * not be readable as "verified, no conflicts" when it is actually "nobody checked for
+   * conflicts". Must be explicitly `true`.
+   */
+  readonly conflictsChecked: TriBool;
   readonly sharedMutableState: TriBool;
 }
 

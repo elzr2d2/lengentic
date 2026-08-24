@@ -8,7 +8,7 @@
  * platform-packages`, `pnpm check:boundaries`), and the envelope type is derivable from the
  * transport's own `send` signature without a second import.
  */
-import type { TelemetryTransport, TransportResult } from '@lengentic/telemetry-sdk';
+import type { TelemetryTransport, TransportResult } from '../../../index';
 
 type Batch = Parameters<TelemetryTransport['send']>[0];
 export type RecordedEnvelope = Batch[number];

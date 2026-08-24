@@ -49,10 +49,12 @@ function eligibleContext(
       runnableTaskCount: 2,
       dependencyCount: 0,
       unresolvedDependencyCount: 0,
+      dependenciesKnown: true,
     },
     resources: {
       claimedResourceCount: 0,
       conflictingResourceCount: 0,
+      conflictsChecked: true,
       sharedMutableState: false,
     },
     readiness: {
@@ -193,8 +195,66 @@ void describe('evaluateExecutionStrategy — unknown/malformed input forces sequ
     assert.ok(blockerCodes(result).includes('dependencies-not-known'));
   });
 
+  void test('dependenciesKnown = "unknown" forces sequential even when the counts look clean', () => {
+    // The exact shape that used to slip through: dependencyCount and unresolvedDependencyCount
+    // both 0 (a "clean" graph by count alone), but nobody ever verified it.
+    const ctx = eligibleContext({ topology: { dependenciesKnown: 'unknown' } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.equal(result.eligible, false);
+    assert.deepEqual(blockerCodes(result), ['dependencies-not-known']);
+  });
+
+  void test('dependenciesKnown = false forces sequential', () => {
+    const ctx = eligibleContext({ topology: { dependenciesKnown: false } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['dependencies-not-known']);
+  });
+
+  void test('missing dependenciesKnown entirely invalidates the whole context (malformed shape, not a default pass)', () => {
+    const ctx = eligibleContext() as unknown as { topology: Record<string, unknown> };
+    delete ctx.topology.dependenciesKnown;
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['context-invalid']);
+  });
+
+  void test('runnableTaskCount exceeding taskCount is a structurally impossible topology, not a passing one', () => {
+    // Reproduces the validator's FINDING A: taskCount is validated but was read by no rule,
+    // so this shape used to return mode:"parallel".
+    const ctx = eligibleContext({ topology: { taskCount: 1, runnableTaskCount: 5 } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['context-invalid']);
+  });
+
+  void test('a context built by Object.create (zero own properties) is not accepted as valid', () => {
+    // Reproduces the validator's FINDING B / reviewer's S11: prototype-inherited fields
+    // resolve through plain property access exactly like own fields do, so a naive parser
+    // accepts this. Not reachable through JSON.parse; reachable through object composition.
+    const evil = Object.create(eligibleContext()) as unknown;
+    const result = evaluateExecutionStrategy(evil);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['context-invalid']);
+  });
+
   void test('conflicting resource claims', () => {
     const ctx = eligibleContext({ resources: { conflictingResourceCount: 1 } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['conflicting-resource-claims']);
+  });
+
+  void test('conflictsChecked = "unknown" forces sequential even when conflictingResourceCount is 0', () => {
+    const ctx = eligibleContext({ resources: { conflictsChecked: 'unknown' } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['conflicting-resource-claims']);
+  });
+
+  void test('conflictsChecked = false forces sequential', () => {
+    const ctx = eligibleContext({ resources: { conflictsChecked: false } });
     const result = evaluateExecutionStrategy(ctx);
     assert.equal(result.mode, 'sequential');
     assert.deepEqual(blockerCodes(result), ['conflicting-resource-claims']);
@@ -268,7 +328,7 @@ void describe('evaluateExecutionStrategy — genuinely eligible input', () => {
 
   void test('effective concurrency is capped, never derived from available concurrency alone', () => {
     const ctx = eligibleContext({
-      topology: { runnableTaskCount: 10 },
+      topology: { taskCount: 10, runnableTaskCount: 10 },
       limits: { requestedConcurrency: 10, availableConcurrency: 10 },
     });
     const result = evaluateExecutionStrategy(ctx);
@@ -278,13 +338,28 @@ void describe('evaluateExecutionStrategy — genuinely eligible input', () => {
     assert.equal(result.effectiveConcurrency, 4);
   });
 
-  void test('effective concurrency respects an explicit lower maxConcurrency', () => {
+  void test('an explicit maxConcurrency below 2 cannot produce mode "parallel" (mode and effectiveConcurrency must not disagree)', () => {
+    // Was: mode "parallel" with effectiveConcurrency 1 — a consumer branching on `mode`
+    // takes the parallel path, a consumer branching on `effectiveConcurrency` runs
+    // sequentially. Two readings of one result (reviewer S4 / validator FINDING, generalised
+    // to any input that floors the concurrency below 2, not only requestedConcurrency: 0).
     const ctx = eligibleContext({
       limits: { requestedConcurrency: 2, availableConcurrency: 2 },
     });
     const result = evaluateExecutionStrategy(ctx, { maxConcurrency: 1 });
-    assert.equal(result.mode, 'parallel');
+    assert.equal(result.mode, 'sequential');
+    assert.equal(result.eligible, false);
     assert.equal(result.effectiveConcurrency, 1);
+    assert.deepEqual(blockerCodes(result), ['insufficient-effective-concurrency']);
+  });
+
+  void test('requestedConcurrency: 0 on an otherwise-eligible context cannot produce mode "parallel"', () => {
+    const ctx = eligibleContext({ limits: { requestedConcurrency: 0, availableConcurrency: 2 } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.equal(result.eligible, false);
+    assert.equal(result.effectiveConcurrency, 1);
+    assert.deepEqual(blockerCodes(result), ['insufficient-effective-concurrency']);
   });
 
   void test('sequential verdicts always report effectiveConcurrency of 1', () => {

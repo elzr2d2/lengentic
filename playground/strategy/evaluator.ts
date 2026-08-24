@@ -47,7 +47,7 @@ import type {
  * this file's line count — bump it whenever a rule's condition changes, so a historical
  * comparison across the version boundary knows the rows are not comparable (§29 Stage 2).
  */
-export const EVALUATOR_VERSION = 'strategy-evaluator@1.0.0';
+export const EVALUATOR_VERSION = 'strategy-evaluator@1.1.0';
 
 /**
  * Small and configurable, per §29: "Maximum concurrency is small and configurable. It is
@@ -84,35 +84,102 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * `Object.create(someValidShape)` produces an object whose fields all resolve through the
+ * prototype chain — plain property access (`value.foo`) and destructuring both walk that
+ * chain and cannot tell the difference, so a zero-own-property object would otherwise parse
+ * as fully valid. Every parse function below checks this before reading a single field, so
+ * an `awarenessContext` assembled by object composition (`Object.create`, a defaults-merge
+ * helper) rather than `JSON.parse` gets the same total, all-or-nothing treatment as a
+ * malformed shape.
+ */
+function hasOwnKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
 function parseTopology(value: unknown): Topology | null {
   if (!isRecord(value)) return null;
-  const { taskCount, runnableTaskCount, dependencyCount, unresolvedDependencyCount } = value;
+  if (
+    !hasOwnKeys(value, [
+      'taskCount',
+      'runnableTaskCount',
+      'dependencyCount',
+      'unresolvedDependencyCount',
+      'dependenciesKnown',
+    ])
+  ) {
+    return null;
+  }
+  const {
+    taskCount,
+    runnableTaskCount,
+    dependencyCount,
+    unresolvedDependencyCount,
+    dependenciesKnown,
+  } = value;
   if (
     !isNonNegativeInteger(taskCount) ||
     !isNonNegativeInteger(runnableTaskCount) ||
     !isNonNegativeInteger(dependencyCount) ||
-    !isNonNegativeInteger(unresolvedDependencyCount)
+    !isNonNegativeInteger(unresolvedDependencyCount) ||
+    !isTriBool(dependenciesKnown) ||
+    // Structurally impossible — more runnable tasks than the total task count — is treated
+    // the same as a malformed shape, not as a rule failure: a topology that claims this is
+    // not "a graph with a blocker in it", it is a graph whose own numbers cannot be trusted
+    // (the same reasoning `unresolvedDependencyCount <= dependencyCount` already applies at
+    // rule level; this one is checked earlier because nothing downstream can use taskCount
+    // meaningfully once it is violated).
+    runnableTaskCount > taskCount
   ) {
     return null;
   }
-  return { taskCount, runnableTaskCount, dependencyCount, unresolvedDependencyCount };
+  return {
+    taskCount,
+    runnableTaskCount,
+    dependencyCount,
+    unresolvedDependencyCount,
+    dependenciesKnown,
+  };
 }
 
 function parseResources(value: unknown): Resources | null {
   if (!isRecord(value)) return null;
-  const { claimedResourceCount, conflictingResourceCount, sharedMutableState } = value;
+  if (
+    !hasOwnKeys(value, [
+      'claimedResourceCount',
+      'conflictingResourceCount',
+      'conflictsChecked',
+      'sharedMutableState',
+    ])
+  ) {
+    return null;
+  }
+  const { claimedResourceCount, conflictingResourceCount, conflictsChecked, sharedMutableState } =
+    value;
   if (
     !isNonNegativeInteger(claimedResourceCount) ||
     !isNonNegativeInteger(conflictingResourceCount) ||
+    !isTriBool(conflictsChecked) ||
     !isTriBool(sharedMutableState)
   ) {
     return null;
   }
-  return { claimedResourceCount, conflictingResourceCount, sharedMutableState };
+  return { claimedResourceCount, conflictingResourceCount, conflictsChecked, sharedMutableState };
 }
 
 function parseReadiness(value: unknown): Readiness | null {
   if (!isRecord(value)) return null;
+  if (
+    !hasOwnKeys(value, [
+      'requirementsComplete',
+      'contractsStable',
+      'validationAvailable',
+      'independentlyValidatable',
+      'independentlyReversible',
+    ])
+  ) {
+    return null;
+  }
   const {
     requirementsComplete,
     contractsStable,
@@ -140,6 +207,7 @@ function parseReadiness(value: unknown): Readiness | null {
 
 function parseLimits(value: unknown): Limits | null {
   if (!isRecord(value)) return null;
+  if (!hasOwnKeys(value, ['requestedConcurrency', 'availableConcurrency'])) return null;
   const { requestedConcurrency, availableConcurrency } = value;
   if (!isNonNegativeInteger(requestedConcurrency) || !isNonNegativeInteger(availableConcurrency)) {
     return null;
@@ -149,6 +217,7 @@ function parseLimits(value: unknown): Limits | null {
 
 function parseRisk(value: unknown): Risk | null {
   if (!isRecord(value)) return null;
+  if (!hasOwnKeys(value, ['level'])) return null;
   const { level, reasons } = value;
   if (!isRiskLevel(level)) return null;
   return { level, reasons: isStringArray(reasons) ? reasons : [] };
@@ -159,7 +228,13 @@ function parseRisk(value: unknown): Risk | null {
  * `evaluateExecutionStrategy` treats as the whole context being unknown.
  */
 function parseAwarenessContext(input: unknown): AwarenessContext | null {
-  if (!isRecord(input) || input.schemaVersion !== 1) return null;
+  if (!isRecord(input)) return null;
+  if (
+    !hasOwnKeys(input, ['schemaVersion', 'topology', 'resources', 'readiness', 'limits', 'risk'])
+  ) {
+    return null;
+  }
+  if (input.schemaVersion !== 1) return null;
 
   const topology = parseTopology(input.topology);
   const resources = parseResources(input.resources);
@@ -205,15 +280,24 @@ function runRules(context: AwarenessContext): RuleCheck[] {
       message: `at least two meaningful runnable tasks are required; runnableTaskCount is ${topology.runnableTaskCount}`,
     },
     {
-      // "Task dependencies are known" (condition 2): the counts describing the dependency
-      // graph must be internally consistent. More unresolved dependencies than known
-      // dependencies is not a smaller version of condition 3's failure — it means the graph
-      // itself cannot be trusted, which is a distinct, earlier failure.
+      // "Task dependencies are known" (condition 2). Two independent ways to fail it: nobody
+      // affirmatively verified the graph (`dependenciesKnown` is not `true` — CONTEXT.md
+      // "Unknown is false"), or the counts describing it are internally inconsistent (more
+      // unresolved dependencies than known dependencies). Either failure means the graph
+      // cannot be trusted, which is a distinct, earlier concern than condition 3's "is it
+      // fully resolved" — an inconsistent-count input fails both, but a
+      // `dependenciesKnown !== true` input can fail this condition alone even when the
+      // counts themselves look clean (e.g. all zeros), which is exactly the shape that
+      // silently passed before `dependenciesKnown` existed.
       code: 'dependencies-not-known',
-      passed: topology.unresolvedDependencyCount <= topology.dependencyCount,
+      passed:
+        topology.dependenciesKnown === true &&
+        topology.unresolvedDependencyCount <= topology.dependencyCount,
       message:
-        `unresolvedDependencyCount (${topology.unresolvedDependencyCount}) exceeds ` +
-        `dependencyCount (${topology.dependencyCount}); the dependency graph is not reliably known`,
+        topology.dependenciesKnown !== true
+          ? `dependenciesKnown is ${describeTriBool(topology.dependenciesKnown)}, not affirmatively true — the dependency graph was never verified`
+          : `unresolvedDependencyCount (${topology.unresolvedDependencyCount}) exceeds ` +
+            `dependencyCount (${topology.dependencyCount}); the dependency graph is not reliably known`,
     },
     {
       code: 'unresolved-dependencies',
@@ -221,9 +305,15 @@ function runRules(context: AwarenessContext): RuleCheck[] {
       message: `${topology.unresolvedDependencyCount} unresolved dependency(ies) between candidate tasks`,
     },
     {
+      // "Resource claims do not conflict" (condition 4). Same shape as condition 2 above:
+      // `conflictingResourceCount: 0` must not read as "verified, no conflicts" when it is
+      // actually "nobody checked" — `conflictsChecked` carries that knowledge explicitly.
       code: 'conflicting-resource-claims',
-      passed: resources.conflictingResourceCount === 0,
-      message: `${resources.conflictingResourceCount} conflicting resource claim(s)`,
+      passed: resources.conflictsChecked === true && resources.conflictingResourceCount === 0,
+      message:
+        resources.conflictsChecked !== true
+          ? `conflictsChecked is ${describeTriBool(resources.conflictsChecked)}, not affirmatively true — resource conflicts were never verified`
+          : `${resources.conflictingResourceCount} conflicting resource claim(s)`,
     },
     {
       code: 'unsafe-shared-mutable-state',
@@ -300,7 +390,40 @@ export function evaluateExecutionStrategy(
   }
 
   const checks = runRules(context);
-  const blockers = checks.filter((check) => !check.passed).map(toReasonCode);
+  const ruleBlockers = checks.filter((check) => !check.passed).map(toReasonCode);
+
+  // Computed unconditionally, before eligibility is decided, so `mode` and
+  // `effectiveConcurrency` can never disagree: `mode: 'parallel'` with
+  // `effectiveConcurrency: 1` would tell a consumer branching on `mode` and a consumer
+  // branching on `effectiveConcurrency` two different stories about the same verdict
+  // (`requestedConcurrency: 0` on an otherwise-eligible context was the reproduction —
+  // §29 "Sequential default — parallel is an exception that must be earned", and a batch of
+  // one is not an earned exception).
+  const concurrencyFloor = Math.max(
+    1,
+    Math.min(
+      context.limits.requestedConcurrency,
+      context.limits.availableConcurrency,
+      context.topology.runnableTaskCount,
+      maxConcurrency,
+    ),
+  );
+
+  const insufficientConcurrency: ReasonCode | null =
+    ruleBlockers.length === 0 && concurrencyFloor < 2
+      ? {
+          code: 'insufficient-effective-concurrency',
+          message:
+            `the concurrency this context would actually get is ${concurrencyFloor} ` +
+            `(min of requestedConcurrency ${context.limits.requestedConcurrency}, ` +
+            `availableConcurrency ${context.limits.availableConcurrency}, ` +
+            `runnableTaskCount ${context.topology.runnableTaskCount}, and maxConcurrency ` +
+            `${maxConcurrency}), which cannot justify mode "parallel"`,
+        }
+      : null;
+
+  const blockers =
+    insufficientConcurrency === null ? ruleBlockers : [...ruleBlockers, insufficientConcurrency];
   const eligible = blockers.length === 0;
   const mode: Mode = eligible ? 'parallel' : 'sequential';
 
@@ -310,17 +433,7 @@ export function evaluateExecutionStrategy(
   };
   const reasons = eligible ? [allSatisfied] : blockers;
 
-  const effectiveConcurrency = eligible
-    ? Math.max(
-        1,
-        Math.min(
-          context.limits.requestedConcurrency,
-          context.limits.availableConcurrency,
-          context.topology.runnableTaskCount,
-          maxConcurrency,
-        ),
-      )
-    : 1;
+  const effectiveConcurrency = eligible ? concurrencyFloor : 1;
 
   return {
     mode,
