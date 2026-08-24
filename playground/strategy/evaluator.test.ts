@@ -1,0 +1,335 @@
+/**
+ * Tests for `evaluateExecutionStrategy` (`playground/strategy/index.ts`).
+ *
+ * Seam under test: the module's one public function, called exactly as any orchestrator
+ * code would call it — `evaluateExecutionStrategy(input)` — never the internal parsing or
+ * rule helpers in `./evaluator`, which are not exported.
+ *
+ * Expected values are sourced from the plan section verbatim (`MVP_PLAN_V3.md` §29's twelve
+ * numbered conditions and the Phase 3 Definition of Done checkboxes carried into the work
+ * packet), not from running the implementation and copying its output. Reason/blocker codes
+ * are this module's own vocabulary (the plan requires "a fixed code", not a specific string),
+ * so asserting an exact code string is a stability check on this module's contract, not a
+ * circular readback of its arithmetic.
+ *
+ * No test framework dependency exists in `playground/package.json` (a sibling Phase 3 lane
+ * hit this first; see the work packet). Node's built-in test runner is used instead, run as:
+ *
+ *   node --import tsx --test playground/strategy/evaluator.test.ts
+ *
+ * Negative fixtures — the shapes that must never produce `parallel` — are written before the
+ * positive path, per `CLAUDE.md` "When implementing analyzers, write the negative fixtures
+ * before the positive path."
+ */
+
+import assert from 'node:assert/strict';
+import { describe, test } from 'node:test';
+
+import { EVALUATOR_VERSION, evaluateExecutionStrategy } from './index';
+import type { AwarenessContext, Readiness, Resources, Risk, TriBool } from './types';
+
+/**
+ * A context in which every one of the twelve conditions holds, so any single override below
+ * isolates exactly one rule. `structuredClone` guards against a test mutating a shared
+ * literal and leaking state into another test (TEST determinism concerns in `test-at-seams`).
+ */
+function eligibleContext(
+  overrides: {
+    topology?: Partial<AwarenessContext['topology']>;
+    resources?: Partial<Resources>;
+    readiness?: Partial<Readiness>;
+    limits?: Partial<AwarenessContext['limits']>;
+    risk?: Partial<Risk>;
+  } = {},
+): AwarenessContext {
+  const base: AwarenessContext = {
+    schemaVersion: 1,
+    topology: {
+      taskCount: 2,
+      runnableTaskCount: 2,
+      dependencyCount: 0,
+      unresolvedDependencyCount: 0,
+    },
+    resources: {
+      claimedResourceCount: 0,
+      conflictingResourceCount: 0,
+      sharedMutableState: false,
+    },
+    readiness: {
+      requirementsComplete: true,
+      contractsStable: true,
+      validationAvailable: true,
+      independentlyValidatable: true,
+      independentlyReversible: true,
+    },
+    limits: {
+      requestedConcurrency: 2,
+      availableConcurrency: 2,
+    },
+    risk: {
+      level: 'low',
+      reasons: [],
+    },
+  };
+  const clone = structuredClone(base);
+  return {
+    ...clone,
+    topology: { ...clone.topology, ...overrides.topology },
+    resources: { ...clone.resources, ...overrides.resources },
+    readiness: { ...clone.readiness, ...overrides.readiness },
+    limits: { ...clone.limits, ...overrides.limits },
+    risk: { ...clone.risk, ...overrides.risk },
+  };
+}
+
+function blockerCodes(result: ReturnType<typeof evaluateExecutionStrategy>): string[] {
+  return result.blockers.map((b) => b.code);
+}
+
+void describe('evaluateExecutionStrategy — unknown/malformed input forces sequential', () => {
+  void test('undefined input', () => {
+    const result = evaluateExecutionStrategy(undefined);
+    assert.equal(result.mode, 'sequential');
+    assert.equal(result.eligible, false);
+    assert.deepEqual(blockerCodes(result), ['context-invalid']);
+  });
+
+  void test('empty object', () => {
+    const result = evaluateExecutionStrategy({});
+    assert.equal(result.mode, 'sequential');
+    assert.equal(result.eligible, false);
+    assert.deepEqual(blockerCodes(result), ['context-invalid']);
+  });
+
+  void test('wrong schemaVersion', () => {
+    const result = evaluateExecutionStrategy({ ...eligibleContext(), schemaVersion: 2 });
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['context-invalid']);
+  });
+
+  void test('missing a required top-level section', () => {
+    const ctx = eligibleContext() as unknown as Record<string, unknown>;
+    delete ctx.limits;
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['context-invalid']);
+  });
+
+  void test('unrecognised value for a tri-state field invalidates the context, not just the field', () => {
+    const ctx = eligibleContext() as unknown as { resources: Record<string, unknown> };
+    ctx.resources.sharedMutableState = 'yes'; // not true | false | 'unknown'
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['context-invalid']);
+  });
+
+  void test('unrecognised risk level', () => {
+    const ctx = eligibleContext() as unknown as { risk: Record<string, unknown> };
+    ctx.risk.level = 'catastrophic';
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['context-invalid']);
+  });
+
+  const triBoolFields: { section: 'resources' | 'readiness'; field: string; code: string }[] = [
+    { section: 'resources', field: 'sharedMutableState', code: 'unsafe-shared-mutable-state' },
+    { section: 'readiness', field: 'requirementsComplete', code: 'requirements-incomplete' },
+    { section: 'readiness', field: 'contractsStable', code: 'contracts-unstable' },
+    { section: 'readiness', field: 'validationAvailable', code: 'validation-unavailable' },
+    {
+      section: 'readiness',
+      field: 'independentlyValidatable',
+      code: 'not-independently-validatable',
+    },
+    {
+      section: 'readiness',
+      field: 'independentlyReversible',
+      code: 'not-independently-reversible',
+    },
+  ];
+
+  for (const { section, field, code } of triBoolFields) {
+    void test(`${section}.${field} = 'unknown' forces sequential (blocker: ${code})`, () => {
+      const ctx = eligibleContext({ [section]: { [field]: 'unknown' as TriBool } });
+      const result = evaluateExecutionStrategy(ctx);
+      assert.equal(result.mode, 'sequential');
+      assert.equal(result.eligible, false);
+      assert.ok(
+        blockerCodes(result).includes(code),
+        `expected blocker "${code}", got ${JSON.stringify(blockerCodes(result))}`,
+      );
+    });
+  }
+
+  void test('one runnable task', () => {
+    const ctx = eligibleContext({ topology: { runnableTaskCount: 1 } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['insufficient-runnable-tasks']);
+  });
+
+  void test('zero runnable tasks', () => {
+    const ctx = eligibleContext({ topology: { runnableTaskCount: 0 } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.ok(blockerCodes(result).includes('insufficient-runnable-tasks'));
+  });
+
+  void test('an unresolved dependency', () => {
+    const ctx = eligibleContext({
+      topology: { dependencyCount: 1, unresolvedDependencyCount: 1 },
+    });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['unresolved-dependencies']);
+  });
+
+  void test('an inconsistent dependency graph is "not known", distinct from merely unresolved', () => {
+    const ctx = eligibleContext({
+      topology: { dependencyCount: 1, unresolvedDependencyCount: 2 },
+    });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.ok(blockerCodes(result).includes('dependencies-not-known'));
+  });
+
+  void test('conflicting resource claims', () => {
+    const ctx = eligibleContext({ resources: { conflictingResourceCount: 1 } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['conflicting-resource-claims']);
+  });
+
+  void test('shared mutable state explicitly true', () => {
+    const ctx = eligibleContext({ resources: { sharedMutableState: true } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['unsafe-shared-mutable-state']);
+  });
+
+  void test('missing validation readiness', () => {
+    const ctx = eligibleContext({ readiness: { validationAvailable: false } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['validation-unavailable']);
+  });
+
+  void test('availableConcurrency below two', () => {
+    const ctx = eligibleContext({ limits: { availableConcurrency: 1 } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['insufficient-available-concurrency']);
+  });
+
+  void test('a risk policy that requires serialisation', () => {
+    const ctx = eligibleContext({ risk: { level: 'high', reasons: ['known unsafe pattern'] } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['risk-policy-requires-serialization']);
+  });
+
+  void test('an unknown risk policy is not evidence serialisation is unnecessary', () => {
+    const ctx = eligibleContext({ risk: { level: 'unknown', reasons: [] } });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'sequential');
+    assert.deepEqual(blockerCodes(result), ['risk-policy-requires-serialization']);
+  });
+
+  void test('every reason and blocker carries a code distinct from its message text', () => {
+    const ctx = eligibleContext({ topology: { runnableTaskCount: 1 } });
+    const result = evaluateExecutionStrategy(ctx);
+    for (const entry of [...result.reasons, ...result.blockers]) {
+      assert.equal(typeof entry.code, 'string');
+      assert.ok(entry.code.length > 0);
+      assert.notEqual(entry.code, entry.message);
+    }
+  });
+});
+
+void describe('evaluateExecutionStrategy — genuinely eligible input', () => {
+  void test('two independent, ready tasks produce parallel', () => {
+    const result = evaluateExecutionStrategy(eligibleContext());
+    assert.equal(result.mode, 'parallel');
+    assert.equal(result.eligible, true);
+    assert.deepEqual(result.blockers, []);
+    assert.deepEqual(
+      result.reasons.map((r) => r.code),
+      ['all-conditions-satisfied'],
+    );
+  });
+
+  void test('evaluatorVersion is a non-empty, stable string carried on every verdict', () => {
+    const eligible = evaluateExecutionStrategy(eligibleContext());
+    const blocked = evaluateExecutionStrategy({});
+    assert.equal(eligible.evaluatorVersion, EVALUATOR_VERSION);
+    assert.equal(blocked.evaluatorVersion, EVALUATOR_VERSION);
+    assert.ok(EVALUATOR_VERSION.length > 0);
+  });
+
+  void test('effective concurrency is capped, never derived from available concurrency alone', () => {
+    const ctx = eligibleContext({
+      topology: { runnableTaskCount: 10 },
+      limits: { requestedConcurrency: 10, availableConcurrency: 10 },
+    });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.equal(result.mode, 'parallel');
+    assert.equal(result.requestedConcurrency, 10);
+    // Default max concurrency (4) caps the result even though ten agents are "available".
+    assert.equal(result.effectiveConcurrency, 4);
+  });
+
+  void test('effective concurrency respects an explicit lower maxConcurrency', () => {
+    const ctx = eligibleContext({
+      limits: { requestedConcurrency: 2, availableConcurrency: 2 },
+    });
+    const result = evaluateExecutionStrategy(ctx, { maxConcurrency: 1 });
+    assert.equal(result.mode, 'parallel');
+    assert.equal(result.effectiveConcurrency, 1);
+  });
+
+  void test('sequential verdicts always report effectiveConcurrency of 1', () => {
+    const result = evaluateExecutionStrategy(
+      eligibleContext({ topology: { runnableTaskCount: 1 } }),
+    );
+    assert.equal(result.mode, 'sequential');
+    assert.equal(result.effectiveConcurrency, 1);
+  });
+});
+
+void describe('evaluateExecutionStrategy — determinism', () => {
+  void test('the same input twice produces an identical decision', () => {
+    const inputA = structuredClone(eligibleContext({ topology: { runnableTaskCount: 1 } }));
+    const inputB = structuredClone(eligibleContext({ topology: { runnableTaskCount: 1 } }));
+    const resultA = evaluateExecutionStrategy(inputA);
+    const resultB = evaluateExecutionStrategy(inputB);
+    assert.deepEqual(resultA, resultB);
+  });
+
+  void test('multiple simultaneous failures report blockers in fixed rule order, not encounter order', () => {
+    // Fails rule 1 (runnable tasks), rule 4 (conflicting resources) and rule 11 (available
+    // concurrency), in that plan order — independent of the order the overrides are listed
+    // below.
+    const ctx = eligibleContext({
+      limits: { availableConcurrency: 1 },
+      resources: { conflictingResourceCount: 1 },
+      topology: { runnableTaskCount: 1 },
+    });
+    const result = evaluateExecutionStrategy(ctx);
+    assert.deepEqual(blockerCodes(result), [
+      'insufficient-runnable-tasks',
+      'conflicting-resource-claims',
+      'insufficient-available-concurrency',
+    ]);
+  });
+
+  void test('repeated calls with the fixed multi-failure input stay byte-identical', () => {
+    const ctx = eligibleContext({
+      limits: { availableConcurrency: 1 },
+      resources: { conflictingResourceCount: 1 },
+      topology: { runnableTaskCount: 1 },
+    });
+    const first = evaluateExecutionStrategy(structuredClone(ctx));
+    const second = evaluateExecutionStrategy(structuredClone(ctx));
+    assert.deepEqual(first, second);
+  });
+});
