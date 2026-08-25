@@ -2433,3 +2433,44 @@ to `[]` — the parser's only lenient branch (the `Object.create` half of S11 wa
 own-property checks). Not reachable from `JSON.parse` output; a note, not a demand.
 
 **Trigger:** next edit to either file.
+
+## Discovered at the Phase 3 wave-3 gate — Reviewer over `6e97944..HEAD`, p3.mock-agent (2026-08-25)
+
+Source for all five: `.artifacts/evidence/3/wave3-gate/reviewer/review-diff.md`. Gate PASSED,
+0 blocking; these are the non-blocking residue, filed with their triggers.
+
+### Reserve the phase names against task names in `MockAgent`
+
+S1 (MEDIUM). Task names and phase names share one namespace: a task named `plan` produces two
+provider calls with identical detail, and `alwaysFailSteps:['plan']` aimed at the task fails the
+Plan phase instead (run reports FAILED with `tasks: []`). Uniqueness is validated between tasks
+but not against `plan`/`execute`/`validate`/`execution_strategy`.
+**Trigger:** next edit to `playground/agents/**`, or `p3.cli` exposing task names to a user.
+
+### `awarenessContext` metadata key carries the input-only shape
+
+S2 (MEDIUM), second landing of wave-2 V1 (`BACKLOG.md`, "AwarenessContext renamed…"). The
+`execution_strategy` Step's `metadata.awarenessContext` holds topology…risk but no `evaluation`,
+while `CONTEXT.md:68` defines the term as including it. The type rename is `playground/strategy/**`;
+the payload key lands with whoever builds the stored shape.
+**Trigger:** `p3.strategy-telemetry`.
+
+### `p3.strategy-telemetry` must remove the interim decision Step, not add beside it
+
+Sc1 (MEDIUM). `recordStrategyDecision` is documented as deliberately-not-a-Decision, interim
+until the real wire entity exists. If `p3.strategy-telemetry` adds without removing, one verdict
+travels twice.
+**Trigger:** `p3.strategy-telemetry`.
+
+### Three copies of the playground test-support pair
+
+S7 (LOW). `recording-transport.ts` + `fake-scheduler.ts` now exist in three test trees.
+**Trigger:** the fourth copy, or `p3.cli` needing a fake scheduler.
+
+### Doc and robustness residue in `mock-agent.ts`
+
+S3 false single-run doc claim; S4 no `finally` around the telemetry lifecycle (unreachable via
+MockProvider today — exemplar concern, not defect); S5 undefined-slot guard `return`s where
+`continue` belongs; S6 determinism pinned only on the degenerate single-task path (Reviewer
+verified parallel-mode byte-identity by hand; nothing in the suite pins it).
+**Trigger:** next edit to `playground/agents/mock-agent.ts`.
