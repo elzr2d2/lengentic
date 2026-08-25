@@ -2385,3 +2385,51 @@ worse one.
 
 **Trigger:** the next mutation pass against `platform/telemetry-sdk`, or any change to how the
 fixture hosts resolve the SDK.
+
+## Discovered at the Phase 3 wave-2 gate — Reviewer over `0da0e9f..894a56e` (2026-08-24, filed at re-gate 2026-08-25)
+
+### Compose the two seed domains when the workflow is wired
+
+**Source:** wave-2 Reviewer S10 (`.artifacts/evidence/3/wave2-gate/reviewer/review-diff.md:291`).
+Non-blocking; not a defect in either lane's code today.
+
+The PRNG duplication in `playground/providers/prng.ts` is justified (the SDK exports no raw
+PRNG, and a deep import is forbidden), and `determinism/seed.ts` correctly refuses to re-derive
+`SeededClock`. What is missing is anything relating `MockProvider.seed` to
+`createSeededComponents(seed)` — one scenario seed currently yields two independent determinism
+domains and nothing composes them. Whoever wires the five-step workflow has to pick the seam.
+
+**Trigger:** `p3.mock-agent`.
+
+### One test-file convention, and `AwarenessContext` renamed to the shape `CONTEXT.md` owns
+
+**Source:** wave-2 Reviewer S9 (`review-diff.md:285`) and V1 (`review-diff.md:322`). Both LOW,
+both deferred from repair 1 on scope.
+
+S9: `playground/strategy/evaluator.test.ts` is co-located `.test.ts`; the other two lanes use
+`<dir>/test/*.spec.ts`, as does the rest of the repo. The integrator's `playground` test script
+globs both, which works but freezes the split. Pick `test/*.spec.ts`, move the one file.
+
+V1: `playground/strategy/types.ts:66` uses `AwarenessContext` for the input-only subset while
+`CONTEXT.md:68` defines the term as the stored shape including `evaluation`. The divergence is
+documented in the doc comment, but the word is overloaded at the exact seam where
+`p3.mock-agent` must build the stored shape from the input shape. Rename to
+`AwarenessContextInput` and leave `AwarenessContext` to the term `CONTEXT.md` owns.
+
+**Trigger:** `p3.mock-agent` touching the evaluator seam, or any next edit to
+`playground/strategy/**`.
+
+### Two residual LOW notes: a stale doc claim and one lenient parse branch
+
+**Source:** wave-2 Reviewer S8 (`review-diff.md:279`) and S11 (`review-diff.md:306`). Both LOW,
+unfixed by repair 1 (`04cc5db`), neither blocking.
+
+S8: `playground/determinism/index.ts:2-4` claims `MockProvider` imports from here; after the
+R5 composition-root fix it routes through `playground/index.ts` instead. Correct the tense or
+the claim when the file is next touched.
+
+S11: `playground/strategy/evaluator.ts:223` still silently coerces a malformed `risk.reasons`
+to `[]` — the parser's only lenient branch (the `Object.create` half of S11 was fixed by R2's
+own-property checks). Not reachable from `JSON.parse` output; a note, not a demand.
+
+**Trigger:** next edit to either file.
