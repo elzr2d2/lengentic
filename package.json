@@ -39,6 +39,7 @@
     "gates": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm check:boundaries && pnpm check:integrity",
     "gates:full": "pnpm gates && pnpm check:isolation",
     "spike": "tsx spike/main.ts",
+    "playground:happy-path": "tsx playground/cli/happy-path.ts",
     "test:integration": "pnpm -r test:integration",
     "db:migrate": "pnpm --filter @lengentic/database db:migrate",
     "db:reset": "pnpm --filter @lengentic/database db:reset",
