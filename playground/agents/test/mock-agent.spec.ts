@@ -89,7 +89,7 @@ void describe('MockAgent — five-step workflow shape', () => {
     assert.equal((planStarted?.payload as { parentStepId: string | null }).parentStepId, null);
   });
 
-  void it('carries the execution_strategy decision (mode, evaluatorVersion, awarenessContext) as the decision Step metadata', async () => {
+  void it('carries the execution_strategy Decision payload (§13) as the decision Step metadata', async () => {
     const transport = new RecordingTransport();
     const agent = new MockAgent({ seed: 1, telemetryConfig: { transport } });
     const result = await agent.run();
@@ -100,10 +100,22 @@ void describe('MockAgent — five-step workflow shape', () => {
     assert.ok(decisionStarted);
     const metadata = (decisionStarted.payload as { metadata: Record<string, unknown> }).metadata;
     assert.equal(metadata.decisionType, 'execution_strategy');
-    assert.equal(metadata.mode, result.strategy.mode);
-    assert.equal(metadata.evaluatorVersion, result.strategy.evaluatorVersion);
-    assert.ok(String(metadata.evaluatorVersion).startsWith('strategy-evaluator@'));
-    assert.ok(typeof metadata.awarenessContext === 'object' && metadata.awarenessContext !== null);
+    assert.deepEqual(metadata.availableOptions, ['sequential', 'parallel']);
+    assert.equal(metadata.selectedOption, result.strategy.mode);
+    assert.equal(typeof metadata.contextKey, 'string');
+    assert.equal(metadata.contextKeyVersion, 'execution-strategy-context-key@1');
+    assert.ok(typeof metadata.rawContext === 'object' && metadata.rawContext !== null);
+    const rawContext = metadata.rawContext as Record<string, unknown>;
+    assert.ok(typeof rawContext.evaluation === 'object' && rawContext.evaluation !== null);
+    const evaluation = rawContext.evaluation as Record<string, unknown>;
+    assert.equal(evaluation.eligible, result.strategy.eligible);
+    assert.equal(evaluation.evaluatorVersion, result.strategy.evaluatorVersion);
+    assert.ok(String(evaluation.evaluatorVersion).startsWith('strategy-evaluator@'));
+    // The interim shape this Step used to carry directly — this packet's own binding
+    // finding (BACKLOG.md "p3.strategy-telemetry must remove the interim decision Step,
+    // not add beside it") — must not still be present alongside the new one.
+    assert.equal('mode' in metadata, false);
+    assert.equal('awarenessContext' in metadata, false);
   });
 });
 

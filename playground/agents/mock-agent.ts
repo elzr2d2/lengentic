@@ -5,13 +5,15 @@
  * `Mock Agent → Telemetry SDK → LenGentic` — the independent consumer that proves a host
  * can be instrumented through the SDK's public entry alone.
  *
- * It composes three things earlier Phase 3 packets already shipped, each through its own
+ * It composes four things earlier Phase 3 packets already shipped, each through its own
  * package entry (never a deep import):
  *   - `../providers` (`p3.mock-provider`)  — deterministic, offline step output.
  *   - `../determinism` (`p3.seeded-clock`) — a seeded `Clock`/`IdGenerator` pair wired into
  *     a real `TelemetryClient`.
  *   - `../strategy` (`p3.strategy-evaluator`) — the sequential-vs-parallel verdict for the
  *     Execute phase's tasks.
+ *   - `../workflows` (`p3.strategy-telemetry`) — turns that verdict into the
+ *     `execution_strategy` Decision payload (§13) this class emits.
  * `../index` (the Playground's composition root) is the one place any of that reaches
  * `@lengentic/telemetry-sdk` — this module never imports the SDK directly.
  *
@@ -47,6 +49,7 @@ import {
   type AwarenessContext,
   type EvaluationResult,
 } from '../strategy';
+import { buildExecutionStrategyDecision } from '../workflows';
 
 /**
  * These four shapes are the SDK's own `RunHandle`/`StepHandle`/`StartStepInput`/
@@ -415,33 +418,30 @@ export class MockAgent {
    * Emits the Execute phase's sequential-vs-parallel verdict "as ordinary telemetry" (§29:
    * "the decision is emitted as an ordinary Decision", not a second pipeline) — a nested
    * Step, started and completed immediately, whose `metadata` carries the full
-   * `EvaluationResult` plus the `awarenessContext` it was computed from. This is
-   * deliberately not a proper `execution_strategy` `Decision` entity: that wire shape
-   * (`decisionType`, `rawContext` redaction/size-capping per §15) is `p3.strategy-telemetry`
-   * (Phase 3 wave 2), which itself needs `p4.sdk-decisions` to persist end-to-end — neither
-   * exists yet. A Step is the closest existing telemetry primitive this run can actually
-   * reach through `../index`, and it already carries everything a later `Decision` emitter
-   * needs to read back.
+   * `execution_strategy` Decision payload (`../workflows`'s `buildExecutionStrategyDecision`):
+   * `decisionType`, `availableOptions`, `selectedOption`, `contextKey`, `contextKeyVersion`,
+   * and `rawContext` (§29's `awarenessContext` — topology, resources, readiness, limits,
+   * risk, `evaluation`). One verdict, emitted once.
+   *
+   * This is still not a proper `execution_strategy` `Decision` *entity* — that wire event
+   * (`p4.sdk-decisions`, §13) does not exist yet: `platform/shared/schema/event-type.ts`
+   * enumerates exactly `run.*`/`step.*`, and `platform/telemetry-sdk/src/handles.ts` exposes
+   * exactly `RunHandle`/`StepHandle`. A Step is the closest existing telemetry primitive this
+   * run can actually reach through `../index`, so it carries the Decision-shaped payload
+   * `../workflows` builds — not a narrower, Step-specific shape invented to fit the
+   * primitive. When `p4.sdk-decisions` lands, `buildExecutionStrategyDecision`'s return value
+   * is what a real Decision emission takes verbatim; only this method's call changes.
    */
   private recordStrategyDecision(executeStep: StepHandle, strategy: EvaluationResult): void {
     const context =
       this.awarenessContextOverride ??
       buildDefaultAwarenessContext(this.tasks.length, this.availableConcurrency);
+    const decision = buildExecutionStrategyDecision(context, strategy);
     const decisionStep = executeStep.startStep({
       name: 'execution_strategy',
       agentName: AGENT_NAME,
       type: 'decision',
-      metadata: {
-        decisionType: 'execution_strategy',
-        mode: strategy.mode,
-        eligible: strategy.eligible,
-        reasons: strategy.reasons,
-        blockers: strategy.blockers,
-        requestedConcurrency: strategy.requestedConcurrency,
-        effectiveConcurrency: strategy.effectiveConcurrency,
-        evaluatorVersion: strategy.evaluatorVersion,
-        awarenessContext: context,
-      },
+      metadata: { ...decision },
     });
     decisionStep.complete();
   }
