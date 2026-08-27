@@ -872,7 +872,7 @@
         }
       ],
       "own": {
-        "allowed": ["playground/workflows/**", "playground/agents/**"]
+        "allowed": ["playground/workflows/**"]
       },
       "validate": ["pnpm test", "pnpm gates"],
       "risk": "medium",

@@ -30,13 +30,16 @@
  * ## Boundedness (§15)
  *
  * `rawContext` here is the caller's own `AwarenessContext` (`playground/strategy/types.ts`)
- * plus `evaluation` — every field in both is a fixed-shape enum, `TriBool`, count, or a
- * `ReasonCode` (`{ code, message }`, both short and finite in number, never free text
- * appended without bound). Nothing here is a path, a hash, a timestamp, or a user-supplied
- * string, so the payload is bounded by construction; the SDK's own per-event cap
+ * plus `evaluation` — almost every field in both is a fixed-shape enum, `TriBool`, count,
+ * or a `ReasonCode` (`{ code, message }`, both short and finite in number). The one
+ * exception is `risk.reasons: readonly string[]` — caller-supplied free text, unbounded,
+ * reachable through the public `MockAgentConfig.awarenessContext` escape hatch and copied
+ * verbatim into `rawContext`. It is kept out of `contextKey` (§14), but this module applies
+ * no cap and no redaction of its own; the only guard is the SDK's per-event cap
  * (`platform/shared/schema/limits.ts` `maxEventPayloadBytes`, enforced by
- * `platform/telemetry-sdk/src/events.ts` `checkEnvelope`) is the backstop, not the only
- * guard.
+ * `platform/telemetry-sdk/src/events.ts` `checkEnvelope`), and that guard DROPS the whole
+ * event (`droppedTooLarge`) rather than truncating it. Real redact/cap per §15 lands with
+ * `p4.payload-safety`.
  */
 import type { AwarenessContext, EvaluationResult, Mode, ReasonCode } from '../strategy';
 

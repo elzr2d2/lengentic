@@ -2474,3 +2474,84 @@ MockProvider today — exemplar concern, not defect); S5 undefined-slot guard `r
 `continue` belongs; S6 determinism pinned only on the degenerate single-task path (Reviewer
 verified parallel-mode byte-identity by hand; nothing in the suite pins it).
 **Trigger:** next edit to `playground/agents/mock-agent.ts`.
+
+## Discovered during p3.cli, filed at the Phase 3 wave-4 gate (2026-08-27)
+
+### `TelemetryClient.flush()` can abandon a retry wait outside `shutdown()`, exiting 0 with no error
+
+Reproduced by the `p3.cli` Builder against an unreachable API. `Client.schedule()`
+(`platform/telemetry-sdk/src/client.ts`) sets `keepProcessAlive: this.draining`, true only
+inside `performShutdown()`. A plain `await flush()` needing a retry backoff arms an unref'd
+timer; in a short-lived script Node exits before it fires — the `flush()` promise is silently
+abandoned and the process exits 0 with no output, no error, no telemetry stats. Same shape as
+the already-fixed MockProvider R1 bug, one layer up. Repro: default `maxRetries` (3) against
+`http://localhost:3001` with nothing listening -> `agent.run()` never resolves, exit 0, zero
+stdout. Workaround in `playground/cli/happy-path.ts` today: `telemetryConfig: { maxRetries: 0 }`
+(no backoff ever scheduled) — not a fix. Fix location: `platform/telemetry-sdk/src/client.ts`
+(`schedule()` / `deliverBatch()`), outside every `playground/**` lane's surface.
+**Trigger:** next edit to `platform/telemetry-sdk/src/**`, or any consumer calling `flush()`
+without `shutdown()`.
+
+## Discovered at the Phase 3 wave-4 gate — Reviewer over `2649e96..HEAD`, p3.cli + p3.strategy-telemetry (2026-08-27)
+
+1 blocking (S-2, fixed at the gate: false "bounded by construction" doc claim in
+`playground/workflows/execution-strategy.ts` — corrected to name `risk.reasons` as the one
+unbounded caller-supplied field and the SDK's drop-not-truncate backstop). S-6 stale pointer
+and Sc-D graph-surface overlap also fixed at the gate. Non-blocking residue below, filed with
+triggers. Validator PASSED (653/653, Sc1 removal verified, 3 mutation kills).
+
+### CLI telemetry line omits two drop counters and exit code ignores delivery
+
+S-1 (MEDIUM). `playground/cli/happy-path.ts:93-104` prints 5 of 7 counters — `droppedTooLarge`
+and `droppedAfterShutdown` omitted, both provably 0 today, but this wave made
+`droppedTooLarge` newly plausible (large nested `rawContext`). Exit code is independent of
+delivery. **Trigger:** `p4.payload-safety`, or the Phase 3 phase gate citing this command as
+delivered-path evidence.
+
+### `recordStrategyDecision` rebuilds the awareness context instead of receiving it
+
+S-3 (LOW). `playground/agents/mock-agent.ts:436-439` vs `:354-358` — the recomputation carries
+the §14 grouping key and stored provenance; nothing asserts the two contexts are equal. If
+`buildDefaultAwarenessContext` ever gains a run-dependent input, `rawContext` silently stops
+being the context the verdict came from. Thread the one object through.
+**Trigger:** `p4.sdk-decisions`.
+
+### `rawContext` spread is shallow — caller can mutate queued telemetry
+
+S-4 (LOW). `execution-strategy.ts` `{ ...context }` leaves nested objects by reference; SDK
+queues the envelope by reference and serializes only at the size check. A caller reusing one
+`AwarenessContext` across runs can retroactively alter queued-but-unflushed telemetry. Same
+class as the wave-2 seed-aliasing repair. **Trigger:** `p4.payload-safety` (safe serialize).
+
+### `--seed=` parses to 0; space form and unknown flags silently ignored
+
+S-5 (LOW). `happy-path.ts:59-68` — `Number('') === 0`; `--seed 42` and typo'd flags yield a
+default-seed run that looks parameterised. Default-case test is a self-comparison pinning
+nothing. **Trigger:** `p6.seed-repro`.
+
+### Decision-entity DoD line must stay explicitly unchecked at the phase gate
+
+Sc-A (MEDIUM). "The decision reaches the Platform as an `execution_strategy` Decision and is
+retrievable" is unmet by design — payload rides as Step metadata until `p4.sdk-decisions`.
+Hazard: a phase-gate reader sees `decisionType: 'execution_strategy'` in metadata and checks
+the box. The string is there; the requirement is not. **Trigger:** Phase 3 phase gate, then
+`p4.sdk-decisions`.
+
+### No redaction anywhere on the rawContext path
+
+Sc-B (MEDIUM). "`rawContext` is redacted and size-capped per §15" — no redaction exists;
+capping is the SDK's 64 KiB whole-event drop. **Trigger:** `p4.payload-safety`.
+
+### Delivered-path evidence for happy-path does not exist in the tree
+
+Sc-C (MEDIUM). DoD "creates a complete Run visible in LenGentic" — every automated assertion
+is on the undelivered path (`delivered=0 droppedUndeliverable=12`, exit 0). **The Phase 3
+phase gate must run `pnpm playground:happy-path` against `pnpm dev` and cite delivered
+counts, or record the line unverified.** **Trigger:** Phase 3 phase gate (mandatory).
+
+### Batch-scoped path-overlap gate cannot see overlap between DONE nodes
+
+Sc-D residue (LOW). Fixed the instance (surface narrowed back to `playground/workflows/**`),
+but `pathOverlaps` in `scripts/lanes.ts:305-315` only compares units inside one dispatch
+batch — two DONE nodes sharing a surface would pass R7/R8 on a repair re-dispatch.
+**Trigger:** next graph surface amendment, or a repair wave re-dispatching DONE nodes.

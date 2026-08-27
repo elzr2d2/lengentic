@@ -35,8 +35,8 @@
  * (`playground/providers/mock-provider.ts`'s own `keepProcessAlive: true` fix), just one
  * layer up, in a file `playground/cli/**` cannot touch (`playground-sdk-public-entry-only`
  * forbids reaching `platform/telemetry-sdk/src/**` at all, and this packet's
- * `allowed_paths` forbid editing it either way). Reported to
- * `.artifacts/backlog/pending.md` rather than fixed here.
+ * `allowed_paths` forbid editing it either way). Filed to `BACKLOG.md` ("Discovered during
+ * p3.cli, filed at the Phase 3 wave-4 gate") rather than fixed here.
  *
  * `maxRetries: 0` sidesteps it without touching the SDK: `deliverBatch` breaks out on
  * `attempt === maxAttempts` *before* scheduling a backoff, so with `maxAttempts = 1` no
