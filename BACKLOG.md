@@ -2794,3 +2794,33 @@ turn (rate limit, auth failure, spawn error) is a retry, not an attempt — and 
 `resume` report the phantom count it is carrying. **Ruled out:** raising `--max-repairs` as
 the remedy; that raises the escalation bar for real failures too and needs a naming record.
 **Trigger:** next recurrence, or next edit to `supervise.ts` repair accounting.
+
+## Discovered at the Phase 4 integration of `p4.wire-decisions` (2026-08-31)
+
+### No node owns the ingest write path for the four Phase 4 entities
+
+**Source:** `p4.wire-decisions` (`b37a95d`). The five schemaVersion `'2'` types now parse and
+`p4.entities` (`2d38a9c`) created the Decision / ModelCall / ToolCall / Error tables, but
+nothing writes them. `merge-rules.ts` folds Run and Step lifecycle state and nothing else, so
+`TelemetryService.ingest` rejects all five event-level with `EVENT_TYPE_NOT_INGESTIBLE` —
+deliberately, because routing them through `entityKindOf`'s Run/Step split would upsert a
+Decision id into the Step table and accept-and-drop would return ACCEPTED for an event nothing
+stored (`.artifacts/evidence/4/p4.wire-decisions-seam.md`).
+
+The gap is in the graph, not the code. `p4.attestation` owns `platform/api/src/**` with
+`platform/api/src/telemetry/**` forbidden (the amendment at `f5e01c1`, which was correct:
+two nodes must not claim `event-mapping.ts`). The ingest pipeline lives inside that
+exclusion. So as the graph stands, no node can both write the persistence and delete
+`EVENT_TYPE_NOT_INGESTIBLE`, and Phase 4's DoD cannot close without an amendment.
+
+Not escalated from the lane: it blocks no acceptance criterion of `p4.wire-decisions`, and
+`p4.attestation` has not been dispatched yet, so nothing is stuck today.
+
+**What would make it worth doing:** `p4.attestation` reaching DISPATCH — it is the first node
+that hits the wall. The fix shape is one graph decision, not code: either lift the
+`platform/api/src/telemetry/**` exclusion on `p4.attestation` now that
+`p4.wire-decisions` is integrated and no longer holds the file open, or add a wave-2 node that
+owns the ingest write path alone. **Ruled out:** letting `p4.attestation` widen its own
+boundary at dispatch time — that is the rule `pnpm lanes check` exists to enforce.
+**Trigger:** the dispatch of `p4.attestation`. Deleting `EVENT_TYPE_NOT_INGESTIBLE` and its
+tests is the completion signal.
