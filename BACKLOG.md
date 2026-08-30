@@ -2935,3 +2935,53 @@ check:probes` still passes a probe that a dependency sharing the node's declared
 satisfy — the mechanism by which `p4.payload-safety` reported DONE with no code, since it and
 `p2.sdk-core` both declare `platform/telemetry-sdk/**`. Duplicate of the `lintProbes` entry above;
 kept only as a cross-reference so the two are closed together. **Trigger:** the same sitting.
+
+---
+
+## Discovered while implementing `p4.payload-safety` (2026-08-31)
+
+### `tool_call.recorded` has nowhere to put the sanitized `inputFingerprint`
+
+**Source:** the §15 pipeline is `safe serialization → redaction → size cap → stable sanitized
+fingerprint where required → enqueue`, and the SDK now implements all of it. But
+`platform/shared/schema/tool-call-events.ts` has no fingerprint field, so the fourth step has no
+wire destination. `platform/analysis-engine/src/tool-call.ts:22` declares
+`ToolCallRecord.inputFingerprint` as "Caller-owned. The engine never sees raw tool input or
+output — only this", and §20.2 groups a failing streak by `(runId, toolName, inputFingerprint)`.
+
+The SDK exports `fingerprintOf(value)` so a caller _can_ compute the hash over sanitized,
+canonicalized data — which is the part that matters, because it is what makes "never fingerprint
+raw secrets" mechanical. What is missing is the field that carries it. Today the only way the
+engine could obtain an `inputFingerprint` is for the ingest write path to derive one server-side
+from `ToolCall.input` — which is the **truncated** value when the cap fired, so two identical
+1MB inputs truncated at different points would fingerprint differently and the §20.2 streak would
+silently fail to group. That is a false negative in a recommendations product, and it is invisible.
+
+**Why not here:** `platform/shared/**` is `p4.wire-decisions`' surface and forbidden to this
+packet. Adding a field is a wire-contract change with a schemaVersion question attached
+(ADR 0005), which is a contract packet's decision, not a lane's.
+
+**What would make it worth doing:** before `p5.repeated-failed` (5b wave 3) consumes
+`inputFingerprint` for real. Until then no analyzer reads the field and nothing is wrong on disk.
+**Options:** (a) add `inputFingerprint: z.string().nullish()` to `ToolCallRecordedPayloadSchema`
+and have the SDK populate it from the uncapped sanitized value — the SDK is the only party that
+still holds it; (b) derive it at the persistence edge and accept that a truncated input cannot
+group. (a) is the only one that survives truncation. **Trigger:** the Phase 4 phase gate, or the
+first packet that reads `ToolCallRecord.inputFingerprint`.
+
+### `captureToolIO: false` reports `inputBytes: 0`, which reads as "the input was empty"
+
+**Source:** §15's opt-out "disables input/output capture entirely while retaining timing and
+success data", and `inputBytes`/`outputBytes` are non-nullable non-negative integers on the wire
+(`tool-call-events.ts`), so the SDK must send _some_ number. It sends `0`. A reader cannot tell
+"the host opted out of capture" from "the tool was called with no input" — and the two mean very
+different things when a Run Explorer renders a tool call with nothing in it.
+
+**Why not here:** the third state has to be expressible on the wire, and that is
+`platform/shared/**`. Documented in `SafeToolIO`'s doc comment and in the SDK README rather than
+left implicit.
+
+**What would make it worth doing:** when `p4.run-explorer` renders ToolCall input/output — that
+is the first consumer that has to choose what to draw. **Options:** a nullable `inputBytes`, or a
+`capturedIO: boolean` on the payload. **Ruled out:** a sentinel like `-1`, which is the same
+ambiguity with a worse type. **Trigger:** `p4.run-explorer`.
