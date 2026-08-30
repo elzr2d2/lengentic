@@ -14,9 +14,14 @@ import {
   parseTelemetryEvent,
   type IngestResponse,
   type IngestResult,
-  type TelemetryEvent,
 } from '@lengentic/shared';
-import { entityKindOf, toMergeEvent, type EntityKind } from './event-mapping';
+import {
+  isMergeableEvent,
+  mergeEntityKindOf,
+  toMergeEvent,
+  type EntityKind,
+  type MergeableTelemetryEvent,
+} from './event-mapping';
 import { mergeEvent } from './merge-rules';
 import { TelemetryRepository } from './telemetry.repository';
 import {
@@ -28,7 +33,7 @@ import {
 
 interface BatchItem {
   readonly index: number;
-  readonly event: TelemetryEvent;
+  readonly event: MergeableTelemetryEvent;
 }
 
 interface EntityGroup {
@@ -344,7 +349,25 @@ export class TelemetryService {
           continue;
         }
 
-        const kind = entityKindOf(event.type);
+        // Phase 4 widened the wire contract to nine types; `merge-rules.ts` still folds
+        // four. `entityKindOf` answers `null` for the five it cannot place, and this is
+        // where that becomes a visible result rather than a Decision row written into the
+        // Step table. Event-level, like every other rejection above: a batch that mixes
+        // run/step events with decision events still lands the run/step ones.
+        if (!isMergeableEvent(event)) {
+          results[index] = {
+            eventId: event.eventId,
+            status: 'REJECTED',
+            error: {
+              code: INGEST_ERROR_CODES.EVENT_TYPE_NOT_INGESTIBLE,
+              message: `event type '${event.type}' is part of the wire contract but has no server-side persistence yet`,
+            },
+          };
+          rejected++;
+          continue;
+        }
+
+        const kind = mergeEntityKindOf(event);
         const key = `${kind}:${event.entityId}`;
         let group = groups.get(key);
         if (!group) {

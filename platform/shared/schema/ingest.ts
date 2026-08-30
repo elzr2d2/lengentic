@@ -18,6 +18,20 @@ export const INGEST_ERROR_CODES = Object.freeze({
   // are not available once the body has been JSON-parsed into `unknown`, so
   // `parseTelemetryEvent` deliberately does not attempt this check).
   EVENT_TOO_LARGE: 'EVENT_TOO_LARGE',
+  // Phase 4. The schemaVersion '2' types (`decision.*`, `model_call.recorded`,
+  // `tool_call.recorded`, `error.recorded`) are part of the wire contract — they parse, they
+  // are not UNKNOWN_EVENT_TYPE, and an emitter built against v2 is not doing anything wrong.
+  // What does not exist yet is their server-side persistence: `merge-rules.ts` folds Run and
+  // Step lifecycle state and nothing else, and the Decision / ModelCall / ToolCall / Error
+  // tables (p4.entities) have no ingest path until `p4.attestation` lands one.
+  //
+  // Three answers were available and two of them lie. Routing these types through
+  // `entityKindOf`'s Run/Step split writes a decision id into the Step table; accepting and
+  // dropping them returns ACCEPTED for an event that was never stored. Both read as working
+  // software. This code is the third: the event is REJECTED, event-level, with a reason that
+  // says exactly which part of the stack is missing. It is expected to become unreachable —
+  // deleting it is what "the persistence landed" looks like.
+  EVENT_TYPE_NOT_INGESTIBLE: 'EVENT_TYPE_NOT_INGESTIBLE',
 } as const);
 
 export type IngestErrorCode = (typeof INGEST_ERROR_CODES)[keyof typeof INGEST_ERROR_CODES];

@@ -75,13 +75,17 @@ describe('public entry — literals from the plan', () => {
     expect(Object.keys(TELEMETRY_PAYLOAD_SCHEMAS)).toEqual(TELEMETRY_EVENT_TYPES);
   });
 
-  it('INGEST_ERROR_CODES is the four §12 codes plus ADR-0006 EVENT_TOO_LARGE, and is frozen', () => {
+  it('INGEST_ERROR_CODES is the four §12 codes, ADR-0006 EVENT_TOO_LARGE and Phase 4 EVENT_TYPE_NOT_INGESTIBLE, and is frozen', () => {
     expect(INGEST_ERROR_CODES).toEqual({
       UNSUPPORTED_SCHEMA_VERSION: 'UNSUPPORTED_SCHEMA_VERSION',
       UNKNOWN_EVENT_TYPE: 'UNKNOWN_EVENT_TYPE',
       MISSING_REQUIRED_FIELD: 'MISSING_REQUIRED_FIELD',
       INVALID_PAYLOAD: 'INVALID_PAYLOAD',
       EVENT_TOO_LARGE: 'EVENT_TOO_LARGE',
+      // Phase 4. A type the wire contract accepts and the server cannot yet store — see the
+      // note on the constant. Listed here rather than left to grow silently: this assertion
+      // is the thing that makes adding a rejection reason a deliberate act.
+      EVENT_TYPE_NOT_INGESTIBLE: 'EVENT_TYPE_NOT_INGESTIBLE',
     });
     expect(Object.isFrozen(INGEST_ERROR_CODES)).toBe(true);
   });
