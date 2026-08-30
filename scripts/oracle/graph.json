@@ -925,6 +925,33 @@
       "changeClass": "contract"
     },
     {
+      "id": "p4.wire-decisions",
+      "phase": 4,
+      "lane": "contract",
+      "title": "decision.* wire types in platform/shared/schema — decision.recorded + decision.outcome_attested payloads (§13/§14) plus the modelCall/toolCall/error event types Phase 4 ingests; schemaVersion bump per ADR 0005",
+      "owner": "builder",
+      "needs": ["p2.shared-schema"],
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/shared/schema",
+          "pattern": "decision\\.recorded"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/shared/schema",
+          "pattern": "decision\\.outcome_attested"
+        }
+      ],
+      "note": "Probe is schema-source only: platform/shared/test already contains 'decision.recorded' in a NEGATIVE spec (rejection-reasons.spec.ts), which satisfied a wider probe before any work — the exact oracle-lie mode check:probes exists for. Added 2026-08-30 at the trigger-6 escalation (graph gap): ADR 0005 deferred decision wire types to Phase 4 but no Phase 4 node owned platform/shared. Option A of .artifacts/evidence/4/p4.sdk-decisions-blocked-wire-contract.md; B (lane widening) rejected per CLAUDE.md dispatch rules, C (client-side stub) rejected as a Sc-A false-green rerun.",
+      "own": {
+        "allowed": ["platform/shared/**"]
+      },
+      "validate": ["pnpm typecheck", "pnpm check:boundaries", "pnpm gates"],
+      "risk": "high",
+      "changeClass": "contract"
+    },
+    {
       "id": "p4.payload-safety",
       "phase": 4,
       "lane": "sdk",
@@ -952,7 +979,7 @@
       "lane": "sdk",
       "title": "recordDecision returns a handle exposing decisionId",
       "owner": "builder",
-      "needs": ["p2.sdk-core", "p2.shared-schema"],
+      "needs": ["p2.sdk-core", "p2.shared-schema", "p4.wire-decisions"],
       "probes": [
         {
           "kind": "grep",
