@@ -2894,3 +2894,44 @@ trigger as the write-path entry above and should be resolved in the same sitting
 ownership, then move the probe to wherever the work actually lands. **Ruled out:** leaving the
 old `platform/api/src` probe in place until the decision is made; that is the false green this
 gate exists to have caught. **Trigger:** the dispatch of `p4.attestation`.
+
+### The autopilot permission floor forbids a worker its own outcome envelope
+
+**Source:** repair attempt 2 of the Phase 4 wave gate, run `d9c2177c`, worker
+`repair-gate-0f8e9a9b`. Evidence: `.artifacts/evidence/4/wave-gate/repair-3/repair.md`,
+section "Second defect found".
+
+`.claude/autopilot-permissions.json` denies `Write(./.autopilot/**)` and `Edit(./.autopilot/**)`.
+`scripts/autopilot/worker.ts` requires every worker to write `.autopilot/handoffs/<workerId>.json`
+or the supervisor records FAILED — after a clean exit, and when the work succeeded. The two rules
+contradict, and `BLOCKED` is not an escape because reporting `BLOCKED` means writing that same
+file. It has already cost real work: `repair-gate-5ee8525d` fixed `flow record`, committed
+`2e29ba6`, and was journalled `RUNNING -> FAILED  exited 0 without a valid outcome envelope`, so
+the supervisor learned nothing from a correct repair and spent another gate worker.
+
+Two parts, both for a human — a worker cannot touch the floor, and should not be able to:
+
+1. Narrow the glob. `Write(./.autopilot/handoffs/**)` is the supervisor's own mandated report
+   channel and must be permitted; `state.json`, `journal.jsonl`, `leases/**`, `escalations/**` and
+   the stop flag are the run's own bounds and must stay denied. The pattern language has no
+   negation, so the denied subpaths have to be enumerated instead of the tree. Keep
+   `Edit(./.autopilot/handoffs/**)` denied — writing your own report is not editing a peer's.
+2. The floor is not currently a floor. `.claude/settings.local.json` allows `Bash(npx tsx *)` — an
+   arbitrary script interpreter with full filesystem access — so every `Write`/`Edit` deny in the
+   floor is reachable around it. Remove that allow or narrow it to a fixed script path. Until then
+   `docs/decisions/0013-autonomous-execution-fails-closed.md` overstates what is enforced.
+
+**What would make it worth doing:** part 1 the next time any worker must report; it is silently
+converting successes into FAILED right now. Part 2 before the floor is cited as containment
+anywhere. **Ruled out:** dropping the `.autopilot/**` deny wholesale — a worker that can rewrite
+`state.json` or the journal can rewrite the run's own bounds, which is what the rule is for.
+**Trigger:** the next supervised run, or any change to `.claude/autopilot-permissions.json`.
+
+### `resolveGraph()` re-runs probes but `lintProbes` still cannot see a dependency's surface
+
+**Source:** the same repair. Fixing the stale in-memory graph (`loadGraph()`) closed the reason
+the supervisor could not see a probe repair, but it does not make a probe honest. `pnpm
+check:probes` still passes a probe that a dependency sharing the node's declared surface can
+satisfy — the mechanism by which `p4.payload-safety` reported DONE with no code, since it and
+`p2.sdk-core` both declare `platform/telemetry-sdk/**`. Duplicate of the `lintProbes` entry above;
+kept only as a cross-reference so the two are closed together. **Trigger:** the same sitting.

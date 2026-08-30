@@ -36,7 +36,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  graph,
+  loadGraph,
   resolveGraph,
   loadActivation,
   lifecycleOf,
@@ -64,6 +64,7 @@ export interface Segment {
  * config error — silence here is how a packet falls out of delivery entirely.
  */
 export function segmentsOf(byId: Map<string, Resolved>): Segment[] | { error: string } {
+  const graph = loadGraph();
   const order = graph.executionOrder ?? [];
   if (order.length === 0) return { error: 'graph.executionOrder is missing or empty' };
   const named = graph.segments ?? {};

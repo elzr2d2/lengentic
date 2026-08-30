@@ -100,9 +100,29 @@ export interface Resolved extends Node {
   wave: number;
 }
 
-export const graph = JSON.parse(
-  readFileSync(join(ROOT, 'scripts/oracle/graph.json'), 'utf8'),
-) as Graph;
+const GRAPH_PATH = join(ROOT, 'scripts/oracle/graph.json');
+
+/**
+ * The delivery graph, as it is on disk NOW.
+ *
+ * This used to be `export const graph = JSON.parse(readFileSync(...))` — read once, at module
+ * load. `resolveGraph()` re-ran the probes on every call, so the answer looked live, but the
+ * probe DEFINITIONS came from that frozen snapshot. In a one-shot CLI nothing can go wrong. In
+ * a long-lived process it goes wrong silently and in the worst direction: the autopilot
+ * supervisor imports `flow.ts` once and calls `nextAction()` once per iteration, so a worker
+ * that narrows a false-green probe and commits it changes nothing the supervisor can see, for
+ * the rest of the run. Not hypothetical — the Phase 4 wave gate spent two gate workers and a
+ * repair worker on exactly this, each correctly reporting from its own fresh process that no
+ * gate was owed while the supervisor kept re-deriving WAVE_GATE from probes that no longer
+ * existed on disk.
+ *
+ * Re-read rather than cached on mtime: a cache keyed on anything but the bytes is a smaller
+ * version of the same bug, and parsing ~66 KB is nothing beside the filesystem walk every
+ * `grep` probe already does.
+ */
+export function loadGraph(): Graph {
+  return JSON.parse(readFileSync(GRAPH_PATH, 'utf8')) as Graph;
+}
 
 // ── probes ────────────────────────────────────────────────────────────────────────────
 
@@ -168,6 +188,7 @@ function runProbe(p: ProbeSpec): boolean {
 // ── resolution ────────────────────────────────────────────────────────────────────────
 
 export function resolveGraph(): Map<string, Resolved> {
+  const graph = loadGraph();
   const byId = new Map<string, Resolved>();
   const unansweredBlocks = new Map<string, string[]>();
 
@@ -380,7 +401,7 @@ function sliceSection(plan: string, id: string): string | null {
  * default is a category and a Builder needs a boundary.
  */
 function ownershipBlock(n: Resolved): string[] {
-  const policy = graph.lanePolicy;
+  const policy = loadGraph().lanePolicy;
   const declared = n.own?.allowed ?? [];
   const forbidden = [...(n.own?.forbidden ?? []), ...policy.alwaysForbidden];
 
@@ -480,7 +501,7 @@ export function verificationBlock(n: Resolved): string[] {
     '',
   );
 
-  const openDecisions = graph.decisions.filter((d) => !d.answered && d.blocks.includes(n.id));
+  const openDecisions = loadGraph().decisions.filter((d) => !d.answered && d.blocks.includes(n.id));
   const packetCaps = perPacketCaps(cls, openDecisions.length, activation);
   const cadence: Record<string, string> = {
     'per-node':
@@ -606,6 +627,7 @@ function packet(byId: Map<string, Resolved>, id: string): string {
   const n = byId.get(id);
   if (!n) throw new Error(`unknown node: ${id}`);
 
+  const graph = loadGraph();
   const plan = readFileSync(join(ROOT, graph.planRef), 'utf8');
   const wanted = graph.sections[id] ?? [];
   const slices = wanted.map((s) => sliceSection(plan, s)).filter((s): s is string => s !== null);
@@ -788,7 +810,7 @@ function unblock(byId: Map<string, Resolved>): string {
 
   for (const [root, gated] of ranked) {
     const node = byId.get(root);
-    const decision = graph.decisions.find((d) => d.id === root);
+    const decision = loadGraph().decisions.find((d) => d.id === root);
 
     const label = node
       ? `${node.owner === 'human' ? 'ENV     ' : 'DISPATCH'}  ${root}`
@@ -806,7 +828,7 @@ function unblock(byId: Map<string, Resolved>): string {
 }
 
 function decisions(): string {
-  const open = graph.decisions.filter((d) => !d.answered);
+  const open = loadGraph().decisions.filter((d) => !d.answered);
   if (open.length === 0) return '  all open decisions answered';
   return open
     .map(
@@ -817,6 +839,7 @@ function decisions(): string {
 }
 
 function markdown(byId: Map<string, Resolved>): string {
+  const graph = loadGraph();
   const md: string[] = [
     '# LenGentic — Project Status Matrix',
     '',

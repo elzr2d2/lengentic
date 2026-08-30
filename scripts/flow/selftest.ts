@@ -13,8 +13,9 @@
  * dead end as BLOCKED (F), and an unclear failure routes to Diagnostician (G).
  */
 
+import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import {
   transition,
@@ -28,10 +29,14 @@ import {
 import {
   lifecycleOf,
   loadActivation,
+  loadGraph,
   resolveGraph,
   resolveRoles,
+  type Graph,
   type Resolved,
 } from '../oracle.ts';
+
+const GRAPH_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'oracle');
 
 interface Result {
   n: number;
@@ -491,6 +496,43 @@ export function run_(): number {
         dirty.length === 3 && dirty.every((w) => /^(b|c|ghost) /.test(w)),
         'TODO, PARTIAL and unknown packets must each be refused by name; got ' +
           JSON.stringify(dirty),
+      )
+    );
+  });
+
+  scenario(16, 'a graph rewritten on disk is visible to the next read in the same process', () => {
+    // The supervisor is a long-lived process: it imports `flow.ts` once and calls
+    // `nextAction()` once per iteration, while its workers rewrite `scripts/oracle/graph.json`
+    // and commit. When the graph was `export const graph = JSON.parse(readFileSync(...))` it
+    // was read once at module load, so every one of those rewrites was invisible for the rest
+    // of the run — `resolveGraph()` kept re-running probe definitions that no longer existed.
+    //
+    // The mutation is one extra `sections` entry keyed by a name no node has, so a restore
+    // that somehow does not happen leaves a valid graph rather than a corrupt one — and the
+    // bytes are checked back anyway.
+    const path = join(GRAPH_DIR, 'graph.json');
+    const original = readFileSync(path, 'utf8');
+    const key = `selftest-freshness-${String(Date.now())}`;
+    let seen: string[] | undefined;
+    let restored = '';
+    try {
+      const parsed = JSON.parse(original) as Graph;
+      parsed.sections[key] = [key];
+      writeFileSync(path, JSON.stringify(parsed, null, 2), 'utf8');
+      seen = loadGraph().sections[key];
+    } finally {
+      writeFileSync(path, original, 'utf8');
+      restored = readFileSync(path, 'utf8');
+    }
+    return (
+      expect(
+        seen?.[0] === key,
+        'a rewrite of scripts/oracle/graph.json must be visible to the next loadGraph() in ' +
+          `the same process; got ${JSON.stringify(seen)} instead of [${key}]`,
+      ) ??
+      expect(
+        restored === original,
+        'the scenario must restore scripts/oracle/graph.json byte for byte',
       )
     );
   });

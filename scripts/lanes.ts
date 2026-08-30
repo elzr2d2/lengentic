@@ -34,8 +34,8 @@ import { fileURLToPath } from 'node:url';
 import { createLogger, evidenceIdFor, type Logger } from './lib/log.ts';
 import {
   describeProbe,
-  graph,
   lifecycleOf,
+  loadGraph,
   loadActivation,
   perPacketCaps,
   resolveGraph,
@@ -672,7 +672,7 @@ export function integrationPlan(order: string[], units: Unit[]): IntegrationStep
 // ── graph adapter ─────────────────────────────────────────────────────────────────────
 
 export function policy(): Policy {
-  const p = graph.lanePolicy;
+  const p = loadGraph().lanePolicy;
   return {
     maxConcurrency: p.maxConcurrency,
     minUnits: p.minUnits,
@@ -695,16 +695,16 @@ export function unitFrom(n: Resolved, byId: Map<string, Resolved>, batch: Set<st
     acceptance_criteria: n.probes.map(describeProbe),
     validation_commands: n.validate ?? [],
     allowed_paths: n.own?.allowed ?? [],
-    forbidden_paths: [...(n.own?.forbidden ?? []), ...graph.lanePolicy.alwaysForbidden],
+    forbidden_paths: [...(n.own?.forbidden ?? []), ...loadGraph().lanePolicy.alwaysForbidden],
     unknown_deps: n.needs.filter((d) => !byId.has(d)),
     in_batch_deps: n.needs.filter((d) => batch.has(d)),
     unresolved_deps: n.needs.filter(
       (d) => byId.has(d) && !batch.has(d) && byId.get(d)?.state !== 'DONE',
     ),
-    open_decisions: graph.decisions
-      .filter((d) => !d.answered && d.blocks.includes(n.id))
+    open_decisions: loadGraph()
+      .decisions.filter((d) => !d.answered && d.blocks.includes(n.id))
       .map((d) => d.id),
-    has_packet_source: (graph.sections[n.id]?.length ?? 0) > 0,
+    has_packet_source: (loadGraph().sections[n.id]?.length ?? 0) > 0,
   };
 }
 
@@ -1451,7 +1451,7 @@ async function main(): Promise<void> {
           ? String((parsed as Record<string, unknown>).task_id)
           : undefined);
       const unit =
-        taskId && graph.nodes.some((n) => n.id === taskId) ? unitsFor([taskId])[0] : null;
+        taskId && loadGraph().nodes.some((n) => n.id === taskId) ? unitsFor([taskId])[0] : null;
       const verdict = await validateHandoff(parsed, unit ?? null, { checkCommit: true });
 
       if (verdict.ok) {
