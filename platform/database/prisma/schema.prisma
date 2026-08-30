@@ -1,9 +1,9 @@
 // LenGentic database schema.
 //
-// The telemetry domain (Run, Step) landed in Phase 2. The rich entities (Decision, ModelCall,
-// ToolCall, Error) are still Phase 4. What Phase 1 proved is that the migration pipeline, the
-// client generator, and connectivity all work — adding speculative tables then would have
-// violated §8 and pre-commit decisions Phase 2 should own.
+// The telemetry domain (Run, Step) landed in Phase 2; the rich entities (Decision, ModelCall,
+// ToolCall, Error) landed in Phase 4 (p4.entities). What Phase 1 proved is that the migration
+// pipeline, the client generator, and connectivity all work — adding speculative tables then
+// would have violated §8 and pre-committed decisions Phase 2 should own.
 
 // Prisma 7 removed `url` from the datasource block. The connection string lives in
 // prisma.config.ts for migrations, and is passed to the client through a driver adapter
@@ -195,4 +195,165 @@ model IngestedEvent {
   /// "is this a duplicate" (equality lookup) and "no two rows for the same (runId, eventId)"
   /// (the constraint itself), so no separate `@@unique` is needed.
   @@id([runId, eventId])
+}
+
+// ---------------------------------------------------------------------------
+// Rich entities — MVP_PLAN_V3.md §13 (Decision, ModelCall, ToolCall, Error) and §14
+// (contextKey, attestation). Same doctrine as Run/Step: client-generated VarChar(128) ids
+// with no `@default`, VarChar(200) name-shaped columns mirroring NameSchema, no foreign
+// keys anywhere — events arrive out of order, and an FK would turn a legitimate
+// arrival-order permutation into a rejected event (see Step.runId).
+//
+// Nullability follows §13's own markers: §13 writes "nullable" or "optional" where it means
+// it (Step.parentStepId, ModelCall tokens) and is otherwise stating the caller's obligation,
+// which the wire contract enforces — the database stays permissive only where an event pair
+// can genuinely arrive in either order. Decision is the one model where that hazard is
+// broad: §14 makes attestation an independent event keyed on `decisionId`, and an
+// attestation for an unknown decisionId is accepted and stored, not rejected. An
+// attestation-first row therefore has an id, a runId (envelope-level, always present), the
+// outcome columns — and nothing else. Every other Decision column is nullable for exactly
+// that reason.
+// ---------------------------------------------------------------------------
+
+/// §13/§14 attested outcome. UNKNOWN is the pre-attestation state, not a failure.
+enum DecisionOutcome {
+  SUCCESS
+  FAILURE
+  UNKNOWN
+}
+
+/// §14: stays `CALLER | UNKNOWN`. An INFERRED value has no producer and would be
+/// speculative schema. Every surface reading this says "attested success rate" — the
+/// caller asserts the outcome; the Platform has no independent way to verify it.
+enum OutcomeAttestedBy {
+  CALLER
+  UNKNOWN
+}
+
+model Decision {
+  /// Client-generated (§11). Stable across processes — §14's cross-process attestation is
+  /// keyed on exactly this value.
+  id String @id @db.VarChar(128)
+
+  /// Required: every telemetry envelope carries `runId` (TelemetryEventEnvelopeSchema), so
+  /// even an attestation-first row has one. Plain column, no FK — see the header note.
+  runId String @db.VarChar(128)
+
+  /// Nullable for the attestation-first case in the header note, not because a recorded
+  /// decision may omit it.
+  stepId String? @db.VarChar(128)
+
+  /// The recurring decision point being analyzed, e.g. `execution_strategy` (§29).
+  /// Nullable: attestation-first.
+  decisionType String? @db.VarChar(200)
+
+  /// §14: caller-supplied, caller-computed (docs/decisions/0003). Null means the caller
+  /// supplied none OR only the attestation has landed; either way the row is stored but
+  /// EXCLUDED from aggregation — silent inclusion under a default key is how fake dominance
+  /// gets manufactured.
+  contextKey        String? @db.VarChar(200)
+  contextKeyVersion String? @db.VarChar(200)
+
+  /// Size-capped and redacted at ingestion (§15) — the database stores what survived.
+  /// Stored alongside the key so re-normalization stays possible without losing history.
+  /// Never contains hidden model chain-of-thought (§13).
+  rawContext Json?
+
+  /// JSON array of option names. selectedOption mirrors NameSchema's bound.
+  availableOptions Json?
+  selectedOption   String? @db.VarChar(200)
+
+  /// §14 attestation, last write wins: re-attesting the same decisionId overwrites all
+  /// three columns. Token usage stays on ModelCall — a second denominator for the same
+  /// tokens is how a run's cost gets double-counted (§13).
+  outcome           DecisionOutcome   @default(UNKNOWN)
+  outcomeAttestedBy OutcomeAttestedBy @default(UNKNOWN)
+  outcomeObservedAt DateTime?         @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([runId])
+  @@index([stepId])
+}
+
+model ModelCall {
+  id String @id @db.VarChar(128)
+
+  /// Plain columns, no FKs. Unlike Decision there is exactly one event type behind this
+  /// model, so §13's unmarked fields are simply required — no arrival-order hazard.
+  runId  String @db.VarChar(128)
+  stepId String @db.VarChar(128)
+
+  provider String @db.VarChar(200)
+  model    String @db.VarChar(200)
+
+  latencyMs Int
+
+  /// §13 marks exactly these two optional.
+  inputTokens  Int?
+  outputTokens Int?
+
+  /// §13 leaves the vocabulary unenumerated; the Phase 4 wire contract owns it. Free
+  /// string rather than a speculative enum — an enum invented here would reject values
+  /// the wire contract later accepts.
+  status String @db.VarChar(200)
+
+  metadata  Json?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([runId])
+  @@index([stepId])
+}
+
+model ToolCall {
+  id String @id @db.VarChar(128)
+
+  runId  String @db.VarChar(128)
+  stepId String @db.VarChar(128)
+
+  toolName String @db.VarChar(200)
+
+  /// Size-capped and redacted at ingestion (§15); nullable because "no input" / "no
+  /// output" is a legitimate tool shape and must not be a rejection — the same treatment
+  /// MetadataSchema gets everywhere else.
+  input  Json?
+  output Json?
+
+  /// Whether the §15 cap truncated the stored value; the *Bytes columns record the
+  /// original, pre-cap sizes so truncation loses the payload, not the measurement.
+  inputTruncated  Boolean @default(false)
+  outputTruncated Boolean @default(false)
+  inputBytes      Int
+  outputBytes     Int
+
+  /// Client clock (§13). Required: the SDK records a tool call after it finishes, in one
+  /// event — there is no start/completion pair to arrive out of order.
+  startedAt   DateTime @db.Timestamptz(3)
+  completedAt DateTime @db.Timestamptz(3)
+  durationMs  Int
+
+  /// `error` is null on success; §13 has no createdAt on ToolCall and none is added here.
+  success Boolean
+  error   String?
+
+  @@index([runId])
+  @@index([stepId])
+}
+
+model Error {
+  id String @id @db.VarChar(128)
+
+  runId  String @db.VarChar(128)
+  stepId String @db.VarChar(128)
+
+  type    String @db.VarChar(200)
+  /// Unbounded text, not VarChar — an error message is captured evidence, and truncating
+  /// evidence at an arbitrary column bound loses exactly the interesting cases.
+  message String
+
+  metadata  Json?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([runId])
+  @@index([stepId])
 }
