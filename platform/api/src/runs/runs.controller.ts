@@ -1,6 +1,7 @@
 import { Controller, Get, NotFoundException, Param, Query } from '@nestjs/common';
 import { IdSchema } from '@lengentic/shared';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
+import type { RunSummary } from './run-summary';
 import { RunsService } from './runs.service';
 import {
   RunsListQuerySchema,
@@ -43,5 +44,22 @@ export class RunsController {
     if (run === undefined) throw new NotFoundException('Run not found');
 
     return run;
+  }
+
+  /**
+   * §23's roll-up, at `GET /v1/runs/:id/summary`.
+   *
+   * A sibling resource rather than a field on `GET /v1/runs/:id`: the detail response is
+   * read on every run page, the roll-up scans a run's ModelCall and ToolCall rows, and
+   * folding it in would make every detail read pay for it. Same `IdSchema` pipe and same
+   * 404 as the detail route — an over-long id is a 400 there and must not become a 404 here.
+   */
+  @Get(':id/summary')
+  async summary(@Param('id', new ZodValidationPipe(IdSchema)) id: string): Promise<RunSummary> {
+    const summary = await this.runs.summaryFor(id);
+
+    if (summary === undefined) throw new NotFoundException('Run not found');
+
+    return summary;
   }
 }

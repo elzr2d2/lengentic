@@ -3,6 +3,7 @@ import { CLOCK, type Clock } from '../common/clock';
 import { STALE_THRESHOLD_MS } from './stale-threshold.provider';
 import type { RunRecord, StepRecord } from './run-record';
 import { RunsRepository } from './runs.repository';
+import { aggregateRunSummary, type RunSummary } from './run-summary';
 import { deriveRunViewStatus } from './stale';
 import type {
   RunDetailView,
@@ -78,6 +79,38 @@ export class RunsService {
       ...this.toRunSummaryView(record, now),
       steps: steps.map(toStepView),
     };
+  }
+
+  /**
+   * §23's metric roll-up for one run. Not `RunSummaryView` — see the name-collision note at
+   * the top of `run-summary.ts`.
+   *
+   * `undefined` for an unknown run, for the same reason `findById` returns it: whether that
+   * is a 404 is the controller's decision. The distinction matters more here than there —
+   * an unknown run and a run with no model or tool calls both aggregate to all-zeroes, and
+   * answering the first with zeroes would report "this run made no model calls" about a run
+   * the platform has never heard of.
+   *
+   * No clock argument: not one §23 field is time-derived. `totalModelLatencyMs` sums a
+   * stored client measurement, and a stale run's counts are still its counts.
+   */
+  async summaryFor(id: string): Promise<RunSummary | undefined> {
+    const record = await this.repository.findRun(id);
+    if (record === undefined) return undefined;
+
+    const [modelCalls, toolCalls] = await Promise.all([
+      this.repository.listModelCallMetrics(id),
+      this.repository.listToolCallMetrics(id),
+    ]);
+
+    return aggregateRunSummary(record.id, {
+      modelCalls,
+      toolCalls,
+      // Always `null` today, and passed explicitly rather than defaulted inside the
+      // aggregation so that the one place the platform would learn a drop count is a
+      // grep away. `run-summary.ts` states why no source exists.
+      droppedTelemetryEventCount: null,
+    });
   }
 
   private toRunSummaryView(record: RunRecord, now: Date): RunSummaryView {

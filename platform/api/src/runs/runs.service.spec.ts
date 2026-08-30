@@ -3,6 +3,7 @@ import type { Clock } from '../common/clock';
 import type { RunRecord, StepRecord } from './run-record';
 import { RunsService } from './runs.service';
 import type { RunsRepository } from './runs.repository';
+import type { ModelCallMetrics, ToolCallMetrics } from './run-summary';
 import { RunDetailViewSchema, RunListViewSchema } from '@lengentic/shared/read';
 
 /**
@@ -77,20 +78,35 @@ function stepRecord(overrides: Partial<StepRecord> & Pick<StepRecord, 'id' | 'ru
  * TS-3 allows and `health.service.spec.ts` already uses: the object satisfies every method
  * the service calls, and nothing else on the class is reachable from here.
  */
-function fakeRepository(runs: readonly RunRecord[], steps: readonly StepRecord[]): RunsRepository {
+function fakeRepository(
+  runs: readonly RunRecord[],
+  steps: readonly StepRecord[],
+  calls: RunCalls = {},
+): RunsRepository {
   return {
     listRuns: (take: number, skip: number) => Promise.resolve(runs.slice(skip, skip + take)),
     findRun: (id: string) => Promise.resolve(runs.find((run) => run.id === id)),
     listSteps: (runId: string) => Promise.resolve(steps.filter((step) => step.runId === runId)),
+    // Keyed by runId like the real queries' `where`, not returned unconditionally: a service
+    // that aggregated every model call in the table would pass an unkeyed fake.
+    listModelCallMetrics: (runId: string) => Promise.resolve(calls.modelCalls?.[runId] ?? []),
+    listToolCallMetrics: (runId: string) => Promise.resolve(calls.toolCalls?.[runId] ?? []),
   } as unknown as RunsRepository;
+}
+
+/** Per-run ModelCall / ToolCall projections, addressed the way the repository addresses them. */
+interface RunCalls {
+  readonly modelCalls?: Readonly<Record<string, readonly ModelCallMetrics[]>>;
+  readonly toolCalls?: Readonly<Record<string, readonly ToolCallMetrics[]>>;
 }
 
 function serviceOver(
   runs: readonly RunRecord[],
   steps: readonly StepRecord[] = [],
   clock: Clock = FIXED_CLOCK,
+  calls: RunCalls = {},
 ): RunsService {
-  return new RunsService(fakeRepository(runs, steps), clock, THIRTY_MINUTES_MS);
+  return new RunsService(fakeRepository(runs, steps, calls), clock, THIRTY_MINUTES_MS);
 }
 
 describe('RunsService.list', () => {
@@ -344,5 +360,84 @@ describe('RunsService.findById', () => {
     ).findById('run-1');
 
     expect(RunDetailViewSchema.safeParse(detail).success).toBe(true);
+  });
+});
+
+/**
+ * Seam: `RunsService.summaryFor`. §23's arithmetic is pinned in `run-summary.spec.ts`; what
+ * is only observable here is the wiring — that the run is looked up first, that the two
+ * projections are fetched for THIS run, and that an unknown run is distinguishable from an
+ * empty one.
+ */
+describe('RunsService.summaryFor', () => {
+  const CALLS: RunCalls = {
+    modelCalls: {
+      'run-1': [
+        { latencyMs: 120, inputTokens: 30, outputTokens: 7 },
+        { latencyMs: 45, inputTokens: null, outputTokens: 60 },
+      ],
+      'run-2': [{ latencyMs: 9000, inputTokens: 5000, outputTokens: 5000 }],
+    },
+    toolCalls: {
+      'run-1': [{ success: true }, { success: false }],
+      'run-2': [{ success: false }],
+    },
+  };
+
+  it('aggregates only the calls belonging to the requested run', async () => {
+    // Two runs with telemetry, one asked for. A service that ignored `runId` on the way to
+    // the repository would fold run-2's 9000ms and 10000 tokens into this answer.
+    const service = serviceOver(
+      [runRecord({ id: 'run-1' }), runRecord({ id: 'run-2' })],
+      [],
+      FIXED_CLOCK,
+      CALLS,
+    );
+
+    const summary = await service.summaryFor('run-1');
+
+    expect(summary).toStrictEqual({
+      runId: 'run-1',
+      modelCallCount: 2,
+      inputTokens: 30,
+      outputTokens: 67,
+      modelCallsMissingInputTokens: 1,
+      modelCallsMissingOutputTokens: 0,
+      totalModelLatencyMs: 165,
+      toolCallCount: 2,
+      failedToolCallCount: 1,
+      droppedTelemetryEventCount: null,
+    });
+  });
+
+  it('reports an unknown run as undefined, not as an empty summary', async () => {
+    // The distinction the 404 rests on. All-zeroes for a run the platform has never seen
+    // would assert "this run made no model calls" about a run that does not exist.
+    const service = serviceOver([runRecord({ id: 'run-1' })], [], FIXED_CLOCK, CALLS);
+
+    await expect(service.summaryFor('run-missing')).resolves.toBeUndefined();
+  });
+
+  it('reports a known run with no telemetry as zeroes', async () => {
+    const service = serviceOver([runRecord({ id: 'run-quiet' })], [], FIXED_CLOCK, CALLS);
+
+    const summary = await service.summaryFor('run-quiet');
+
+    expect(summary?.modelCallCount).toBe(0);
+    expect(summary?.toolCallCount).toBe(0);
+    expect(summary?.droppedTelemetryEventCount).toBeNull();
+  });
+
+  it('is not affected by the run being STALE', async () => {
+    // §23's counts are not time-derived. A run silent for four hours has the same telemetry
+    // it had a minute ago, and a summary that changed with the clock would be reporting the
+    // read, not the run.
+    const silent = runRecord({ id: 'run-1', lastEventAt: new Date('2026-08-21T08:00:00.000Z') });
+    const live = runRecord({ id: 'run-1', lastEventAt: new Date('2026-08-21T11:59:00.000Z') });
+
+    const fromSilent = await serviceOver([silent], [], FIXED_CLOCK, CALLS).summaryFor('run-1');
+    const fromLive = await serviceOver([live], [], FIXED_CLOCK, CALLS).summaryFor('run-1');
+
+    expect(fromSilent).toStrictEqual(fromLive);
   });
 });

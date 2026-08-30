@@ -3,6 +3,7 @@ import { MetadataSchema, type Metadata } from '@lengentic/shared';
 import type { PrismaClient } from '@lengentic/database';
 import { PrismaService } from '../prisma/prisma.service';
 import type { RunRecord, StepRecord } from './run-record';
+import type { ModelCallMetrics, ToolCallMetrics } from './run-summary';
 
 // Row shapes recovered structurally from `PrismaClient` itself, the same technique
 // `telemetry.repository.ts` uses and for the same reason: `@lengentic/database` exports only
@@ -94,6 +95,29 @@ export class RunsRepository {
     const row = await this.prisma.client.run.findUnique({ where: { id } });
 
     return row === null ? undefined : toRunRecord(row);
+  }
+
+  /**
+   * The §23 aggregation inputs, projected to the columns `run-summary.ts` actually reads.
+   *
+   * `select` rather than a whole row on purpose. `ToolCall.input` / `.output` are capped-but
+   * still-large `Json` columns (§15), and a Run Summary that pulled every tool payload into
+   * memory to count booleans would make an observability read the most expensive query in
+   * the API. No `orderBy`: every field §23 asks for is order-independent, and imposing one
+   * would buy a sort the aggregation cannot observe.
+   */
+  async listModelCallMetrics(runId: string): Promise<ModelCallMetrics[]> {
+    return this.prisma.client.modelCall.findMany({
+      where: { runId },
+      select: { latencyMs: true, inputTokens: true, outputTokens: true },
+    });
+  }
+
+  async listToolCallMetrics(runId: string): Promise<ToolCallMetrics[]> {
+    return this.prisma.client.toolCall.findMany({
+      where: { runId },
+      select: { success: true },
+    });
   }
 
   /**

@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { RunsController } from './runs.controller';
 import type { RunsService } from './runs.service';
+import type { RunSummary } from './run-summary';
 import type { RunDetailView, RunListView } from '@lengentic/shared/read';
 
 /**
@@ -28,6 +29,19 @@ const RUN_DETAIL: RunDetailView = {
   lastEventAt: '2026-08-21T11:00:00.000Z',
   metadata: null,
   steps: [],
+};
+
+const RUN_SUMMARY: RunSummary = {
+  runId: 'run-1',
+  modelCallCount: 2,
+  inputTokens: 30,
+  outputTokens: 67,
+  modelCallsMissingInputTokens: 1,
+  modelCallsMissingOutputTokens: 0,
+  totalModelLatencyMs: 165,
+  toolCallCount: 2,
+  failedToolCallCount: 1,
+  droppedTelemetryEventCount: null,
 };
 
 function controllerOver(service: Partial<RunsService>): RunsController {
@@ -73,6 +87,30 @@ describe('RunsController', () => {
     const controller = controllerOver({ findById: () => Promise.resolve(undefined) });
 
     const error = await controller.detail('run-missing').catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(NotFoundException);
+    expect(JSON.stringify((error as NotFoundException).getResponse())).not.toContain('run-missing');
+  });
+
+  it('returns the §23 summary the service produced, unchanged', async () => {
+    const controller = controllerOver({ summaryFor: () => Promise.resolve(RUN_SUMMARY) });
+
+    await expect(controller.summary('run-1')).resolves.toStrictEqual(RUN_SUMMARY);
+  });
+
+  it('reports 404 from the summary route when the service has no such run', async () => {
+    // The summary route has its own lookup and therefore its own 404. A controller that
+    // returned an all-zero summary for an unknown run would report telemetry about a run
+    // that does not exist.
+    const controller = controllerOver({ summaryFor: () => Promise.resolve(undefined) });
+
+    await expect(controller.summary('run-missing')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('does not put the requested id in the summary 404 body either', async () => {
+    const controller = controllerOver({ summaryFor: () => Promise.resolve(undefined) });
+
+    const error = await controller.summary('run-missing').catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(NotFoundException);
     expect(JSON.stringify((error as NotFoundException).getResponse())).not.toContain('run-missing');
