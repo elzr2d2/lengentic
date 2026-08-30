@@ -2627,6 +2627,18 @@ for it; recorded by Reviewer as justified gate repair (the scanner could not see
 skips), not leakage. Kept here because its residue is S2 and the pattern (harness work riding
 phase diffs) is worth watching. **Trigger:** next harness change inside a phase diff.
 
+### Deny floor blocks the Write tool on the worker envelope path it mandates
+
+Found by this gate worker (2026-08-30), harness defect. `.claude/autopilot-permissions.json`
+denies `Write(./.autopilot/**)` (group 4, "a worker that can rewrite the run's own bounds"),
+but the worker brief and `scripts/autopilot/worker.ts:61` mandate the outcome envelope at
+`.autopilot/handoffs/<worker>.json` — the only channel for ANY outcome, including BLOCKED.
+Workers fall back to allowed `Bash(node:*)` to deliver it, which also proves the deny is
+cosmetic against Bash for the rest of `.autopilot/**` (state.json, leases). **Do:** carve the
+envelope path out of the deny (e.g. deny `.autopilot/state.json` + `.autopilot/leases/**`
+specifically), or have worker.ts accept the envelope from an undenied staging path.
+**Trigger:** next edit to `.claude/autopilot-permissions.json` or `worker.ts`.
+
 ### `tsx` dependency justified only in comments
 
 Sc2 (LOW). `playground/package.json` adds `tsx@^4.20.6`; justification (node:test needs a TS
