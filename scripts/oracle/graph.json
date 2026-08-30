@@ -961,11 +961,16 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "platform/telemetry-sdk",
-          "pattern": "redact"
+          "dir": "platform/telemetry-sdk/src",
+          "pattern": "captureToolIO"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/telemetry-sdk/test",
+          "pattern": "Truncated"
         }
       ],
-      "note": "Pure and client-side. Highest-value unit-test target in the SDK; no API dependency.",
+      "note": "Pure and client-side. Highest-value unit-test target in the SDK; no API dependency. PROBE NARROWED 2026-08-31 at the Phase 4 wave gate: the old probe was `grep redact` over `platform/telemetry-sdk`, whose sole match was a §16 comment in src/client.ts written by p2.sdk-core in Phase 2 (c947268) and a README line advertising the unbuilt feature. The node had therefore reported DONE since before Phase 4 began, with no serializer, no redaction hook, no cap and no fingerprint on disk. Evidence: .artifacts/evidence/4/wave-gate/probe-lie-p4.md. `captureToolIO` and `*Truncated` are named verbatim in §15, have zero occurrences in the tree today, and are not producible by p2.sdk-core, which is complete — note that p2.sdk-core declares the identical surface platform/telemetry-sdk/**, so spatial scoping alone can never separate the two and the pattern has to carry the weight.",
       "own": {
         "allowed": ["platform/telemetry-sdk/**"]
       },
@@ -1004,11 +1009,11 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "platform/api/src",
-          "pattern": "attest"
+          "dir": "platform/api/src/decisions",
+          "pattern": "attestOutcome"
         }
       ],
-      "note": "Amended 2026-08-30 at the p4.wire-decisions trigger-6 escalation (option B): platform/api/src/telemetry/** moved to p4.wire-decisions, which owns the wire contract and its only server-side consumer together. Forbidden here so two nodes never claim event-mapping.ts.",
+      "note": "Amended 2026-08-30 at the p4.wire-decisions trigger-6 escalation (option B): platform/api/src/telemetry/** moved to p4.wire-decisions, which owns the wire contract and its only server-side consumer together. Forbidden here so two nodes never claim event-mapping.ts. PROBE NARROWED 2026-08-31 at the Phase 4 wave gate: the old probe was `grep attest` over `platform/api/src`, which wholly contains the forbidden carve-out above. p4.wire-decisions landed the wire type name `decision.outcome_attested` in event-mapping.ts and the node flipped TODO to DONE on another packet's deliverable, with no attestOutcome, no idempotency and no unknown-decisionId path anywhere. Evidence: .artifacts/evidence/4/wave-gate/probe-lie-p4.md and .artifacts/evidence/4/wave-gate/validator/report.md §1. `attestOutcome` has zero occurrences today and the wire type name does not contain it. The directory is inferred from this package's one-module-per-concern layout (common, config, health, prisma, runs, telemetry) and is the LEAST binding part of this probe: if the unresolved write-path decision (BACKLOG, 6e221c2) lifts the telemetry exclusion and attestation lands elsewhere, move the probe with the work. It fails closed until then, which is the safe direction.",
       "own": {
         "allowed": ["platform/api/src/**"],
         "forbidden": ["platform/api/src/telemetry/**"]
@@ -1048,11 +1053,11 @@
       "probes": [
         {
           "kind": "grep",
-          "dir": "platform/api/src",
+          "dir": "platform/api/src/runs",
           "pattern": "runSummary|run-summary"
         }
       ],
-      "note": "PLAN GAP: §23 is in the final DoD but assigned to no phase. Placed in Phase 4. Its 'repeated failed actions' line depends on p5.repeated-failed — ship that field last. Amended 2026-08-30 at the p4.wire-decisions trigger-6 escalation (option B): platform/api/src/telemetry/** belongs to p4.wire-decisions; forbidden here so no two nodes claim event-mapping.ts.",
+      "note": "PLAN GAP: §23 is in the final DoD but assigned to no phase. Placed in Phase 4. Its 'repeated failed actions' line depends on p5.repeated-failed — ship that field last. Amended 2026-08-30 at the p4.wire-decisions trigger-6 escalation (option B): platform/api/src/telemetry/** belongs to p4.wire-decisions; forbidden here so no two nodes claim event-mapping.ts. PROBE NARROWED 2026-08-31 at the Phase 4 wave gate: the old probe was `grep runSummary|run-summary` over `platform/api/src`, which wholly contains the forbidden carve-out above — the same latent false green that had already fired on p4.attestation, caught here by the new own.forbidden overlap rule before it could fire. Not yet triggered: the pattern has no match in the tree today. platform/api/src/runs already exists and is where §23 aggregation belongs.",
       "own": {
         "allowed": ["platform/api/src/**"],
         "forbidden": ["platform/api/src/telemetry/**"]

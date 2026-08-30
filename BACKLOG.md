@@ -2824,3 +2824,73 @@ owns the ingest write path alone. **Ruled out:** letting `p4.attestation` widen 
 boundary at dispatch time — that is the rule `pnpm lanes check` exists to enforce.
 **Trigger:** the dispatch of `p4.attestation`. Deleting `EVENT_TYPE_NOT_INGESTIBLE` and its
 tests is the completion signal.
+
+## Discovered at the Phase 4 wave gate (2026-08-31)
+
+### `lintProbes` has no selftest, and its second blind spot is still open
+
+**Source:** the Phase 4 wave gate of run `d9c2177c`. `pnpm flow next` returned `WAVE_GATE`
+over four packets; two of them — `p4.attestation` and `p4.payload-safety` — had no dispatch,
+no handoff, no code and no line in the wave diff. Both were fixed at the gate (probes narrowed,
+`own.forbidden` now subtracted in `scripts/lanes.ts`). Full evidence:
+`.artifacts/evidence/4/wave-gate/probe-lie-p4.md`,
+`.artifacts/evidence/4/wave-gate/validator/report.md`,
+`.artifacts/evidence/4/wave-gate/definition-of-done.md`.
+
+Two residues.
+
+**1. `lintProbes` is the only harness rule with no scenario in `scripts/lanes/selftest.ts`.**
+`grep -n "lintProbes" scripts/lanes/selftest.ts` returns nothing; the 49 passing scenarios
+cover dispatch and handoff rules only. It is proven today by firing on the live graph
+(2 FAIL, both correct and named, then passing once the probes were narrowed), which is real
+evidence but not a regression test — nothing keeps the `own.forbidden` subtraction alive
+through the next edit. The reason it has none is structural: `lintProbes()` calls
+`resolveGraph()` directly and takes no argument, so a scenario cannot hand it a fixture graph
+without a parameter-injection refactor. That refactor is why this is deferred rather than done
+at the gate.
+
+**2. A probe is still satisfiable by a dependency that shares the node's surface.**
+`insideSurface` is purely spatial. `p4.payload-safety` (`needs: [p2.sdk-core]`) and
+`p2.sdk-core` both declare exactly `platform/telemetry-sdk/**`, so _any_ grep probe scoped to
+that surface is satisfiable by its own dependency's output — by construction, not by accident.
+That is how a §16 comment in `client.ts:142` from `c947268` (Phase 2) made the oracle report
+§15 payload safety DONE before Phase 4 began. Nothing compares a probe against the surfaces of
+the node's own `needs`. The gate closed the instance by choosing patterns (`captureToolIO`,
+`Truncated`) that no other node can produce; the class is untouched. Note the existing
+`has no path or absent probe — grep alone is weak evidence` WARN fired on both nodes and
+blocked nothing — the warning was correct and inert.
+
+**What would make it worth doing:** a third false green, or any new node whose `needs` shares
+its `own.allowed`. The fix shape for (2) is one more check in `lintProbes` — a `grep` probe
+whose target is inside the surface of a node in its own `needs` is a failure unless the
+pattern is absent from that node's committed output; the cheap approximation is to require a
+`path` or `absent` probe whenever surfaces overlap, which is the existing WARN promoted to a
+failure for that case only. **Ruled out:** promoting the weak-evidence WARN to a failure
+globally — 38 of 57 nodes carry it, so it would fail the graph wholesale and get suppressed
+rather than fixed. **Trigger:** the next `lintProbes` edit (do (1) first — the parameter
+injection is what makes (2) testable), or the next node whose `needs` shares its surface.
+
+### `p4.attestation`'s probe directory is a guess the write-path decision may invalidate
+
+**Source:** same gate. `p4.attestation`'s probe now reads
+`grep attestOutcome platform/api/src/decisions`, because its old probe read
+`platform/api/src`, which wholly contains its own `platform/api/src/telemetry/**` carve-out.
+`platform/api/src/decisions` **does not exist**. It is inferred from this package's
+one-module-per-concern layout (`common`, `config`, `health`, `prisma`, `runs`, `telemetry`) —
+a convention, not a decision anyone made.
+
+The unresolved write-path question (recorded at `6e221c2`, confirmed and re-scoped by the
+Validator §6) may put attestation somewhere else entirely: if the resolution lifts the
+`platform/api/src/telemetry/**` exclusion now that `p4.wire-decisions` is merged, the natural
+home for `attestOutcome` is the ingest pipeline it must update, not a new sibling directory.
+The probe then never matches and the node never reports DONE.
+
+That direction is safe — it fails closed, and `repair-policy.ts:23` is the standing precedent
+that tightening needs no authority — which is why the probe was narrowed rather than left
+lying. But it is a guess sitting in the graph looking like a decision.
+
+**What would make it worth doing:** the dispatch of `p4.attestation`, which is the same
+trigger as the write-path entry above and should be resolved in the same sitting — settle the
+ownership, then move the probe to wherever the work actually lands. **Ruled out:** leaving the
+old `platform/api/src` probe in place until the decision is made; that is the false green this
+gate exists to have caught. **Trigger:** the dispatch of `p4.attestation`.

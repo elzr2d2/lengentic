@@ -1718,6 +1718,33 @@ function insideSurface(target: string, patterns: string[]): boolean {
   return anyMatch(target, patterns) !== null || anyMatch(`${target}/`, patterns) !== null;
 }
 
+/**
+ * A node's real write surface is `allowed ∖ forbidden`, not `allowed`. `insideSurface` alone
+ * therefore passes a probe that reads a directory the node is explicitly barred from writing
+ * — which is the same oracle lie one carve-out deeper, and it happened: `p4.attestation`
+ * probed `grep attest` over `platform/api/src` while forbidding
+ * `platform/api/src/telemetry/**`, so the moment `p4.wire-decisions` landed the wire type
+ * name in `event-mapping.ts` the node reported DONE having built nothing.
+ * Evidence: `.artifacts/evidence/4/wave-gate/probe-lie-p4.md`.
+ *
+ * Overlap is symmetric, because grep cannot exclude a subtree:
+ *
+ *   target inside forbidden     the probe reads only forbidden ground
+ *   forbidden inside target     the probe's search root contains it, so a match may come
+ *                               from a file the node may not write
+ *
+ * Returns the offending pattern so the failure line can name it, or `null`.
+ */
+function forbiddenOverlap(target: string, patterns: string[]): string | null {
+  for (const pattern of patterns) {
+    if (insideSurface(target, [pattern])) return pattern;
+    // Strip the glob tail: `platform/api/src/telemetry/**` → `platform/api/src/telemetry`.
+    const root = normalise(pattern).replace(/\/?\*+.*$/, '');
+    if (root !== '' && (root === target || root.startsWith(`${target}/`))) return pattern;
+  }
+  return null;
+}
+
 export function lintProbes(): {
   failures: string[];
   warnings: string[];
@@ -1731,6 +1758,7 @@ export function lintProbes(): {
   const nodes = [...resolveGraph().values()];
   for (const n of nodes) {
     const allowed = n.own?.allowed ?? [];
+    const forbidden = n.own?.forbidden ?? [];
     let strong = false;
 
     for (const p of n.probes) {
@@ -1759,6 +1787,15 @@ export function lintProbes(): {
           failures.push(
             `${n.id}  ${t.label}  is outside its own surface [${allowed.join(', ')}]` +
               ' — another node can satisfy it',
+          );
+          continue;
+        }
+
+        const clash = forbiddenOverlap(normalise(t.path), forbidden);
+        if (clash !== null) {
+          failures.push(
+            `${n.id}  ${t.label}  overlaps its own forbidden path ${clash}` +
+              ' — the node cannot write there, so another node can satisfy it',
           );
         }
       }
