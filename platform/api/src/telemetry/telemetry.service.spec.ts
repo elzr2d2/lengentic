@@ -159,6 +159,141 @@ function stepStartedEvent(overrides: Record<string, unknown> = {}): Record<strin
   };
 }
 
+function decisionRecordedEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    eventId: 'evt-decision-1',
+    schemaVersion: '2',
+    type: 'decision.recorded',
+    entityId: 'dec-1',
+    runId: 'run-1',
+    occurredAt: '2026-08-30T10:02:00.000Z',
+    payload: {
+      stepId: 'step-1',
+      decisionType: 'execution_strategy',
+      availableOptions: ['sequential', 'parallel'],
+      selectedOption: 'sequential',
+    },
+    ...overrides,
+  };
+}
+
+describe('TelemetryService.ingest — Phase 4 types parse but have no persistence yet', () => {
+  // The five schemaVersion '2' types are legal wire events, so `parseTelemetryEvent`
+  // accepts them and UNKNOWN_EVENT_TYPE would be a lie. Their Decision / ModelCall /
+  // ToolCall / Error rows have no ingest path (`merge-rules.ts` folds Run and Step), so
+  // ACCEPTED would also be a lie. EVENT_TYPE_NOT_INGESTIBLE is the honest third answer.
+  const phase4Events: readonly (readonly [string, Record<string, unknown>])[] = [
+    ['decision.recorded', decisionRecordedEvent()],
+    [
+      'decision.outcome_attested',
+      {
+        eventId: 'evt-attest-1',
+        schemaVersion: '2',
+        type: 'decision.outcome_attested',
+        entityId: 'dec-1',
+        runId: 'run-1',
+        occurredAt: '2026-08-30T10:03:00.000Z',
+        payload: { outcome: 'SUCCESS' },
+      },
+    ],
+    [
+      'model_call.recorded',
+      {
+        eventId: 'evt-model-1',
+        schemaVersion: '2',
+        type: 'model_call.recorded',
+        entityId: 'mc-1',
+        runId: 'run-1',
+        occurredAt: '2026-08-30T10:04:00.000Z',
+        payload: {
+          stepId: 'step-1',
+          provider: 'anthropic',
+          model: 'claude',
+          latencyMs: 12,
+          status: 'OK',
+        },
+      },
+    ],
+    [
+      'tool_call.recorded',
+      {
+        eventId: 'evt-tool-1',
+        schemaVersion: '2',
+        type: 'tool_call.recorded',
+        entityId: 'tc-1',
+        runId: 'run-1',
+        occurredAt: '2026-08-30T10:05:00.000Z',
+        payload: {
+          stepId: 'step-1',
+          toolName: 'search',
+          inputTruncated: false,
+          outputTruncated: false,
+          inputBytes: 0,
+          outputBytes: 0,
+          startedAt: '2026-08-30T10:05:00.000Z',
+          completedAt: '2026-08-30T10:05:00.005Z',
+          durationMs: 5,
+          success: true,
+        },
+      },
+    ],
+    [
+      'error.recorded',
+      {
+        eventId: 'evt-error-1',
+        schemaVersion: '2',
+        type: 'error.recorded',
+        entityId: 'err-1',
+        runId: 'run-1',
+        occurredAt: '2026-08-30T10:06:00.000Z',
+        payload: { stepId: 'step-1', type: 'TimeoutError', message: 'timed out' },
+      },
+    ],
+  ];
+
+  for (const [type, event] of phase4Events) {
+    it(`rejects ${type} with EVENT_TYPE_NOT_INGESTIBLE rather than UNKNOWN_EVENT_TYPE`, async () => {
+      const { repository } = fakeRepository();
+      const service = new TelemetryService(repository);
+
+      const response = await service.ingest([event]);
+
+      expect(response.rejected).toBe(1);
+      expect(response.accepted).toBe(0);
+      expect(response.results[0]?.error?.code).toBe('EVENT_TYPE_NOT_INGESTIBLE');
+    });
+  }
+
+  // The regression the old `type.startsWith('run.') ? 'run' : 'step'` would have produced:
+  // a Decision id routed into the Step table, ACCEPTED, with every gate green. Asserting on
+  // the store rather than only on the response code is what makes this test able to fail.
+  it('writes no Step row for a decision event', async () => {
+    // `saveStepCalls` is read off the object, not destructured: it is a getter, and
+    // destructuring would snapshot 0 before `ingest` ever ran — an assertion that cannot fail.
+    const fake = fakeRepository();
+    const service = new TelemetryService(fake.repository);
+
+    await service.ingest([decisionRecordedEvent()]);
+
+    expect(fake.steps.size).toBe(0);
+    expect(fake.runs.size).toBe(0);
+    expect(fake.saveStepCalls).toBe(0);
+  });
+
+  it('rejects the decision event without affecting a run event in the same batch', async () => {
+    const { repository, runs } = fakeRepository();
+    const service = new TelemetryService(repository);
+
+    const response = await service.ingest([decisionRecordedEvent(), runStartedEvent()]);
+
+    expect(response.rejected).toBe(1);
+    expect(response.accepted).toBe(1);
+    expect(response.results[0]?.error?.code).toBe('EVENT_TYPE_NOT_INGESTIBLE');
+    expect(response.results[1]).toMatchObject({ status: 'ACCEPTED' });
+    expect(runs.has('run-1')).toBe(true);
+  });
+});
+
 describe('TelemetryService.ingest — event-level rejection never fails the batch', () => {
   it('rejects a malformed event (missing eventId) without affecting a valid neighbour', async () => {
     const { repository } = fakeRepository();

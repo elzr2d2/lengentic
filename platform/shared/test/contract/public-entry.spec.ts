@@ -12,6 +12,8 @@ import {
   TELEMETRY_INGEST_PATH,
   TELEMETRY_PAYLOAD_SCHEMAS,
   TELEMETRY_SCHEMA_VERSION,
+  TELEMETRY_SCHEMA_VERSIONS,
+  TELEMETRY_EVENT_TYPE_MIN_SCHEMA_VERSION,
 } from '../../index';
 import type { IngestResultError } from '../../index';
 
@@ -26,12 +28,38 @@ describe('public entry — literals from the plan', () => {
       'run.completed',
       'step.started',
       'step.completed',
+      'decision.recorded',
+      'decision.outcome_attested',
+      'model_call.recorded',
+      'tool_call.recorded',
+      'error.recorded',
     ]);
-    expect(new Set(TELEMETRY_EVENT_TYPES).size).toBe(4);
+    expect(new Set(TELEMETRY_EVENT_TYPES).size).toBe(9);
   });
 
-  it('TELEMETRY_SCHEMA_VERSION is "1" (§12:474)', () => {
-    expect(TELEMETRY_SCHEMA_VERSION).toBe('1');
+  // §12:474 pins the envelope's schemaVersion at '1'; ADR 0005 decision 3 postdates it and
+  // says the Phase 4 types "arrive with a `schemaVersion` bump". This is that bump.
+  it('TELEMETRY_SCHEMA_VERSION is "2" — the ADR-0005 bump that carries the Phase 4 types', () => {
+    expect(TELEMETRY_SCHEMA_VERSION).toBe('2');
+  });
+
+  it('TELEMETRY_SCHEMA_VERSIONS still accepts "1" — the bump gates new types, not old events', () => {
+    expect(TELEMETRY_SCHEMA_VERSIONS).toEqual(['1', '2']);
+    expect(Object.isFrozen(TELEMETRY_SCHEMA_VERSIONS)).toBe(true);
+  });
+
+  it('every type declares the version it arrived at, and the Phase 4 five require "2"', () => {
+    expect(TELEMETRY_EVENT_TYPE_MIN_SCHEMA_VERSION).toEqual({
+      'run.started': '1',
+      'run.completed': '1',
+      'step.started': '1',
+      'step.completed': '1',
+      'decision.recorded': '2',
+      'decision.outcome_attested': '2',
+      'model_call.recorded': '2',
+      'tool_call.recorded': '2',
+      'error.recorded': '2',
+    });
   });
 
   it('INGEST_LIMITS matches §12:527-529 / OD-2 verbatim, and is frozen', () => {
@@ -47,13 +75,17 @@ describe('public entry — literals from the plan', () => {
     expect(Object.keys(TELEMETRY_PAYLOAD_SCHEMAS)).toEqual(TELEMETRY_EVENT_TYPES);
   });
 
-  it('INGEST_ERROR_CODES is the four §12 codes plus ADR-0006 EVENT_TOO_LARGE, and is frozen', () => {
+  it('INGEST_ERROR_CODES is the four §12 codes, ADR-0006 EVENT_TOO_LARGE and Phase 4 EVENT_TYPE_NOT_INGESTIBLE, and is frozen', () => {
     expect(INGEST_ERROR_CODES).toEqual({
       UNSUPPORTED_SCHEMA_VERSION: 'UNSUPPORTED_SCHEMA_VERSION',
       UNKNOWN_EVENT_TYPE: 'UNKNOWN_EVENT_TYPE',
       MISSING_REQUIRED_FIELD: 'MISSING_REQUIRED_FIELD',
       INVALID_PAYLOAD: 'INVALID_PAYLOAD',
       EVENT_TOO_LARGE: 'EVENT_TOO_LARGE',
+      // Phase 4. A type the wire contract accepts and the server cannot yet store — see the
+      // note on the constant. Listed here rather than left to grow silently: this assertion
+      // is the thing that makes adding a rejection reason a deliberate act.
+      EVENT_TYPE_NOT_INGESTIBLE: 'EVENT_TYPE_NOT_INGESTIBLE',
     });
     expect(Object.isFrozen(INGEST_ERROR_CODES)).toBe(true);
   });
