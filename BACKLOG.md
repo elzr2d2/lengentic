@@ -2548,6 +2548,18 @@ Sc-C (MEDIUM). DoD "creates a complete Run visible in LenGentic" — every autom
 is on the undelivered path (`delivered=0 droppedUndeliverable=12`, exit 0). **The Phase 3
 phase gate must run `pnpm playground:happy-path` against `pnpm dev` and cite delivered
 counts, or record the line unverified.** **Trigger:** Phase 3 phase gate (mandatory).
+**Satisfied 2026-08-30 (gate attempt 2):** the F1 repair re-ran the live delivered path —
+seed 20260830, first run accepted=12, re-run duplicate=12 with the "no new data was
+recorded" note, HTTP read-back + row counts:
+`.artifacts/evidence/3/phase-gate/repair-1/ac13-dod-header-claim.txt`. The pre-repair
+evidence (`tester/run-A1.stdout`, `db-A1.txt`, `api-run-A1.json`) is superseded — the repair
+changed every seed → runId mapping.
+**Residue (repair-1 Reviewer S-6, folded here):** the F2 fix pins every spec spawn to an
+unreachable endpoint, so no automated test exercises the delivered path at all —
+`persistence: accepted>0`, the "no new data was recorded" note, and delivered-run
+byte-identity are manual-evidence-only. A delivered-path spec variant would close both this
+and the original Sc-C mandate permanently. **Trigger:** `p4.*` work touching the CLI or SDK
+delivery path.
 
 ### Batch-scoped path-overlap gate cannot see overlap between DONE nodes
 
@@ -2602,6 +2614,9 @@ S4 (LOW-MEDIUM). `playground/index.ts:33-34` says "reading the environment is th
 nothing. With `API_PORT` ≠ 3001 the happy path posts to a dead port and exits 0. **Do:** read
 `process.env.API_PORT` in `happy-path.ts`, or reword the seam comment to scope it as future
 work. **Trigger:** `p4.*` work touching the CLI, or first run against a non-default port.
+**Narrowed 2026-08-30 (repair 1, Reviewer Sc-3):** `resolveEndpoint`
+(`happy-path.ts:103-107`) now reads `PLAYGROUND_ENDPOINT`, so the CLI is no longer
+env-blind; `API_PORT` specifically is still ignored — that half stands.
 
 ### cwd-derived spawn paths; `pnpm test` writes to a live dev DB
 
@@ -2611,6 +2626,9 @@ up the spawned happy-path runs persist real Runs into the dev DB as a side effec
 `pnpm test` (confirmed by tester F2: `--seed=1` run found in DB, created by the spec).
 **Do:** derive from `import.meta.dirname`; consider a guaranteed-closed port for CLI specs.
 **Trigger:** next edit to either spec, or first cross-package test invocation.
+**Narrowed 2026-08-30 (repair 1, Reviewer Sc-3):** the live-DB half is closed —
+`happy-path.spec.ts` now pins every spawn to `UNREACHABLE_ENDPOINT` (`:83-91`), so
+`pnpm test` no longer writes real Runs. The cwd-derived-spawn-path half stands.
 
 ### `MockAgentRunResult.strategy` doc contradicts itself
 
@@ -2645,3 +2663,105 @@ Sc2 (LOW). `playground/package.json` adds `tsx@^4.20.6`; justification (node:tes
 loader, vitest is not a playground dependency) lives only in test-file doc comments.
 **Do:** one line in `playground/index.ts` module doc or the package README.
 **Trigger:** next `playground/package.json` edit.
+
+## Discovered at the Phase 3 phase-gate repair 1 (2026-08-30, flushed at gate attempt 2)
+
+Source: Architect F1 decision, `.artifacts/evidence/3/phase-gate/repair-1/architect-f1-decision.md`
+§"Deferred" — paste-ready text there is authoritative.
+
+### `playground:happy-path` exposes only `--seed`; context variation cannot be driven from the CLI
+
+B-1 (MEDIUM). The F1 repair made a varied `contextSeed` land as its own Run, but the CLI
+still parses one flag, so the Phase 6 corpus ("runs that vary in context but not in
+outcome", `MVP_PLAN_V3.md:1641-1643`) cannot be produced from the shipped command.
+**Do:** `--context-seed=` and whatever else Phase 6's corpus shape needs, decided then.
+**Trigger:** Phase 6, first corpus generation.
+
+### SDK discards `IngestResponse.results[]`; a REJECTED event's code and message are invisible
+
+B-2 (MEDIUM). The repair surfaced the three counts (`stats().serverRejected` etc.), but the
+per-event `{eventId, status, error}` array (`platform/shared/schema/ingest.ts:69-74`) is
+still dropped in `deliverBatch`. **Do:** a `TelemetryDiagnostic` per rejected event carrying
+the server's code (new public `TelemetryDiagnosticCode`). **Trigger:** first event-level
+rejection observed in practice, or `p4.payload-safety`.
+
+### No diagnostic when a server's batch accounting does not add up
+
+B-3 (LOW). `serverAccepted + serverDuplicate + serverRejected` should equal `batch.length`
+for every delivered batch; nothing checks it. **Do:** compare and emit a diagnostic on
+mismatch. **Trigger:** next edit to `platform/telemetry-sdk/src/client.ts`'s delivery path.
+
+### Seeded-id collision is a host obligation the SDK never states
+
+B-4 (LOW). Any host injecting a seeded `IdGenerator` can mint one runId for two scenarios
+and have the second silently deduplicated by `(runId, eventId)`; the SDK README's
+determinism section does not warn about it. **Do:** one README paragraph pointing at
+`playground/agents/scenario-seed.ts` as the worked example. **Trigger:** first
+non-Playground consumer of the seeded injection point.
+
+## Discovered at the Phase 3 phase gate — Reviewer over repair 1 `4673baf..8a36a0c` (2026-08-30)
+
+Verdict PASSED, 0 blocking. Full report:
+`.artifacts/evidence/3/phase-gate/reviewer/review-repair-1.md`. Sc-1/Sc-2 applied to
+`repair-verdict.md` at the gate; Sc-3 narrowed S4/S5 above; Sc-4 is INFO, recorded in the
+report only. S-6 folded into Sc-C (below).
+
+### `scheduler` exclusion from the scenario seed rests on an untested ordering claim
+
+S-1 (MEDIUM). `playground/agents/scenario-seed.ts:17-21` excludes `scheduler` from the
+seed-derivation denylist on the claim that scheduling changes timing, never wire bytes. True
+for both in-repo schedulers (deadline-ordered), but `Scheduler` documents no ordering
+guarantee and is a public `MockAgentConfig` field — a caller-supplied non-deadline-ordered
+scheduler gives same runId + different bytes, F1's exact shape. `scenario-seed.spec.ts:105-116`
+tests the property that would mask this, not reveal it. Also: `telemetryConfig` now carries
+`endpoint`, a destination, so the stated justification no longer describes the exclusion.
+**Do:** add an ordering guarantee to `Scheduler`'s doc plus a byte-identity test across two
+schedulers, or narrow the justification to "no in-repo scheduler reorders" citing both
+implementations. **Trigger:** next edit to `scenario-seed.ts`, or first caller-supplied
+`scheduler`.
+
+### ERR-2: `ScenarioSeedError` wrapped without its cause
+
+S-2 (MEDIUM-LOW). `playground/agents/mock-agent.ts:323` rethrows as
+`MockAgentConfigError(error.message)` — type, stack, nested cause lost. ERR-2 is `[MUST]`;
+judged non-blocking because no error class in the repo preserves `cause:` yet and the
+message survives verbatim. **Do:** `cause` parameter on `MockAgentConfigError`
+(`mock-agent.ts:102-106`). **Trigger:** next edit to `mock-agent.ts`, or a second wrapping
+site in `playground/**`.
+
+### `serverRejected` increment has no failing test behind it
+
+S-3 (LOW-MEDIUM). All four tests in `platform/telemetry-sdk/test/server-counts.spec.ts:29-104`
+use `rejected: 0`; deleting the increment at `client.ts:277` stays green. **Do:** one
+response fixture with `rejected: 1`. **Trigger:** next edit to `server-counts.spec.ts`.
+
+### Three residual silent seed aliases in `parseSeed`
+
+S-4 (LOW). `parseSeed(['--seed=1','--seed=2'])` → 1 (second flag silently ignored);
+`--seed=007`/`--seed=0000000042` accepted (leading zeros); `--seed=-0` → -0. Same classes F4
+named; all visible in the printed banner. **Do:** reject a second `--seed=` occurrence;
+decide whether leading zeros are an alias or an accepted spelling and say so at
+`happy-path.ts:59-62`. **Trigger:** next edit to `parseSeed`.
+
+### Byte-identity spec filters a line that is deterministic in its own configuration
+
+S-5 (LOW). `playground/cli/test/happy-path.spec.ts:152-169` filters the `persistence:` line,
+but every spawn pins `UNREACHABLE_ENDPOINT`, so the counters are structurally 0 in both runs
+— the unfiltered `first.stdout === second.stdout` was available. Latent: non-global
+`String.replace` removes only the first match. **Do:** assert full equality unfiltered while
+the endpoint is unreachable, or move the filter behind an explicit delivered-path variant.
+**Trigger:** next edit to that spec.
+
+## Discovered at the Phase 3 phase gate — Tester pass 2 (2026-08-30, recorded at gate repair 2)
+
+### Tester-2's N1–N5 register was lost with its worker; only N3 survives
+
+N3 (MEDIUM). Tester pass 2 (`.artifacts/evidence/3/phase-gate/tester-2/README.md`) closed
+F1–F5 and opened five new findings, but the worker exited without an outcome envelope and
+the README truncates at line 174 — N1, N2, N4, N5 were never written to disk. The surviving
+substance of N3: the SDK half of the persistence-count surfacing is mutation-protected
+(README M4a, `server-counts.spec.ts` fails on the increment mutation), **the CLI half is
+not** — nothing kills a mutation of the `persistence:` line or the "no new data was
+recorded" note in `happy-path.ts`. Same class as Reviewer S-3/S-5 and the Sc-C residue
+above; fold the fix into the Sc-C delivered-path spec variant. **Trigger:** Sc-C, or next
+edit to `playground/cli/happy-path.ts`.

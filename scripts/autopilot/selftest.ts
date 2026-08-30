@@ -44,13 +44,16 @@ import {
   type Sources,
 } from './progression.ts';
 import {
+  failuresBlockingGate,
   initialState,
   loadOrInit,
   readJournal,
   readState,
   requestStop,
   StaleStateError,
+  unresolvedFailures,
   writeState,
+  type BlockingFailure,
 } from './state.ts';
 import { acquireLease, listLeases, reapExpired, releaseLease, renewLease } from './lease.ts';
 import { buildBrief } from './bootstrap.ts';
@@ -1437,6 +1440,96 @@ ${verdictFile === null ? '' : readFileSync(verdictFile, 'utf8')}`,
           `the escalation must quote the bound it ran under; got ${r.escalation?.reason ?? ''}`,
         ) ??
         expect((r.escalation?.reason ?? '').includes('CLAUDE.md'), 'and the authority that set it')
+      );
+    },
+  );
+
+  await scenario(
+    48,
+    'a gate that held once can still record: its own hold is not failure evidence against it',
+    async () => {
+      // The livelock this pins down, observed live on run d9c2177c segment 3: a held gate
+      // records a `kind: 'gate'` failure, that record resolves only when the gate records
+      // GREEN, and `failureEvidence` counted it — so attempt 2 was RED because attempt 1
+      // held, forever, across restarts and `pnpm autopilot resume` alike.
+      const w = world(
+        {
+          steps: { default: ['DONE'] },
+          dodPath: '.artifacts/evidence/9/phase-gate/definition-of-done.md',
+          dodBody: '# DoD\n\n- [x] C1 bound\n- [ ] C2 nobody checked\n',
+        },
+        { maxIterations: 5 },
+      );
+      const action: FlowAction = { action: 'PHASE_GATE', segment: '9', phase: 9, steps: [] };
+      const r = await supervise(
+        w.options,
+        w.deps((i) => {
+          if (i === 1) {
+            // The repair landed: the next gate attempt's worker writes a fully bound artifact.
+            const plan = JSON.parse(readFileSync(w.planPath, 'utf8')) as Plan;
+            plan.dodBody = '# DoD\n\n- [x] C1 bound\n- [x] C2 now verified\n';
+            writeFileSync(w.planPath, JSON.stringify(plan, null, 2), 'utf8');
+          }
+          return i <= 1 ? action : COMPLETE;
+        }),
+        SCHEMA,
+      );
+      const records = w.commands.filter((c) => c.startsWith('pnpm flow record'));
+      const unresolved = unresolvedFailures(readState(w.stateDir) ?? initialState(new Date()));
+      return (
+        expect(r.status === 'COMPLETE', `expected COMPLETE; got ${r.status}`) ??
+        expect(
+          records.length === 1,
+          `the repaired gate must record exactly once; got ${JSON.stringify(records)}`,
+        ) ??
+        expect(
+          unresolved.length === 0,
+          `recording must resolve the hold record; still open: ${JSON.stringify(unresolved)}`,
+        )
+      );
+    },
+  );
+
+  await scenario(
+    49,
+    "excluding a gate's own holds weakens nothing else: every other failure still blocks",
+    () => {
+      const failure = (over: Partial<BlockingFailure>): BlockingFailure => ({
+        id: 'f',
+        kind: 'gate',
+        segment: '9',
+        node: null,
+        detail: 'x',
+        evidence: [],
+        at: '2026-08-30T00:00:00Z',
+        ...over,
+      });
+      const state = {
+        ...initialState(new Date('2026-08-30T00:00:00Z'), 'run-x'),
+        blockingFailures: [
+          failure({ id: 'own-hold' }),
+          failure({ id: 'other-segment', segment: '8' }),
+          failure({ id: 'worker-red', kind: 'worker', node: 'p9.a' }),
+          failure({ id: 'invariant-red', kind: 'invariant' }),
+          failure({ id: 'no-progress', kind: 'no-progress' }),
+          failure({ id: 'already-resolved', kind: 'worker', resolvedAt: '2026-08-30T01:00:00Z' }),
+        ],
+      };
+      const blocking = failuresBlockingGate(state, '9').map((f) => f.id);
+      return (
+        expect(
+          !blocking.includes('own-hold'),
+          'the gate being re-derived must not be blocked by its own prior hold',
+        ) ??
+        expect(
+          blocking.includes('other-segment'),
+          "another segment's held gate is real failure evidence and must block",
+        ) ??
+        expect(
+          ['worker-red', 'invariant-red', 'no-progress'].every((id) => blocking.includes(id)),
+          `worker, invariant and no-progress failures must all still block; got ${JSON.stringify(blocking)}`,
+        ) ??
+        expect(!blocking.includes('already-resolved'), 'a resolved failure never blocks')
       );
     },
   );

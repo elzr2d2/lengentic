@@ -30,6 +30,7 @@ import type { FlowAction } from '../flow.ts';
 import {
   appendJournal,
   clearStop,
+  failuresBlockingGate,
   loadOrInit,
   repairKey,
   stopRequested,
@@ -566,12 +567,15 @@ async function runGate(ctx: Ctx, action: FlowAction, kind: 'wave' | 'phase'): Pr
       r.code === 0
         ? green(`${command} exit 0`, [gateLog])
         : red(`${command} exit ${String(r.code)}`, [gateLog]),
+    // This gate's own prior hold records are excluded — they resolve only on the recorded
+    // GREEN they would otherwise block, so counting them made a once-held gate RED forever.
+    // Rationale and the live proof: `failuresBlockingGate` in `state.ts`.
     failureEvidence:
-      unresolvedFailures(ctx.state).length === 0
-        ? green('no unresolved blocking failure recorded for this run', [gateLog])
+      failuresBlockingGate(ctx.state, segment).length === 0
+        ? green('no unresolved blocking failure bears on this gate', [gateLog])
         : red(
-            `${String(unresolvedFailures(ctx.state).length)} unresolved blocking failure(s)`,
-            unresolvedFailures(ctx.state).flatMap((f) => f.evidence),
+            `${String(failuresBlockingGate(ctx.state, segment).length)} unresolved blocking failure(s)`,
+            failuresBlockingGate(ctx.state, segment).flatMap((f) => f.evidence),
           ),
   };
 

@@ -256,6 +256,28 @@ export function unresolvedFailures(s: SupervisorState): BlockingFailure[] {
   return s.blockingFailures.filter((f) => f.resolvedAt === undefined);
 }
 
+/**
+ * The unresolved failures that bear on a gate for `segment` — everything except that same
+ * gate's own prior hold records.
+ *
+ * A held gate records a `kind: 'gate'` failure, and that record resolves only when the gate
+ * finally records GREEN. Counting it in the gate's own `failureEvidence` source therefore
+ * made any once-held gate RED forever: the record could only resolve on the exact GREEN it
+ * was blocking, `pnpm autopilot resume` clears only the escalation, and no restart recovers.
+ * Proven live on run d9c2177c segment 3 — attempt 1 held on `definitionOfDone` alone,
+ * attempt 2 held on `definitionOfDone` plus attempt 1's own hold record.
+ *
+ * Excluding it loses no signal: every other gate source is re-measured fresh at each
+ * attempt, so the re-derivation IS the prior hold's test. Worker, invariant, config and
+ * no-progress failures, and other segments' gate failures, still block.
+ */
+export function failuresBlockingGate(
+  s: SupervisorState,
+  segment: string | null,
+): BlockingFailure[] {
+  return unresolvedFailures(s).filter((f) => !(f.kind === 'gate' && f.segment === segment));
+}
+
 /** A stop request survives a supervisor crash, so it is a file rather than a signal. */
 export function stopFlagPath(dir: string): string {
   return join(dir, 'stop');
