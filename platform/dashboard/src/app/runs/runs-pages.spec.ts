@@ -128,6 +128,69 @@ function step(overrides: {
   };
 }
 
+/**
+ * A run whose steps arrive in one order and executed in another, with server clocks nowhere
+ * near the client ones.
+ *
+ * `RUN_WITH_TREE` cannot serve here: its steps all share one `startedAt` and one
+ * `completedAt`, so every bar is the same bar and the rendered order is the array's whatever
+ * the timeline does with it. This fixture separates the two facts. Declaration order is
+ * `late, first` — the arrival order the Steps card renders — while the client clock says the
+ * opposite, and the timeline must say so too (§12: `occurredAt` is "authoritative for
+ * ordering").
+ *
+ * `receivedAt` is 19:00 on every step and 09:00 on the run, hours from the 11:00 client
+ * window, so a card that reached for the server clock cannot produce the geometry below.
+ */
+const RUN_ON_THE_CLOCK = {
+  id: 'run-clock',
+  traceId: 'trace-clock',
+  workflowName: 'checkout-agent',
+  workflowVersion: '1.4.0',
+  status: 'COMPLETED',
+  startedAt: '2026-08-21T11:00:00.000Z',
+  completedAt: '2026-08-21T11:00:10.000Z',
+  receivedAt: '2026-08-21T09:00:00.000Z',
+  lastEventAt: '2026-08-21T09:00:00.000Z',
+  metadata: null,
+  steps: [
+    timedStep({
+      id: 'step-77-late',
+      name: 'late-step',
+      startedAt: '2026-08-21T11:00:05.000Z',
+      completedAt: '2026-08-21T11:00:07.500Z',
+    }),
+    timedStep({
+      id: 'step-11-first',
+      name: 'first-step',
+      startedAt: '2026-08-21T11:00:00.000Z',
+      completedAt: '2026-08-21T11:00:02.500Z',
+    }),
+    timedStep({ id: 'step-99-clockless', name: 'clockless-step' }),
+  ],
+} as const satisfies RunDetailView;
+
+function timedStep(overrides: {
+  id: string;
+  name: string;
+  startedAt?: string;
+  completedAt?: string;
+}): RunDetailView['steps'][number] {
+  return {
+    runId: 'run-clock',
+    parentStepId: null,
+    agentName: 'checkout-agent',
+    type: 'execute',
+    status: 'COMPLETED',
+    startedAt: null,
+    completedAt: null,
+    // The server clock, deliberately eight hours from every client instant above.
+    receivedAt: '2026-08-21T19:00:00.000Z',
+    metadata: null,
+    ...overrides,
+  };
+}
+
 function listOf(runs: readonly RunListView['runs'][number][], offset = 0): RunListView {
   return { runs: [...runs], limit: 50, offset, hasMore: false };
 }
@@ -193,16 +256,29 @@ async function renderPage(page: Promise<ReactElement>): Promise<string> {
  * `<code>` of the step's `.step-meta` row specifically, not from any `<code>`: the summary
  * card has several, and an orphaned or cycle-placed step prints its *parent's* id in the mark
  * above the meta row.
+ *
+ * ## Why it tracks a stack of lists rather than a counter
+ *
+ * It used to be one `depth` counter incremented on `<ul class="step-branch">` and decremented
+ * on every `</ul>`. That was correct while the steps card held the only `<ul>` on the page,
+ * and silently wrong the moment the Execution Timeline card added one above it: an unmatched
+ * `</ul>` drove the counter negative, and every step id came back one level shallower than it
+ * was rendered at. The failure landed on a passing page — the tree was right and the reader
+ * saw it — which is the shape of harness bug that gets "fixed" by editing the expectation.
+ * The stack records *which* list each `</ul>` closes, so a list this helper is not about
+ * cannot move a depth it is.
  */
 function emittedSteps(markup: string): [string, number][] {
-  const token = /<ul class="step-branch">|<\/ul>|<div class="step-meta"><code>([^<]*)<\/code>/g;
+  const token = /<ul(?: class="([^"]*)")?>|<\/ul>|<div class="step-meta"><code>([^<]*)<\/code>/g;
   const emitted: [string, number][] = [];
-  let depth = -1;
+  const open: string[] = [];
 
   for (const match of markup.matchAll(token)) {
-    if (match[0].startsWith('<ul')) depth += 1;
-    else if (match[0] === '</ul>') depth -= 1;
-    else if (match[1] !== undefined) emitted.push([match[1], depth]);
+    if (match[0].startsWith('<ul')) open.push(match[1] ?? '');
+    else if (match[0] === '</ul>') open.pop();
+    else if (match[2] !== undefined) {
+      emitted.push([match[2], open.filter((cls) => cls === 'step-branch').length - 1]);
+    }
   }
 
   return emitted;
@@ -276,6 +352,67 @@ function runRows(markup: string): { name: string; version: string; status: strin
       id: /<code>([^<]*)<\/code>/.exec(row)?.[1] ?? '(no id element)',
     };
   });
+}
+
+/**
+ * The Execution Timeline card, as the reader sees it: its heading, its window row, one entry
+ * per rendered bar, and the ids it listed as unplaceable.
+ *
+ * Located by its heading rather than by position, so inserting another card above or below it
+ * does not silently retarget every assertion at the wrong section — which is exactly how
+ * `summaryCard`'s `toContain('>FAILED<')` predecessor came to be satisfied by a badge in a
+ * different card.
+ *
+ * The bar's `style` is read verbatim. `left`/`width` are the whole geometry of the chart —
+ * everything a reader concludes from the picture is in those two numbers — so a card that
+ * emitted the right names, the right durations and every bar at `left:0%` would be a chart
+ * that lies, and nothing else on this page would notice.
+ */
+function timelineCard(markup: string): {
+  title: string;
+  window: string;
+  runDuration: string;
+  rows: { name: string; mark: string; duration: string; bar: string }[];
+  unplaced: string[];
+} {
+  const card =
+    /<section class="card"><h2 class="card-title">Execution timeline[\s\S]*?<\/section>/.exec(
+      markup,
+    )?.[0] ?? '(no timeline card on the page)';
+
+  const rowMatches = [...card.matchAll(/<li class="timeline-row">([\s\S]*?)<\/li>/g)].map(
+    (match) => match[1] ?? '',
+  );
+
+  return {
+    title: stripTags(/<h2 class="card-title">([\s\S]*?)<\/h2>/.exec(card)?.[1] ?? '(no title)'),
+    window: labelledRow(card, 'Window'),
+    runDuration: labelledRow(card, 'Run duration'),
+    // A row with no bar is an unplaced step, which has its own list below.
+    rows: rowMatches
+      .filter((row) => row.includes('timeline-track'))
+      .map((row) => ({
+        name: /<span class="timeline-name">([^<]*)<\/span>/.exec(row)?.[1] ?? '(no name element)',
+        mark: stripTags(
+          /<span class="placement placement-[a-z-]+">([\s\S]*?)<\/span>/.exec(row)?.[1] ?? '',
+        ),
+        duration:
+          /<span class="timeline-duration">([^<]*)<\/span>/.exec(row)?.[1] ?? '(no duration)',
+        bar: /<div class="timeline-bar[^"]*" style="([^"]*)"/.exec(row)?.[1] ?? '(no bar)',
+      })),
+    unplaced: rowMatches
+      .filter((row) => !row.includes('timeline-track'))
+      .map((row) => /<code>([^<]*)<\/code>/.exec(row)?.[1] ?? '(no id element)'),
+  };
+}
+
+/** One `label → value` row of a card, by its label. */
+function labelledRow(card: string, label: string): string {
+  const row = new RegExp(
+    `<div class="row"><span class="row-label">${label}</span>([\\s\\S]*?)</div>`,
+  ).exec(card);
+
+  return stripTags(row?.[1] ?? `(no ${label} row)`);
 }
 
 /** The text a reader sees, with whatever markup carried it removed. */
@@ -546,6 +683,111 @@ describe('GET /runs/[id] — the run detail page', () => {
     expect(emittedStepNames(markup)).toStrictEqual(['lost-step']);
     expect(markup).toContain('1 step · 1 orphaned');
     expect(markup).toContain('not in this run');
+  });
+
+  it('renders the execution timeline — every step on the client clock, in client-clock order, with its bar', async () => {
+    // The required view `MVP_PLAN_V3.md:1783` names: "Execution Timeline (client clocks ONLY)".
+    // `src/lib/timeline.spec.ts` proves the arithmetic; this proves the page renders it, which
+    // is the half D1 and D2 showed nothing was watching.
+    //
+    // Every expected value is computed by hand from `RUN_ON_THE_CLOCK`'s client instants
+    // against its 10s window (11:00:00 → 11:00:10) — never read back off the render:
+    //
+    //   first-step  0.0s → 2.5s  left  0%  width 25%  2.500s
+    //   late-step   5.0s → 7.5s  left 50%  width 25%  2.500s
+    //
+    // The order is the client clock's and is the REVERSE of the fixture's declaration order,
+    // which is what the Steps card renders. Both orders are on the page and each says which
+    // it is.
+    stubApi({ '/v1/runs/run-clock': { status: 200, body: RUN_ON_THE_CLOCK } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-clock' }) }),
+    );
+    const card = timelineCard(markup);
+
+    expect(card.title).toBe('Execution timeline · 1 with no client clock');
+    expect(card.runDuration).toBe('10.000s');
+    expect(card.window).toBe('2026-08-21T11:00:00.000Z → 2026-08-21T11:00:10.000Z');
+    expect(card.rows).toStrictEqual([
+      { name: 'first-step', mark: '', duration: '2.500s', bar: 'left:0%;width:25%' },
+      { name: 'late-step', mark: '', duration: '2.500s', bar: 'left:50%;width:25%' },
+    ]);
+    // The paired negative, and the alarm for the rule the whole card exists to keep
+    // (`MVP_PLAN_V3.md:493`): the server clocks in this fixture are 09:00 and 19:00, so their
+    // absence from the card is what makes the window above "the client's" rather than "a
+    // window". `receivedAt` is still on the page — the summary card states it — so this is
+    // scoped to the card, not to the document.
+    expect(card.window).not.toContain('19:00');
+    expect(card.window).not.toContain('09:00');
+  });
+
+  it('lists a step carrying no client clock instead of dropping it off the page', async () => {
+    // §12 lets any event create a Step row, so a step with neither `startedAt` nor
+    // `completedAt` is an ordinary shape. It cannot be placed on a client-clock axis without
+    // inventing a position for it — and a timeline that silently drops it renders two of three
+    // steps and looks exactly like a run that had two.
+    stubApi({ '/v1/runs/run-clock': { status: 200, body: RUN_ON_THE_CLOCK } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-clock' }) }),
+    );
+
+    expect(timelineCard(markup).unplaced).toStrictEqual(['step-99-clockless']);
+    expect(markup).toContain('cannot be placed on this axis');
+    // The count alarm's own paired negative: it must be silent on a page that accounted for
+    // every step, or its firing elsewhere would mean nothing.
+    expect(markup).not.toContain('on neither the axis nor the unplaced list');
+  });
+
+  it('marks a bar whose interval the run never observed, rather than drawing it as a measurement', async () => {
+    // Three degenerate shapes, each drawn and each marked. Expected geometry, by hand, against
+    // the same 10s window:
+    //
+    //   open-step      5.0s → (no completion)  left 50%  width 50%  — bar runs to the window's end
+    //   end-only-step  7.5s (completion only)  left 75%  width  0%  — no interval was observed
+    //
+    // A zero-width bar with no mark is indistinguishable from an instantaneous step, which is
+    // a claim about the run nobody made.
+    stubApi({
+      '/v1/runs/run-clock': {
+        status: 200,
+        body: {
+          ...RUN_ON_THE_CLOCK,
+          steps: [
+            timedStep({
+              id: 'step-open',
+              name: 'open-step',
+              startedAt: '2026-08-21T11:00:05.000Z',
+            }),
+            timedStep({
+              id: 'step-end-only',
+              name: 'end-only-step',
+              completedAt: '2026-08-21T11:00:07.500Z',
+            }),
+          ],
+        },
+      },
+    });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-clock' }) }),
+    );
+
+    expect(timelineCard(markup).rows).toStrictEqual([
+      {
+        name: 'open-step',
+        mark: 'running · no completion yet',
+        duration: '—',
+        bar: 'left:50%;width:50%',
+      },
+      {
+        name: 'end-only-step',
+        mark: 'completed before any start · duration unknown',
+        duration: '—',
+        bar: 'left:75%;width:0%',
+      },
+    ]);
   });
 
   it('says no steps have been recorded rather than rendering an empty tree', async () => {

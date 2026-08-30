@@ -10,6 +10,7 @@ import {
 } from '@/lib/step-tree';
 import { RunStatusBadge } from '../run-status-badge';
 import { FetchFailureCard } from '../fetch-failure';
+import { TimelineCard } from './timeline-card';
 
 // Same reason as the list: `status` is derived per request from the server's clock.
 export const dynamic = 'force-dynamic';
@@ -32,6 +33,10 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
       {result.kind === 'ok' ? (
         <>
           <RunSummaryCard run={result.run} />
+          {/* Timeline before hierarchy on purpose: the two are different orderings of the same
+              steps — execution (client clock) and arrival (server clock) — and the required
+              view list puts execution first (`MVP_PLAN_V3.md:1782-1784`). */}
+          <TimelineCard run={result.run} />
           <StepsCard run={result.run} />
         </>
       ) : (

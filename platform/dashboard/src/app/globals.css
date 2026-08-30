@@ -311,3 +311,93 @@ a {
   padding: 0;
   color: inherit;
 }
+
+/* The Execution Timeline. Each row is a fixed-height track with one absolutely positioned
+   bar, so `left` and `width` are the only geometry the component computes — the percentages
+   come straight from `lib/timeline.ts` and nothing in CSS re-scales them. */
+.timeline {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+
+.timeline-row {
+  padding: 0.6rem 0;
+}
+
+.timeline-row + .timeline-row {
+  border-top: 1px solid var(--border);
+}
+
+.timeline-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.timeline-name {
+  font-weight: 600;
+}
+
+.timeline-duration {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.timeline-track {
+  position: relative;
+  height: 0.5rem;
+  margin: 0.4rem 0;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.timeline-bar {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+/* An interval the system never observed — `end-only` and `reversed` — is zero-width, and an
+   element of zero width is indistinguishable from one the page failed to draw. */
+.timeline-bar-point {
+  min-width: 3px;
+  margin-left: -1.5px;
+}
+
+.timeline-bar-open {
+  background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 10px);
+}
+
+.timeline-bar-end-only,
+.timeline-bar-reversed {
+  background: var(--down);
+}
+
+.timeline-unscaled {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.timeline-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.placement-open {
+  color: var(--text-muted);
+}
+
+.placement-end-only,
+.placement-unplaced {
+  color: var(--orphan);
+}
