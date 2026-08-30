@@ -374,6 +374,18 @@ export function evaluateExecutionStrategy(
   input: unknown,
   options: EvaluateOptions = {},
 ): EvaluationResult {
+  // `options` is the caller's own configuration, not the untrusted `awarenessContext`, so a
+  // bad value is a programming error and throws instead of mapping to a blocker code. The
+  // check matters because every arithmetic guard below survives a non-integer silently:
+  // `Math.min(…, NaN)` is `NaN`, `NaN < 2` is `false`, so `NaN` sails past
+  // `insufficient-effective-concurrency` straight into `mode: 'parallel'` with
+  // `effectiveConcurrency: NaN` — parallel that was never earned (§29). Negative integers
+  // stay accepted: they clamp to a floor of 1 and force sequential, which is well-defined.
+  if (options.maxConcurrency !== undefined && !Number.isInteger(options.maxConcurrency)) {
+    throw new TypeError(
+      `evaluateExecutionStrategy: maxConcurrency must be an integer, got ${String(options.maxConcurrency)}`,
+    );
+  }
   const maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
   const context = parseAwarenessContext(input);
 

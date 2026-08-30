@@ -56,15 +56,28 @@ const DEFAULT_SEED = 42;
 
 const SEED_FLAG = '--seed=';
 
+/** Decimal digits only, optional leading minus. `Number(raw)` alone is not enough: it maps
+ *  `''` to `0`, `'0x10'` to `16`, `'1e3'` to `1000` and `' 7 '` to `7` — four ways a caller
+ *  ends up on a fully deterministic run under a seed they never chose (tester F4: `--seed=`
+ *  with an unset shell variable silently ran seed 0). */
+const SEED_PATTERN = /^-?\d+$/;
+
 export function parseSeed(argv: readonly string[]): number {
   const flag = argv.find((arg) => arg.startsWith(SEED_FLAG));
+  const unrecognised = argv.find((arg) => !arg.startsWith(SEED_FLAG));
+  if (unrecognised !== undefined) {
+    // `--seed 4321` (space form) used to silently run the default seed 42 — the bare
+    // `--seed` never matched the `--seed=` prefix and both tokens were ignored (tester F4).
+    throw new Error(
+      `playground:happy-path: unrecognised argument "${unrecognised}" — the only option is ${SEED_FLAG}<integer>`,
+    );
+  }
   if (flag === undefined) return DEFAULT_SEED;
   const raw = flag.slice(SEED_FLAG.length);
-  const value = Number(raw);
-  if (!Number.isInteger(value)) {
+  if (!SEED_PATTERN.test(raw)) {
     throw new Error(`playground:happy-path: --seed must be an integer, got "${raw}"`);
   }
-  return value;
+  return Number(raw);
 }
 
 /** `no-console` (`eslint.config.js`) restricts `console.*` to `warn`/`error` everywhere
@@ -78,8 +91,22 @@ function println(line: string): void {
   process.stdout.write(`${line}\n`);
 }
 
-function printSummary(seed: number, result: MockAgentRunResult): void {
-  println(`playground:happy-path — seed=${seed} endpoint=${PLAYGROUND_DEFAULT_ENDPOINT}`);
+/**
+ * `playground/index.ts`'s own doc on `PLAYGROUND_DEFAULT_ENDPOINT`: "reading the environment
+ * is the CLI's job, not this seam's" — this is that job. The override exists so the
+ * process-boundary spec can point a real spawned CLI at an endpoint where nothing is
+ * listening and prove the `maxRetries: 0` regression claim against the premise it states
+ * (tester F2: the spec used to run against the live API, could not fail for its stated
+ * cause, and wrote real Runs into the dev database). The value is printed in the banner, so
+ * an override is always visible in the output it shapes.
+ */
+export function resolveEndpoint(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env['PLAYGROUND_ENDPOINT'];
+  return override !== undefined && override !== '' ? override : PLAYGROUND_DEFAULT_ENDPOINT;
+}
+
+function printSummary(seed: number, endpoint: string, result: MockAgentRunResult): void {
+  println(`playground:happy-path — seed=${seed} endpoint=${endpoint}`);
   println(`run ${result.runId} — ${result.status}`);
   println(
     `strategy: ${result.strategy.mode} ` +
@@ -98,18 +125,30 @@ function printSummary(seed: number, result: MockAgentRunResult): void {
   );
   if (stats.droppedUndeliverable > 0) {
     println(
-      `note: ${stats.droppedUndeliverable} event(s) could not be delivered to ${PLAYGROUND_DEFAULT_ENDPOINT} ` +
+      `note: ${stats.droppedUndeliverable} event(s) could not be delivered to ${endpoint} ` +
         '— is the LenGentic API running? (`pnpm dev`)',
     );
+  }
+  // Always printed (F1/B: `.artifacts/evidence/3/phase-gate/repair-1/architect-f1-decision.md`
+  // §B) — `delivered` above is a transport count and cannot tell a reader whether this run
+  // created anything new in LenGentic or was entirely deduplicated. This is that answer, at
+  // the exact surface the finding names: the reader re-running this command's own output.
+  println(
+    `persistence: accepted=${stats.serverAccepted} duplicate=${stats.serverDuplicate} ` +
+      `rejected=${stats.serverRejected} unattributed=${stats.serverCountsUnavailable}`,
+  );
+  if (stats.serverAccepted === 0 && stats.serverDuplicate > 0) {
+    println('note: no new data was recorded — this seed and scenario already exist in LenGentic');
   }
 }
 
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
   const seed = parseSeed(argv);
+  const endpoint = resolveEndpoint();
   // See the module doc's "`maxRetries: 0`" section — a reproduced SDK defect, not a guess.
-  const agent = new MockAgent({ seed, telemetryConfig: { maxRetries: 0 } });
+  const agent = new MockAgent({ seed, telemetryConfig: { maxRetries: 0, endpoint } });
   const result = await agent.run();
-  printSummary(seed, result);
+  printSummary(seed, endpoint, result);
   return result.status === 'COMPLETED' ? 0 : 1;
 }
 

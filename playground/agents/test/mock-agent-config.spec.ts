@@ -46,6 +46,16 @@ void describe('MockAgent — config validation', () => {
     assert.doesNotThrow(() => new MockAgent({ seed: 1, availableConcurrency: 0 }));
   });
 
+  void it('rejects a non-integer maxConcurrency synchronously from the constructor (tester F3: NaN reached mode "parallel" mid-run)', () => {
+    for (const bad of [Number.NaN, 2.5, Number.POSITIVE_INFINITY]) {
+      assert.throws(() => new MockAgent({ seed: 1, maxConcurrency: bad }), MockAgentConfigError);
+    }
+  });
+
+  void it('NEGATIVE — an integer maxConcurrency is accepted', () => {
+    assert.doesNotThrow(() => new MockAgent({ seed: 1, maxConcurrency: 2 }));
+  });
+
   void it('rejects an out-of-range seed synchronously from the constructor, not only when run() is awaited', () => {
     // `MockProvider` is built eagerly in `MockAgent`'s own constructor precisely so this
     // fails fast (see the doc comment on `MockAgent.provider`) — this is the seam that

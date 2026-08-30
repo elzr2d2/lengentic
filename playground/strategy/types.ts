@@ -119,7 +119,9 @@ export interface EvaluationResult {
 export interface EvaluateOptions {
   /**
    * Hard ceiling on `effectiveConcurrency`. Capacity is not permission (§29): this is never
-   * derived from `availableConcurrency`, only clamped by it.
+   * derived from `availableConcurrency`, only clamped by it. Must be an integer —
+   * `evaluateExecutionStrategy` throws a `TypeError` on anything else, because `NaN` (or any
+   * non-integer) would otherwise slide through every numeric comparison unnoticed.
    */
   readonly maxConcurrency?: number;
 }

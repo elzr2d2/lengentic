@@ -36,6 +36,29 @@ export interface TelemetryStats {
   readonly droppedUndeliverable: number;
   /** Individual failed delivery attempts, retries included. */
   readonly deliveryFailures: number;
+  /**
+   * The server's own claim about a `delivered` batch — from `IngestResponse.accepted`
+   * (`platform/shared/schema/ingest.ts`), summed across every batch whose response could be
+   * read. Distinct from `delivered`: `delivered` is a transport count ("the batch reached
+   * the API"), `serverAccepted` is a persistence count ("the API says it created something
+   * new"). A run whose ingest was entirely deduplicated has `delivered > 0` and
+   * `serverAccepted === 0` (F1: `.artifacts/evidence/3/phase-gate/tester/README.md`).
+   */
+  readonly serverAccepted: number;
+  /** From `IngestResponse.duplicate` — events the server recognised as an ledger key
+   *  (`runId`, `eventId`) it had already accepted, summed the same way as `serverAccepted`. */
+  readonly serverDuplicate: number;
+  /** From `IngestResponse.rejected` — events the server refused, summed the same way. */
+  readonly serverRejected: number;
+  /**
+   * Events in a `delivered` batch whose response body could not be read as an
+   * `IngestResponse` (`transport.ts`'s `response: null`) — a 2xx whose JSON body was absent,
+   * malformed, or off the wire contract. Kept separate from `serverAccepted: 0` on purpose:
+   * "the server said zero were new" and "the server's answer could not be understood" are
+   * different facts, and collapsing them would make an unparseable response indistinguishable
+   * from an all-duplicate batch.
+   */
+  readonly serverCountsUnavailable: number;
 }
 
 export interface TelemetryClient {
@@ -83,6 +106,10 @@ class Client implements TelemetryClient, EventRecorder {
     droppedAfterShutdown: 0,
     droppedUndeliverable: 0,
     deliveryFailures: 0,
+    serverAccepted: 0,
+    serverDuplicate: 0,
+    serverRejected: 0,
+    serverCountsUnavailable: 0,
   };
 
   constructor(config: TelemetryConfig) {
@@ -145,6 +172,10 @@ class Client implements TelemetryClient, EventRecorder {
       droppedAfterShutdown: this.counters.droppedAfterShutdown,
       droppedUndeliverable: this.counters.droppedUndeliverable,
       deliveryFailures: this.counters.deliveryFailures,
+      serverAccepted: this.counters.serverAccepted,
+      serverDuplicate: this.counters.serverDuplicate,
+      serverRejected: this.counters.serverRejected,
+      serverCountsUnavailable: this.counters.serverCountsUnavailable,
     };
   }
 
@@ -240,6 +271,19 @@ class Client implements TelemetryClient, EventRecorder {
       const result = await this.attemptDelivery(batch);
       if (result.outcome === 'delivered') {
         this.counters.delivered += batch.length;
+        if (result.response !== null) {
+          this.counters.serverAccepted += result.response.accepted;
+          this.counters.serverDuplicate += result.response.duplicate;
+          this.counters.serverRejected += result.response.rejected;
+        } else {
+          // A 2xx whose body could not be read as an `IngestResponse` (`transport.ts`'s
+          // `readIngestResponse`) still delivered the batch — `delivered` above is correct
+          // either way — but says nothing about which events were new. Counting the whole
+          // batch as unattributed keeps `serverAccepted: 0` from being misread as "the
+          // server said none of these were new" (O2:
+          // `.artifacts/evidence/3/phase-gate/tester/README.md`).
+          this.counters.serverCountsUnavailable += batch.length;
+        }
         return;
       }
       this.counters.deliveryFailures += 1;

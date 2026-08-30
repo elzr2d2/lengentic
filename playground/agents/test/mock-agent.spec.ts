@@ -19,7 +19,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { MockAgent } from '../index';
+import { MockAgent, type MockAgentConfig } from '../index';
 import { FakeScheduler } from './support/fake-scheduler';
 import { RecordingTransport, type RecordedEnvelope } from './support/recording-transport';
 
@@ -314,4 +314,153 @@ void describe('MockAgent — determinism (same seed → byte-identical telemetry
     assert.deepEqual(second.allEvents, first.allEvents);
     assert.equal(JSON.stringify(second.allEvents), JSON.stringify(first.allEvents));
   });
+});
+
+/**
+ * F1 (`.artifacts/evidence/3/phase-gate/tester/README.md`; fix at
+ * `.artifacts/evidence/3/phase-gate/repair-1/architect-f1-decision.md` §A): before
+ * `deriveScenarioSeed` existed, the telemetry seed was `config.seed` alone, so any two
+ * scenarios sharing a `seed` minted the same runId and the second one's telemetry was
+ * silently deduplicated by the `(runId, eventId)` ledger key. `runIdFor` runs a full,
+ * offline `MockAgent` (a `RecordingTransport`, no network) and returns the runId the
+ * telemetry domain actually minted — the one thing the server-side ledger keys on.
+ */
+async function runIdFor(config: MockAgentConfig): Promise<string> {
+  const transport = new RecordingTransport();
+  const agent = new MockAgent({ ...config, telemetryConfig: { transport } });
+  const result = await agent.run();
+  return result.runId;
+}
+
+const SAMPLE_AWARENESS_CONTEXT = {
+  schemaVersion: 1 as const,
+  topology: {
+    taskCount: 2,
+    runnableTaskCount: 2,
+    dependencyCount: 0,
+    unresolvedDependencyCount: 0,
+    dependenciesKnown: true as const,
+  },
+  resources: {
+    claimedResourceCount: 0,
+    conflictingResourceCount: 0,
+    conflictsChecked: true as const,
+    sharedMutableState: false as const,
+  },
+  readiness: {
+    requirementsComplete: true as const,
+    contractsStable: true as const,
+    validationAvailable: true as const,
+    independentlyValidatable: true as const,
+    independentlyReversible: true as const,
+  },
+  limits: { requestedConcurrency: 2, availableConcurrency: 4 },
+  risk: { level: 'low' as const, reasons: [] },
+};
+
+void describe('MockAgent — F1 repro 1 dead: changed scenario identity, same seed (AC-4)', () => {
+  void it('same seed, changed workflowName/workflowVersion -> different runId (README:235-246)', async () => {
+    const original: MockAgentConfig = { seed: 20260827 };
+    const changed: MockAgentConfig = {
+      seed: 20260827,
+      workflowName: 'CHANGED-WORKFLOW',
+      workflowVersion: '9.9.9',
+    };
+
+    assert.notEqual(await runIdFor(changed), await runIdFor(original));
+  });
+
+  void it("the changed scenario emits its OWN workflowName on the wire, not silently the original's", async () => {
+    const transport = new RecordingTransport();
+    const agent = new MockAgent({
+      seed: 20260827,
+      workflowName: 'CHANGED-WORKFLOW',
+      workflowVersion: '9.9.9',
+      telemetryConfig: { transport },
+    });
+    await agent.run();
+
+    const started = transport.allEvents.find((event) => event.type === 'run.started');
+    assert.ok(started);
+    const payload = started.payload as { workflowName: string; workflowVersion: string };
+    assert.equal(payload.workflowName, 'CHANGED-WORKFLOW');
+    assert.equal(payload.workflowVersion, '9.9.9');
+  });
+});
+
+void describe('MockAgent — F1 repro 2 dead: the Phase 6 shape, same seed different contextSeed (AC-5)', () => {
+  void it('same seed, different contextSeed -> different runId (README:248-258)', async () => {
+    const original: MockAgentConfig = { seed: 771, tasks: [{ name: 'a' }, { name: 'b' }] };
+    const varied: MockAgentConfig = { ...original, contextSeed: 555555 };
+
+    assert.notEqual(await runIdFor(varied), await runIdFor(original));
+  });
+
+  void it("the varied-context run stores its OWN contextVariation, not the first run's (README:257-258)", async () => {
+    async function contextVariationOf(config: MockAgentConfig): Promise<unknown> {
+      const transport = new RecordingTransport();
+      const agent = new MockAgent({ ...config, telemetryConfig: { transport } });
+      await agent.run();
+      const planCompleted = transport.allEvents.find(
+        (event) =>
+          event.type === 'step.completed' &&
+          transport.allEvents.some(
+            (started) =>
+              started.type === 'step.started' &&
+              started.entityId === event.entityId &&
+              (started.payload as { name: string }).name === 'plan',
+          ),
+      );
+      assert.ok(planCompleted);
+      return (planCompleted.payload as { metadata: { contextVariation: unknown } }).metadata
+        .contextVariation;
+    }
+
+    const original: MockAgentConfig = { seed: 771 };
+    const varied: MockAgentConfig = { seed: 771, contextSeed: 555555 };
+
+    assert.notDeepEqual(await contextVariationOf(varied), await contextVariationOf(original));
+  });
+});
+
+interface MutationCase {
+  readonly name: string;
+  readonly mutate: (config: MockAgentConfig) => MockAgentConfig;
+}
+
+/** Every `MockAgentConfig` field `deriveScenarioSeed` must fold in — i.e. every field
+ *  except `seed`, `scheduler` and `telemetryConfig` (AC-6: "the class is dead, not just the
+ *  two exhibits"). */
+const MUTATION_CASES: readonly MutationCase[] = [
+  { name: 'contextSeed', mutate: (c) => ({ ...c, contextSeed: 999 }) },
+  { name: 'delayMs', mutate: (c) => ({ ...c, delayMs: 5 }) },
+  { name: 'failureRate', mutate: (c) => ({ ...c, failureRate: 1 }) },
+  { name: 'alwaysFailSteps', mutate: (c) => ({ ...c, alwaysFailSteps: ['default'] }) },
+  { name: 'metadata', mutate: (c) => ({ ...c, metadata: { note: 'x' } }) },
+  { name: 'tasks', mutate: (c) => ({ ...c, tasks: [{ name: 'other' }] }) },
+  { name: 'availableConcurrency', mutate: (c) => ({ ...c, availableConcurrency: 2 }) },
+  { name: 'maxConcurrency', mutate: (c) => ({ ...c, maxConcurrency: 2 }) },
+  {
+    name: 'awarenessContext',
+    mutate: (c) => ({ ...c, awarenessContext: SAMPLE_AWARENESS_CONTEXT }),
+  },
+  { name: 'clockOptions', mutate: (c) => ({ ...c, clockOptions: { stepMs: 500 } }) },
+  { name: 'workflowName', mutate: (c) => ({ ...c, workflowName: 'CHANGED-WORKFLOW' }) },
+  { name: 'workflowVersion', mutate: (c) => ({ ...c, workflowVersion: '9.9.9' }) },
+];
+
+void describe('MockAgent — F1 the class is dead, not just the two exhibits (AC-6)', () => {
+  const BASE_CONFIG: MockAgentConfig = { seed: 1 };
+
+  void it('NEGATIVE — the base config run twice (nothing mutated) mints the same runId', async () => {
+    assert.equal(await runIdFor(BASE_CONFIG), await runIdFor(BASE_CONFIG));
+  });
+
+  for (const testCase of MUTATION_CASES) {
+    void it(`mutating "${testCase.name}" alone changes the runId`, async () => {
+      const baseRunId = await runIdFor(BASE_CONFIG);
+      const mutatedRunId = await runIdFor(testCase.mutate(BASE_CONFIG));
+      assert.notEqual(mutatedRunId, baseRunId);
+    });
+  }
 });

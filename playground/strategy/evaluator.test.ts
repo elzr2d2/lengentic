@@ -353,6 +353,30 @@ void describe('evaluateExecutionStrategy — genuinely eligible input', () => {
     assert.deepEqual(blockerCodes(result), ['insufficient-effective-concurrency']);
   });
 
+  void test('a non-integer maxConcurrency throws instead of reaching a verdict (tester F3: NaN sailed into mode "parallel" with effectiveConcurrency NaN)', () => {
+    // Was: `Math.min(…, NaN)` is `NaN`, `NaN < 2` is `false`, so an eligible context with
+    // `maxConcurrency: NaN` produced `mode: 'parallel', effectiveConcurrency: NaN` — and a
+    // real Run then attested COMPLETED having executed zero tasks
+    // (.artifacts/evidence/3/phase-gate/tester/README.md F3, run 203c2fa4). The options are
+    // the caller's own config, so the failure mode is a throw, not a blocker code.
+    const ctx = eligibleContext();
+    for (const bad of [Number.NaN, 2.5, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => evaluateExecutionStrategy(ctx, { maxConcurrency: bad }),
+        { name: 'TypeError', message: /maxConcurrency must be an integer/ },
+        `maxConcurrency ${bad} must throw`,
+      );
+    }
+  });
+
+  void test('a negative integer maxConcurrency stays a sequential verdict, not a throw', () => {
+    const result = evaluateExecutionStrategy(eligibleContext(), { maxConcurrency: -5 });
+    assert.equal(result.mode, 'sequential');
+    assert.equal(result.eligible, false);
+    assert.equal(result.effectiveConcurrency, 1);
+    assert.deepEqual(blockerCodes(result), ['insufficient-effective-concurrency']);
+  });
+
   void test('requestedConcurrency: 0 on an otherwise-eligible context cannot produce mode "parallel"', () => {
     const ctx = eligibleContext({ limits: { requestedConcurrency: 0, availableConcurrency: 2 } });
     const result = evaluateExecutionStrategy(ctx);

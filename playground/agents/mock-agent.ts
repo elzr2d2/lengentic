@@ -17,24 +17,36 @@
  * `../index` (the Playground's composition root) is the one place any of that reaches
  * `@lengentic/telemetry-sdk` — this module never imports the SDK directly.
  *
- * ## Two seed domains, one scenario seed
+ * ## Two seed domains, one scenario input
  *
  * `MockProvider` (its own `seed`/`contextSeed`) and `createSeededComponents` (the
  * telemetry `Clock`/`IdGenerator`) are independent seed domains — nothing before this
  * packet wired them together (`.artifacts/backlog/pending.md`, trigger `p3.mock-agent`).
- * `MockAgent` closes that gap by construction rather than by convention: `MockAgentConfig`
- * exposes exactly one `seed`, and both domains are constructed from that single number
- * (`this.seed` below), never from two independently-supplied seeds. This is deliberately
- * the simplest composition — identity, not a second derivation — because the two domains
- * already use unrelated PRNG streams: `SeededClock`/`SeededIdGenerator` fold `seed`
- * through their own internal state, and `MockProvider` folds it again per call through
- * `seed ^ hashToSeed(step|callIndex|salt)`. Reusing the same numeric value across both
- * therefore creates no shared state and no cross-domain correlation — it only pins both
- * deterministically from one scenario input, which is what "same seed → byte-identical
- * telemetry" (this packet's own acceptance criterion) requires. `contextSeed` stays a
- * separate, optional knob (defaulting to `seed` inside `MockProvider` itself) for the
- * Phase 6 "same outcome, different context" replay the plan's Mock Provider section calls
- * out.
+ * `MockAgentConfig` exposes exactly one `seed`, but the two domains no longer receive it
+ * *identically* — that identity composition was F1
+ * (`.artifacts/evidence/3/phase-gate/tester/README.md`): because the telemetry domain's
+ * runId is a pure function of `seed` alone, two scenarios that only differed in
+ * `workflowName`, `contextSeed`, or any other field minted the same runId, and the second
+ * one's telemetry was silently discarded as a duplicate by the `(runId, eventId)` ledger
+ * key.
+ *
+ * The **provider** domain still takes the raw `seed` unchanged (`buildProviderConfig`
+ * below, `this.provider` in the constructor) — a scenario's simulated *outcome* stays a
+ * pure function of `seed` alone, which is what `MVP_PLAN_V3.md:1641` means by "vary in
+ * context but not in outcome": replaying the same `seed` under a different `contextSeed`
+ * must still resolve/fail exactly the same way, only the recorded `contextVariation`
+ * differs.
+ *
+ * The **telemetry** domain takes `deriveScenarioSeed(config)`
+ * (`./scenario-seed.ts`) instead: run identity is a function of the *whole* scenario, not
+ * of `seed` in isolation. `deriveScenarioSeed` folds every `MockAgentConfig` field except
+ * `seed`, `scheduler` and `telemetryConfig` into the seed it hands
+ * `createSeededPlaygroundTelemetry`, so two scenarios that differ in any way that would
+ * actually change what gets recorded also differ in which runId they mint. "Same seed →
+ * byte-identical telemetry" (this packet's own acceptance criterion) still holds exactly:
+ * the derivation is a pure function of the declared config, so two `MockAgent`s built from
+ * the *same* config (same `seed`, same everything else that matters) always derive the
+ * same telemetry seed and therefore emit byte-identical envelopes.
  */
 import { createSeededPlaygroundTelemetry, type SeededClockOptions } from '../determinism';
 import type { StartRunInput, TelemetryClient, TelemetryConfig } from '../index';
@@ -50,6 +62,13 @@ import {
   type EvaluationResult,
 } from '../strategy';
 import { buildExecutionStrategyDecision } from '../workflows';
+import { deriveScenarioSeed, ScenarioSeedError } from './scenario-seed';
+import type { MockAgentConfig, MockAgentTaskConfig } from './types';
+
+/** Re-exported so `playground/agents/index.ts`'s existing `from './mock-agent'` import
+ *  keeps working — the types themselves now live in `./types.ts` (see that module's doc for
+ *  why: breaking an import cycle with `./scenario-seed.ts`). */
+export type { MockAgentConfig, MockAgentTaskConfig };
 
 /**
  * These four shapes are the SDK's own `RunHandle`/`StepHandle`/`StartStepInput`/
@@ -87,15 +106,6 @@ export class MockAgentConfigError extends Error {
   }
 }
 
-/** One unit of Execute-phase work. `MockAgent` calls `MockProvider.invoke({ step: name })`
- *  for each, so `name` doubles as the provider's own per-call identity — kept distinct
- *  across a single run (validated in the constructor) for the same reason
- *  `MockProviderRequest.callIndex` exists: two tasks colliding on derived randomness would
- *  silently stop being "two tasks". */
-export interface MockAgentTaskConfig {
-  readonly name: string;
-}
-
 export interface MockAgentTaskResult {
   readonly name: string;
   readonly status: TerminalStatus;
@@ -112,46 +122,6 @@ export interface MockAgentRunResult {
   readonly strategy: EvaluationResult;
   readonly tasks: readonly MockAgentTaskResult[];
   readonly telemetryStats: TelemetryStats;
-}
-
-/**
- * `MockProviderConfig` minus `seed` (this config's own `seed` feeds both seed domains —
- * see the module doc above) — reusing its field types instead of re-declaring them keeps
- * `MockAgentConfig`'s provider knobs from silently drifting out of sync with what
- * `MockProvider` actually validates.
- */
-export interface MockAgentConfig extends Pick<
-  MockProviderConfig,
-  'contextSeed' | 'delayMs' | 'failureRate' | 'alwaysFailSteps' | 'scheduler'
-> {
-  readonly seed: number;
-  /** Execute-phase work items. Default: a single task — the deliberate "sequential
-   *  default" shape (§29): with fewer than two runnable tasks, rule 1 alone forces
-   *  `sequential` regardless of every other field. */
-  readonly tasks?: readonly MockAgentTaskConfig[];
-  /** `AwarenessContext.limits.availableConcurrency` when `awarenessContext` is not
-   *  overridden. Default 4, matching the evaluator's own default `maxConcurrency`
-   *  (`playground/strategy/evaluator.ts`). */
-  readonly availableConcurrency?: number;
-  /** Passed straight through to `evaluateExecutionStrategy` as `EvaluateOptions`. */
-  readonly maxConcurrency?: number;
-  /**
-   * Escape hatch for a caller that wants to exercise a specific evaluator rule (an
-   * unresolved dependency, a conflicting resource claim, an `unknown` readiness field,
-   * …) directly, instead of the default context this class derives from `tasks.length`
-   * and `availableConcurrency`. `playground/strategy` already owns the twelve-rule test
-   * matrix (`p3.strategy-evaluator`); this knob exists so a caller of `MockAgent` is not
-   * limited to what the derived default can express, not to re-prove those rules here.
-   */
-  readonly awarenessContext?: AwarenessContext;
-  readonly workflowName?: string;
-  readonly workflowVersion?: string;
-  readonly metadata?: Metadata;
-  /** Passed through to `createSeededPlaygroundTelemetry`. `clock`/`idGenerator` set here
-   *  are overridden by the seeded pair regardless (`determinism/telemetry.ts`'s own
-   *  guarantee) — `transport` is the field a test actually uses. */
-  readonly telemetryConfig?: TelemetryConfig;
-  readonly clockOptions?: SeededClockOptions;
 }
 
 function validateTasks(tasks: readonly MockAgentTaskConfig[]): void {
@@ -175,6 +145,15 @@ function validateAvailableConcurrency(value: number): void {
     throw new MockAgentConfigError(
       `MockAgent: availableConcurrency must be a non-negative integer, got ${value}`,
     );
+  }
+}
+
+/** Same fail-fast moment as `availableConcurrency`: `evaluateExecutionStrategy` throws on a
+ *  non-integer `maxConcurrency` too, but only mid-`run()`, after `startRun` has already
+ *  emitted telemetry — the constructor is where a config mistake must surface. */
+function validateMaxConcurrency(value: number | undefined): void {
+  if (value !== undefined && !Number.isInteger(value)) {
+    throw new MockAgentConfigError(`MockAgent: maxConcurrency must be an integer, got ${value}`);
   }
 }
 
@@ -279,7 +258,10 @@ interface ProviderStepOutcome {
 }
 
 export class MockAgent {
-  private readonly seed: number;
+  /** The scenario-derived seed — the telemetry domain's (see the module doc above). The
+   *  raw `seed` is not otherwise retained: `MockProvider` (the provider domain) is built
+   *  eagerly below from `config.seed` directly and holds its own copy. */
+  private readonly telemetrySeed: number;
 
   private readonly tasks: readonly MockAgentTaskConfig[];
 
@@ -316,8 +298,8 @@ export class MockAgent {
     validateTasks(tasks);
     const availableConcurrency = config.availableConcurrency ?? DEFAULT_AVAILABLE_CONCURRENCY;
     validateAvailableConcurrency(availableConcurrency);
+    validateMaxConcurrency(config.maxConcurrency);
 
-    this.seed = config.seed;
     this.tasks = tasks;
     this.availableConcurrency = availableConcurrency;
     this.maxConcurrency = config.maxConcurrency;
@@ -327,7 +309,20 @@ export class MockAgent {
     this.metadata = config.metadata;
     this.telemetryConfig = config.telemetryConfig ?? {};
     this.clockOptions = config.clockOptions;
+    // Built before `deriveScenarioSeed` below: this is where `seed`'s own 32-bit-integer
+    // range validation lives (R4), and AC-9 requires the out-of-range error to stay exactly
+    // `MockProvider`'s message — `deriveScenarioSeed` deliberately performs no range check
+    // of its own (see its module doc), so it must never run first.
     this.provider = new MockProvider(buildProviderConfig(config));
+    try {
+      this.telemetrySeed = deriveScenarioSeed(config);
+    } catch (error) {
+      // A silent fallback to the raw `seed` here would reinstate F1 for exactly the config
+      // that cannot be hashed (e.g. circular `metadata`) — fail the same way every other
+      // config mistake in this constructor already does.
+      if (error instanceof ScenarioSeedError) throw new MockAgentConfigError(error.message);
+      throw error;
+    }
   }
 
   /**
@@ -340,7 +335,7 @@ export class MockAgent {
    */
   async run(): Promise<MockAgentRunResult> {
     const telemetry = createSeededPlaygroundTelemetry(
-      this.seed,
+      this.telemetrySeed,
       this.telemetryConfig,
       this.clockOptions,
     );

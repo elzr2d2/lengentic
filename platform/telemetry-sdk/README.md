@@ -44,6 +44,30 @@ step (`null`), `step.startStep()` is a child of that step.
 | Retrying     | `maxRetries` attempts + 1, exponential backoff capped at `maxBackoffMs`, FINITE         |
 | `shutdown()` | idempotent, bounded by `shutdownTimeoutMs`, resolves even against a dead endpoint       |
 
+### `delivered` vs. what the server actually did with it
+
+`stats().delivered` is a **transport** count — the number of events in batches the
+transport reported as having reached the API, regardless of what the API did with them.
+A batch the API entirely deduplicated (the same `runId`/`eventId` pair sent twice — a mock
+scenario replaying an already-used seed, for example) is still `delivered`: the HTTP
+request round-tripped a 2xx, even though nothing new was persisted.
+
+`stats()` additionally carries what the API itself claimed, read from `IngestResponse`
+(`platform/shared/schema/ingest.ts`) on every batch whose response body could be parsed:
+
+| Field                     | Meaning                                                                                                                                                                                                                                      |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serverAccepted`          | Events the API says it persisted for the first time                                                                                                                                                                                          |
+| `serverDuplicate`         | Events the API recognised as already persisted (same `runId` + `eventId`)                                                                                                                                                                    |
+| `serverRejected`          | Events the API refused                                                                                                                                                                                                                       |
+| `serverCountsUnavailable` | Events in a delivered batch whose response body could not be read as an `IngestResponse` — kept apart from `serverAccepted: 0` because "the server said zero were new" and "the server's answer could not be understood" are different facts |
+
+Each is a running total across every delivered batch, summed from whatever the API's own
+response reported for that batch — nothing here verifies that a single batch's
+`accepted + duplicate + rejected` actually equals the batch size the client sent. A caller
+that wants to know whether a run created anything new should read `serverAccepted`, never
+`delivered`.
+
 ### Silent means silent
 
 The SDK never throws into host code. There is exactly one exception, which §16 licenses:
