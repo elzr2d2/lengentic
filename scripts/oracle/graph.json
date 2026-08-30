@@ -943,9 +943,9 @@
           "pattern": "decision\\.outcome_attested"
         }
       ],
-      "note": "Probe is schema-source only: platform/shared/test already contains 'decision.recorded' in a NEGATIVE spec (rejection-reasons.spec.ts), which satisfied a wider probe before any work — the exact oracle-lie mode check:probes exists for. Added 2026-08-30 at the trigger-6 escalation (graph gap): ADR 0005 deferred decision wire types to Phase 4 but no Phase 4 node owned platform/shared. Option A of .artifacts/evidence/4/p4.sdk-decisions-blocked-wire-contract.md; B (lane widening) rejected per CLAUDE.md dispatch rules, C (client-side stub) rejected as a Sc-A false-green rerun.",
+      "note": "Probe is schema-source only: platform/shared/test already contains 'decision.recorded' in a NEGATIVE spec (rejection-reasons.spec.ts), which satisfied a wider probe before any work — the exact oracle-lie mode check:probes exists for. Added 2026-08-30 at the trigger-6 escalation (graph gap): ADR 0005 deferred decision wire types to Phase 4 but no Phase 4 node owned platform/shared. Option A of .artifacts/evidence/4/p4.sdk-decisions-blocked-wire-contract.md; B (lane widening) rejected per CLAUDE.md dispatch rules, C (client-side stub) rejected as a Sc-A false-green rerun. SECOND AMENDMENT 2026-08-30, human decision at the trigger-6 escalation (option B of .artifacts/evidence/4/p4.wire-decisions-blocked-api-seam.md): this node also owns platform/api/src/telemetry/**, because widening TELEMETRY_EVENT_TYPES makes event-mapping.ts non-exhaustive and a contract must land with its only server-side consumer. p4.attestation and p4.run-summary both forbid that surface so no two nodes claim it. BINDING, and no gate catches it: entityKindOf routes by type.startsWith('run.'), so all five new types silently classify as 'step' — a fix that only satisfies tsc and eslint leaves a green that lies. Route or explicitly exclude the five types AND fix entityKindOf; the acceptance criteria are not met by an exhaustive switch alone.",
       "own": {
-        "allowed": ["platform/shared/**"]
+        "allowed": ["platform/shared/**", "platform/api/src/telemetry/**"]
       },
       "validate": ["pnpm typecheck", "pnpm check:boundaries", "pnpm gates"],
       "risk": "high",
@@ -1008,8 +1008,10 @@
           "pattern": "attest"
         }
       ],
+      "note": "Amended 2026-08-30 at the p4.wire-decisions trigger-6 escalation (option B): platform/api/src/telemetry/** moved to p4.wire-decisions, which owns the wire contract and its only server-side consumer together. Forbidden here so two nodes never claim event-mapping.ts.",
       "own": {
-        "allowed": ["platform/api/src/**"]
+        "allowed": ["platform/api/src/**"],
+        "forbidden": ["platform/api/src/telemetry/**"]
       },
       "validate": ["pnpm test", "pnpm test:integration"],
       "risk": "medium",
@@ -1050,9 +1052,10 @@
           "pattern": "runSummary|run-summary"
         }
       ],
-      "note": "PLAN GAP: §23 is in the final DoD but assigned to no phase. Placed in Phase 4. Its 'repeated failed actions' line depends on p5.repeated-failed — ship that field last.",
+      "note": "PLAN GAP: §23 is in the final DoD but assigned to no phase. Placed in Phase 4. Its 'repeated failed actions' line depends on p5.repeated-failed — ship that field last. Amended 2026-08-30 at the p4.wire-decisions trigger-6 escalation (option B): platform/api/src/telemetry/** belongs to p4.wire-decisions; forbidden here so no two nodes claim event-mapping.ts.",
       "own": {
-        "allowed": ["platform/api/src/**"]
+        "allowed": ["platform/api/src/**"],
+        "forbidden": ["platform/api/src/telemetry/**"]
       },
       "validate": ["pnpm test", "pnpm gates"],
       "risk": "medium",

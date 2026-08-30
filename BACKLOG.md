@@ -2765,3 +2765,32 @@ not** — nothing kills a mutation of the `persistence:` line or the "no new dat
 recorded" note in `happy-path.ts`. Same class as Reviewer S-3/S-5 and the Sc-C residue
 above; fold the fix into the Sc-C delivered-path spec variant. **Trigger:** Sc-C, or next
 edit to `playground/cli/happy-path.ts`.
+
+## Discovered at the Phase 4 dispatch of `p4.wire-decisions` (2026-08-30)
+
+### A worker killed by an API rate limit must not count as a spent repair attempt
+
+**Source:** the Phase 4 escalation of run `d9c2177c` — three consecutive workers on
+`p4.wire-decisions` (`dispatch-…b8b1399a`, `repair-…9459002f`, `repair-…f8fc7d67`) each
+exited 1 with no outcome envelope. All three stdout logs carry the same terminal record:
+`"error":"rate_limit"` / `"You've hit your session limit · resets 3:50pm (Asia/Jerusalem)"`.
+No packet work was attempted in any of them.
+
+`supervise.ts` `bumpRepair` (scripts/autopilot/supervise.ts:359) increments
+`repairAttempts` on any non-zero worker exit, so an infrastructure death is indistinguishable
+from a failed recovery strategy. Three phantom attempts against a bound of 2 tripped trigger
+5 and stopped an unattended run that had not yet tried anything once. `grep -rn "rate_limit"
+scripts/` returns nothing — the supervisor has no rate-limit awareness at all.
+
+This inverts `repair-policy.ts`'s own definition: "an attempt IS a strategy" — a worker that
+never ran executed no strategy. It also survives `resume`, which clears the escalation but
+not `repairAttempts`, so the node resumes with 1 real attempt left instead of 2. That
+direction is safe (repair-policy.ts:23 — tightening needs no authority), which is why this is
+deferred rather than blocking.
+
+**What would make it worth doing:** a second unattended run stopped this way. The fix shape
+is to classify a worker exit before counting it — a startup-phase death with no assistant
+turn (rate limit, auth failure, spawn error) is a retry, not an attempt — and to have
+`resume` report the phantom count it is carrying. **Ruled out:** raising `--max-repairs` as
+the remedy; that raises the escalation bar for real failures too and needs a naming record.
+**Trigger:** next recurrence, or next edit to `supervise.ts` repair accounting.
