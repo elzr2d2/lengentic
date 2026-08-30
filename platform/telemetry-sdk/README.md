@@ -184,7 +184,11 @@ step.recordToolCall({
 
 ## What this package does not do yet
 
-- Decision, ModelCall and Error events. `recordDecision` is `p4.sdk-decisions`; the SDK
-  emits `run.*`, `step.*` and `tool_call.recorded` today.
+- Decision, ModelCall and Error events. The SDK emits `run.*`, `step.*` and
+  `tool_call.recorded` today; the decision-recording handle belongs to `p4.sdk-decisions`.
+  Its method name is deliberately not spelled here — that packet's probe is a grep for it
+  over this package, and a README sentence that matches would report the work DONE before it
+  starts (`.artifacts/evidence/4/wave-gate/probe-lie-p4.md`, finding P-2, which is the same
+  defect one line further down this very file).
 - No wire field carries a tool call's `inputFingerprint`. `fingerprintOf` is exported so a
   caller can compute one, but `tool_call.recorded` has nowhere to put it — see `BACKLOG.md`.
