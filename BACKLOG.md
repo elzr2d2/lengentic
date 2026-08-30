@@ -2555,3 +2555,81 @@ Sc-D residue (LOW). Fixed the instance (surface narrowed back to `playground/wor
 but `pathOverlaps` in `scripts/lanes.ts:305-315` only compares units inside one dispatch
 batch — two DONE nodes sharing a surface would pass R7/R8 on a repair re-dispatch.
 **Trigger:** next graph surface amendment, or a repair wave re-dispatching DONE nodes.
+
+## Discovered at the Phase 3 phase gate — Reviewer over `0da0e9f..4673baf` (reviewed 2026-08-27, flushed 2026-08-30)
+
+0 blocking of 8. Full report: `.artifacts/evidence/3/phase-gate/reviewer/review-diff.md`.
+Tester findings F1–F5 are deliberately NOT here — they are the gate's RED and are repair
+work, tracked in `.artifacts/evidence/3/phase-gate/tester/README.md` and the gate record.
+Standing note: wave-4 S-1 above ("CLI telemetry line omits two drop counters…") had
+"the Phase 3 phase gate citing this command as delivered-path evidence" as its trigger; the
+gate did cite it, so S-1 is now **due**, not deferred.
+
+### `suite.only` invisible to the BLOCK-severity focused-test rule
+
+S1 (MEDIUM). `scripts/check-integrity.ts:89-93` — `suite` is in `SKIP_OPTION_CALL_NAMES` but
+not `FOCUS_CALL_NAMES`; `bench` the reverse. `suite()` is first-class `node:test` API and this
+phase introduced `node:test`. Latent: nothing calls `suite()` today. **Do:** add `suite` to
+focus set, `bench` to skip receivers, both scenarios to `scripts/check-integrity/selftest.ts`.
+**Trigger:** first use of `suite()` anywhere, or next edit to `scripts/check-integrity.ts`.
+
+### `pnpm check:integrity-self` is run by nothing
+
+S2 (MEDIUM). `package.json:38` declares it; not in `pnpm gates`, not in CI, not in the
+CLAUDE.md CI-only list. The 19 selftest scenarios are the regression guard for the exact
+blind spot the wave-2 gate found; unwired, the next blind spot returns silently. **Do:** CI
+step beside `check:probes`, or fold into `check:integrity`. **Trigger:** next edit to
+`scripts/check-integrity.ts`, or next CI workflow change.
+
+### CI never runs `pnpm check:integrity` at all (pre-existing)
+
+Adjacent to S2, pre-existing, not the Phase 3 diff. `ci.yml:40-52` runs gate steps
+individually and never runs `pnpm gates`, so `check:integrity` does not run in CI.
+**Trigger:** next CI workflow change.
+
+### Three shipped comments point the reader at an empty staging file
+
+S3 (MEDIUM). `playground/agents/mock-agent.ts:24`, `playground/determinism/test/seed.spec.ts:5`,
+`playground/determinism/test/telemetry.spec.ts:4` cite `.artifacts/backlog/pending.md`, which
+is empty — the findings live in `BACKLOG.md` (seed-domain entry at :2391). Same defect the
+wave-4 gate fixed as S-6, remaining three instances. **Do:** repoint all three at `BACKLOG.md`
+plus section heading. **Trigger:** next edit to any of the three files.
+
+### `API_PORT` assigned to a CLI that ignores it
+
+S4 (LOW-MEDIUM). `playground/index.ts:33-34` says "reading the environment is the CLI's job";
+`playground/cli/happy-path.ts` hardcodes `PLAYGROUND_DEFAULT_ENDPOINT`, no `--endpoint`, reads
+nothing. With `API_PORT` ≠ 3001 the happy path posts to a dead port and exits 0. **Do:** read
+`process.env.API_PORT` in `happy-path.ts`, or reword the seam comment to scope it as future
+work. **Trigger:** `p4.*` work touching the CLI, or first run against a non-default port.
+
+### cwd-derived spawn paths; `pnpm test` writes to a live dev DB
+
+S5 (LOW). `playground/cli/test/happy-path.spec.ts:46`, `playground/providers/test/process-exit.spec.ts:24`
+build spawn paths from `process.cwd()` (breaks `node --test` from root), and with `pnpm dev`
+up the spawned happy-path runs persist real Runs into the dev DB as a side effect of
+`pnpm test` (confirmed by tester F2: `--seed=1` run found in DB, created by the spec).
+**Do:** derive from `import.meta.dirname`; consider a guaranteed-closed port for CLI specs.
+**Trigger:** next edit to either spec, or first cross-package test invocation.
+
+### `MockAgentRunResult.strategy` doc contradicts itself
+
+S6 (LOW). `playground/agents/mock-agent.ts:109-111` — "the verdict this run actually followed
+… present even when Plan failed before Execute ever started": both halves cannot hold; when
+Plan fails no `execution_strategy` Step is emitted yet `strategy` is populated. Behaviour
+right, sentence wrong. **Do:** "the verdict this run's Execute phase would follow; emitted as
+telemetry only if Execute actually starts." **Trigger:** next edit to `mock-agent.ts`.
+
+### Harness change rode along in the phase diff (residue = S2)
+
+Sc1 (MEDIUM). `scripts/check-integrity.ts` (+216/−17) + selftest (+181) — no DoD line asks
+for it; recorded by Reviewer as justified gate repair (the scanner could not see `node:test`
+skips), not leakage. Kept here because its residue is S2 and the pattern (harness work riding
+phase diffs) is worth watching. **Trigger:** next harness change inside a phase diff.
+
+### `tsx` dependency justified only in comments
+
+Sc2 (LOW). `playground/package.json` adds `tsx@^4.20.6`; justification (node:test needs a TS
+loader, vitest is not a playground dependency) lives only in test-file doc comments.
+**Do:** one line in `playground/index.ts` module doc or the package README.
+**Trigger:** next `playground/package.json` edit.
