@@ -1,4 +1,5 @@
 import type {
+  DecisionOutcome,
   Metadata,
   TelemetryEventOf,
   TelemetryEventType,
@@ -45,6 +46,64 @@ export interface RecordToolCallInput {
   readonly error?: string | undefined;
 }
 
+/**
+ * §13's Decision, as the caller sees it. `outcome`, `outcomeAttestedBy` and
+ * `outcomeObservedAt` are deliberately absent: §14 makes attestation an "independent,
+ * idempotent telemetry event" because outcomes are usually known later. A decision that
+ * could carry its own outcome at record time would invite the caller to guess one.
+ */
+export interface RecordDecisionInput {
+  /** The recurring decision point being analyzed, e.g. `execution_strategy` (§29). */
+  readonly decisionType: string;
+  /**
+   * §14 and docs/decisions/0003: caller-computed, never inferred here. Omitting it is
+   * legal and costs aggregation — the decision is stored and excluded from grouping — so
+   * the SDK neither defaults it nor rejects the call.
+   */
+  readonly contextKey?: string | undefined;
+  readonly contextKeyVersion?: string | undefined;
+  /** Arbitrary JSON, stored alongside the key (§14). Sanitized, redacted and capped (§15). */
+  readonly rawContext?: Metadata | undefined;
+  readonly availableOptions: readonly string[];
+  readonly selectedOption: string;
+}
+
+export interface AttestOutcomeInput {
+  /**
+   * §14's `{ observedAt }`. Client clock, and optional: when it is absent the persistence
+   * edge falls back to the envelope's `occurredAt`.
+   */
+  readonly observedAt?: Date | undefined;
+}
+
+/**
+ * §14's `telemetry.attestOutcome(decisionId, 'SUCCESS', { observedAt })`, plus the one field
+ * that example leaves implicit. `runId` is required because the envelope requires it
+ * (`platform/shared/schema/envelope.ts`) and because it is half of the server's idempotency
+ * ledger key — an in-process handle knows its own run, a process that starts hours later
+ * does not. A caller persisting `decisionId` persists `runId` beside it.
+ */
+export interface CrossProcessAttestOutcomeInput extends AttestOutcomeInput {
+  readonly runId: string;
+}
+
+/**
+ * §14: "`decision.id` — client-generated, stable, safe to persist". That sentence is this
+ * handle's whole reason to exist. A caller persists `decisionId`, and hours or processes
+ * later attests the outcome against it.
+ */
+export interface DecisionHandle {
+  readonly decisionId: string;
+  readonly stepId: string;
+  readonly runId: string;
+  /**
+   * Same process, later. Not once-only, unlike `complete()`: §14 states re-attesting the
+   * same `decisionId` is accepted and last-write-wins, so a corrected outcome is a normal
+   * event rather than a mistake to be counted and dropped.
+   */
+  attestOutcome(outcome: DecisionOutcome, input?: AttestOutcomeInput): void;
+}
+
 export interface StepHandle {
   readonly stepId: string;
   readonly runId: string;
@@ -56,6 +115,11 @@ export interface StepHandle {
    * the buffer, so it cannot leave the process even if the buffer is later flushed.
    */
   recordToolCall(input: RecordToolCallInput): string;
+  /**
+   * Records one decision point and returns its handle. The §15 pipeline runs over
+   * `rawContext` here, before enqueue, for the same reason it does for tool IO.
+   */
+  recordDecision(input: RecordDecisionInput): DecisionHandle;
   complete(input?: CompleteInput): void;
 }
 
@@ -139,6 +203,7 @@ function createStep(
     runId,
     startStep: (child) => createStep(recorder, runId, stepId, child),
     recordToolCall: (call) => recordToolCall(recorder, runId, stepId, call),
+    recordDecision: (decision) => recordDecision(recorder, runId, stepId, decision),
     complete: createCompleter(recorder, 'step.completed', stepId, runId),
   };
 }
@@ -167,6 +232,60 @@ function recordToolCall(
   });
 
   return toolCallId;
+}
+
+function recordDecision(
+  recorder: EventRecorder,
+  runId: string,
+  stepId: string,
+  input: RecordDecisionInput,
+): DecisionHandle {
+  const decisionId = recorder.nextId();
+  // §15's order, in order: safe serialization → redaction → size cap → enqueue. `rawContext`
+  // is arbitrary caller JSON describing the situation a decision was made in, so it goes
+  // through the same one shared sanitizer `metadata` and tool IO do.
+  const rawContext = recorder.safety.metadata(input.rawContext, 'rawContext');
+
+  recorder.record('decision.recorded', decisionId, runId, {
+    stepId,
+    decisionType: input.decisionType,
+    // exactOptionalPropertyTypes (TS-8), and more than a type nicety here: §14 draws a hard
+    // line between "no contextKey" and any default, so an absent key must stay absent on
+    // the wire rather than arriving as an explicit `undefined` some reader coerces.
+    ...(input.contextKey === undefined ? {} : { contextKey: input.contextKey }),
+    ...(input.contextKeyVersion === undefined
+      ? {}
+      : { contextKeyVersion: input.contextKeyVersion }),
+    ...(rawContext === undefined ? {} : { rawContext }),
+    availableOptions: [...input.availableOptions],
+    selectedOption: input.selectedOption,
+  });
+
+  return {
+    decisionId,
+    stepId,
+    runId,
+    attestOutcome: (outcome, attestation) =>
+      recordAttestation(recorder, decisionId, runId, outcome, attestation),
+  };
+}
+
+/**
+ * §14's attestation event, keyed on the decision id (the envelope's `entityId`). Shared by
+ * the in-process handle and the client-level cross-process form, so the two cannot drift
+ * into emitting different events for the same statement.
+ */
+export function recordAttestation(
+  recorder: EventRecorder,
+  decisionId: string,
+  runId: string,
+  outcome: DecisionOutcome,
+  input?: AttestOutcomeInput,
+): void {
+  recorder.record('decision.outcome_attested', decisionId, runId, {
+    outcome,
+    ...(input?.observedAt === undefined ? {} : { observedAt: input.observedAt.toISOString() }),
+  });
 }
 
 export function createRun(recorder: EventRecorder, input: StartRunInput): RunHandle {

@@ -10,7 +10,11 @@ export { TELEMETRY_DEFAULTS, TelemetryConfigError } from './config';
 export type { TelemetryConfig } from './config';
 
 export type {
+  AttestOutcomeInput,
   CompleteInput,
+  CrossProcessAttestOutcomeInput,
+  DecisionHandle,
+  RecordDecisionInput,
   RecordToolCallInput,
   RunHandle,
   StartRunInput,

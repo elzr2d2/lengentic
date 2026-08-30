@@ -1,4 +1,5 @@
 import type {
+  DecisionOutcome,
   TelemetryEventEnvelope,
   TelemetryEventOf,
   TelemetryEventType,
@@ -12,7 +13,14 @@ import {
   type TelemetryDiagnosticCode,
 } from './diagnostics';
 import { buildEnvelope, checkEnvelope } from './events';
-import { createRun, type EventRecorder, type RunHandle, type StartRunInput } from './handles';
+import {
+  createRun,
+  recordAttestation,
+  type CrossProcessAttestOutcomeInput,
+  type EventRecorder,
+  type RunHandle,
+  type StartRunInput,
+} from './handles';
 import { createPayloadSafety, type PayloadSafety } from './payload-safety';
 import type { CancelTimer } from './scheduler';
 import type { TransportResult } from './transport';
@@ -64,6 +72,17 @@ export interface TelemetryStats {
 
 export interface TelemetryClient {
   startRun(input: StartRunInput): RunHandle;
+  /**
+   * §14's cross-process attestation: "any process, hours later". Needs no live Run or Step
+   * handle — the ids the caller persisted are the whole correlation. Idempotent by
+   * construction on the server (last write wins on `decisionId`), and accepted even when
+   * the decision itself has not arrived yet.
+   */
+  attestOutcome(
+    decisionId: string,
+    outcome: DecisionOutcome,
+    input: CrossProcessAttestOutcomeInput,
+  ): void;
   /** Drains what is queued now. Never rejects. */
   flush(): Promise<void>;
   /** §16 "Flushable": drains the queue, then stops. Idempotent, bounded, never rejects. */
@@ -134,6 +153,14 @@ class Client implements TelemetryClient, EventRecorder {
 
   startRun(input: StartRunInput): RunHandle {
     return createRun(this, input);
+  }
+
+  attestOutcome(
+    decisionId: string,
+    outcome: DecisionOutcome,
+    input: CrossProcessAttestOutcomeInput,
+  ): void {
+    recordAttestation(this, decisionId, input.runId, outcome, input);
   }
 
   nextId(): string {

@@ -182,13 +182,45 @@ step.recordToolCall({
 });
 ```
 
+## Decisions
+
+`step.recordDecision(...)` returns a handle whose `decisionId` is client-generated, stable
+and safe to persist (§14). `rawContext` goes through the same §15 pipeline as `metadata` and
+tool IO — sanitize, redact, cap — before anything enters the buffer.
+
+```ts
+const decision = step.recordDecision({
+  decisionType: 'execution_strategy',
+  contextKey: 'risk=low;tasks=2-3;deps=resolved;conflict=absent;validation=ready',
+  contextKeyVersion: 'v1',
+  rawContext: awarenessContext, // capped and redacted
+  availableOptions: ['sequential', 'parallel'],
+  selectedOption: 'sequential',
+});
+
+decision.attestOutcome('SUCCESS'); // same process, later
+
+// Any process, hours later. `runId` is required here and not in the §14 sketch: the
+// envelope carries it and it is half the server's idempotency ledger key, so a caller that
+// persists `decisionId` persists `runId` beside it.
+telemetry.attestOutcome(decisionId, 'SUCCESS', { runId, observedAt });
+```
+
+`contextKey` is **caller-computed and optional** (docs/decisions/0003). Omitting it costs
+aggregation — the decision is stored and excluded from grouping — and the SDK neither
+defaults it nor rejects the call, because silent inclusion under a default key is how fake
+dominance gets manufactured (§14). Cardinality is the caller's obligation: no run ids, span
+ids, paths, timestamps or free text in the key.
+
+Attestation is a separate, idempotent event keyed on `decisionId`, and it is deliberately
+**not** once-only the way `complete()` is: re-attesting is last-write-wins on the server, so
+a corrected outcome is a normal event rather than a duplicate to drop. There is no
+`outcomeAttestedBy` on the wire — the arrival of the attestation is itself the evidence a
+caller attested, and the column is derived at the persistence edge.
+
 ## What this package does not do yet
 
-- Decision, ModelCall and Error events. The SDK emits `run.*`, `step.*` and
-  `tool_call.recorded` today; the decision-recording handle belongs to `p4.sdk-decisions`.
-  Its method name is deliberately not spelled here — that packet's probe is a grep for it
-  over this package, and a README sentence that matches would report the work DONE before it
-  starts (`.artifacts/evidence/4/wave-gate/probe-lie-p4.md`, finding P-2, which is the same
-  defect one line further down this very file).
+- ModelCall and Error events. The SDK emits `run.*`, `step.*`, `tool_call.recorded`,
+  `decision.recorded` and `decision.outcome_attested` today.
 - No wire field carries a tool call's `inputFingerprint`. `fingerprintOf` is exported so a
   caller can compute one, but `tool_call.recorded` has nowhere to put it — see `BACKLOG.md`.
