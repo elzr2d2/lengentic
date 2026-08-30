@@ -242,7 +242,17 @@ describe('the bounded buffer', () => {
 });
 
 describe('data the caller should not have been able to send', () => {
-  it('drops circular metadata without throwing out of complete()', async () => {
+  /**
+   * SUPERSEDED BY §15, 2026-08-31 (`p4.payload-safety`). Until Phase 4 this test asserted
+   * that circular metadata was DROPPED — the event never reached the transport and
+   * `droppedInvalid` was 1. That satisfied Phase 4's DoD line "circular data in `metadata`
+   * does not throw into host code" only degenerately, by discarding the telemetry
+   * (`.artifacts/evidence/4/wave-gate/probe-lie-p4.md`, appendix). §15 requires the
+   * opposite: safe serialization SURVIVES a circular reference and the sanitized payload
+   * still ships. The silence guarantee it was really protecting — nothing throws out of
+   * `complete()` — is unchanged and still asserted.
+   */
+  it('sanitizes circular metadata and still ships it, without throwing out of complete()', async () => {
     const scheduler = new FakeScheduler();
     const transport = new RecordingTransport();
     const diagnostics: TelemetryDiagnostic[] = [];
@@ -257,28 +267,51 @@ describe('data the caller should not have been able to send', () => {
     circular.self = circular;
 
     const run = client.startRun({ workflowName: 'w', workflowVersion: 'v' });
-    run.complete({ metadata: circular });
+    expect(() => run.complete({ metadata: circular })).not.toThrow();
     await client.flush();
 
-    expect(transport.allEvents.map((event) => event.type)).toStrictEqual(['run.started']);
-    expect(client.stats().droppedInvalid).toBe(1);
-    expect(diagnostics.map((diagnostic) => diagnostic.code)).toStrictEqual(['event_invalid']);
+    expect(transport.allEvents.map((event) => event.type)).toStrictEqual([
+      'run.started',
+      'run.completed',
+    ]);
+    const completed = transport.allEvents[1]?.payload as { metadata: unknown };
+    expect(completed.metadata).toStrictEqual({ label: 'loop', self: '[Circular]' });
+    expect(client.stats().droppedInvalid).toBe(0);
+    expect(diagnostics).toStrictEqual([]);
   });
 
+  /**
+   * FIXTURE AMENDED BY §15, 2026-08-31 (`p4.payload-safety`). The rule under test is
+   * unchanged — §12's 64KB per-event cap drops the event at the client rather than sending
+   * a guaranteed rejection — but the old fixture (a 65KB `metadata.blob`) can no longer
+   * reach it: §15's 32KB per-field cap truncates that field first, and the event now ships.
+   *
+   * Two capped fields on one event still exceed the per-event cap, which is where the two
+   * caps genuinely fail to compose (`docs/decisions/0006`). That is the fixture now.
+   */
   it('drops an event over §12s 64KB per-event cap instead of sending a guaranteed rejection', async () => {
     const scheduler = new FakeScheduler();
     const transport = new RecordingTransport();
     const client = createTelemetryClient({ transport, scheduler, clock: fixedClock });
 
-    client.startRun({
-      workflowName: 'w',
-      workflowVersion: 'v',
-      metadata: { blob: 'x'.repeat(65 * 1024) },
+    const step = client
+      .startRun({ workflowName: 'w', workflowVersion: 'v' })
+      .startStep({ name: 's', agentName: 'a', type: 'execute' });
+    step.recordToolCall({
+      toolName: 'read_file',
+      input: 'x'.repeat(64 * 1024),
+      output: 'y'.repeat(64 * 1024),
+      startedAt: fixedClock.now(),
+      completedAt: fixedClock.now(),
+      success: true,
     });
     await client.flush();
 
-    expect(transport.allEvents).toStrictEqual([]);
-    expect(client.stats()).toMatchObject({ droppedTooLarge: 1, recorded: 0 });
+    expect(transport.allEvents.map((event) => event.type)).toStrictEqual([
+      'run.started',
+      'step.started',
+    ]);
+    expect(client.stats()).toMatchObject({ droppedTooLarge: 1, recorded: 2 });
   });
 
   it('survives a diagnostic sink that throws — the reporting channel is not an escape hatch', async () => {

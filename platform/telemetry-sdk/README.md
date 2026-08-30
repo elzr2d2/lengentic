@@ -125,10 +125,66 @@ process alive instead — §16 makes `await telemetry.shutdown()` required for s
 scripts, and a drain the runtime is free to cut short is not a drain. Both halves are proven
 against a real spawned process in `test/process-exit.spec.ts`.
 
+## §15 payload safety
+
+One shared client-side serializer, in `src/payload-safety.ts`, applied in `handles.ts` — the
+only place a payload is built — so every arbitrary JSON field goes through it and none can
+be missed. §15's order, run in order:
+
+```text
+safe serialization → redaction → size cap / truncation
+  → stable sanitized fingerprint where required → enqueue
+```
+
+**Safe serialization** survives what `JSON.stringify` cannot: circular references
+(`[Circular]`), `BigInt`, `Map`, `Set`, typed arrays, `Date`, `Error`, `NaN`/`Infinity`, and
+a getter or `toJSON()` that throws (`[Unreadable: …]`). The sanitized payload still **ships**
+— an event is no longer dropped for containing circular data.
+
+**Redaction** ships with §15's three defaults and nothing more: an `Authorization` key, a key
+matching `/api[_-]?key/i`, and a value that starts `Bearer …`. Each becomes `[REDACTED]`
+before the event enters the buffer, so a secret never reaches the transport. Widening those
+patterns is deliberately not done here — a false positive deletes evidence a developer needs
+to reconstruct a run.
+
+```ts
+const telemetry = createTelemetryClient({
+  endpoint: 'http://localhost:3000',
+  // Runs BEFORE the shipped defaults, so it can inspect the original value and cannot
+  // narrow the floor beneath it. A hook that throws yields `[REDACTED]`, never the original.
+  redact: (value, path) => (path.endsWith('.ssn') ? '[MINE]' : value),
+  maxFieldBytes: 32 * 1024, // §15 default
+  captureToolIO: true, // `false` drops ToolCall input/output, keeps timing and success
+});
+```
+
+**Size cap**, 32KB per field by default. A field over it is truncated and the `*Truncated`
+flag is set; `inputBytes`/`outputBytes` report the size **before** the cap, because
+truncation must lose the payload and not the measurement. Truncation keeps as much real
+structure as fits — a prefix of an array's elements, as many of a record's keys as the budget
+allows — and marks what it dropped (`__lengenticTruncated`, `[truncated: N more item(s)]`).
+`maxFieldBytes` is bounded above by §12's 64KB per-event cap: a per-field cap wider than that
+cannot hold, because the event would be dropped whole before the field cap mattered.
+
+**Fingerprints** are computed over sanitized, canonicalized data, never over raw secrets —
+two different values under a redacted key fingerprint identically, so the hash is not an
+oracle for the secret. `fingerprintOf(value)` is exported for §20.2's caller-owned
+`inputFingerprint`. The hash is FNV-1a/64, a grouping key and not a cryptographic digest.
+
+```ts
+step.recordToolCall({
+  toolName: 'http_get',
+  input: { url, headers: { Authorization: `Bearer ${token}` } }, // redacted before transmission
+  output: hugeResponseBody, // truncated at 32KB, `outputTruncated: true`
+  startedAt,
+  completedAt,
+  success: true,
+});
+```
+
 ## What this package does not do yet
 
-- §15 payload safety — redaction, 32KB-per-field truncation with a `*Truncated` flag, and
-  the `captureToolIO` opt-out. Today an event over §12's 64KB per-event cap is dropped and
-  counted (`stats().droppedTooLarge`) rather than truncated.
-- Decision, ModelCall, ToolCall and Error events. The wire contract carries `run.*` and
-  `step.*` only.
+- Decision, ModelCall and Error events. `recordDecision` is `p4.sdk-decisions`; the SDK
+  emits `run.*`, `step.*` and `tool_call.recorded` today.
+- No wire field carries a tool call's `inputFingerprint`. `fingerprintOf` is exported so a
+  caller can compute one, but `tool_call.recorded` has nowhere to put it — see `BACKLOG.md`.

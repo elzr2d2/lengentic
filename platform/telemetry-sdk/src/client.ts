@@ -13,6 +13,7 @@ import {
 } from './diagnostics';
 import { buildEnvelope, checkEnvelope } from './events';
 import { createRun, type EventRecorder, type RunHandle, type StartRunInput } from './handles';
+import { createPayloadSafety, type PayloadSafety } from './payload-safety';
 import type { CancelTimer } from './scheduler';
 import type { TransportResult } from './transport';
 
@@ -73,6 +74,14 @@ export interface TelemetryClient {
 class Client implements TelemetryClient, EventRecorder {
   private readonly config: ResolvedTelemetryConfig;
 
+  /**
+   * §15's one shared client-side safe serializer, built once per client. `handles.ts` is
+   * its only caller — every arbitrary JSON field on every event type passes through this
+   * instance, so a redaction default can never be in force for one field and absent for
+   * another.
+   */
+  readonly safety: PayloadSafety;
+
   private readonly queue: BoundedQueue<TelemetryEventEnvelope>;
 
   private readonly wakeups = new Set<() => void>();
@@ -115,6 +124,11 @@ class Client implements TelemetryClient, EventRecorder {
   constructor(config: TelemetryConfig) {
     // The one throw in the SDK, and it happens before any event can exist (§16).
     this.config = resolveConfig(config);
+    this.safety = createPayloadSafety({
+      redact: this.config.redact,
+      maxFieldBytes: this.config.maxFieldBytes,
+      captureToolIO: this.config.captureToolIO,
+    });
     this.queue = new BoundedQueue<TelemetryEventEnvelope>(this.config.maxQueueSize);
   }
 

@@ -3,6 +3,12 @@ import { INGEST_LIMITS } from '@lengentic/shared';
 import { systemClock, type Clock } from './clock';
 import { silentSink, type DiagnosticSink } from './diagnostics';
 import { systemIdGenerator, type IdGenerator } from './ids';
+import {
+  DEFAULT_MAX_FIELD_BYTES,
+  MAX_FIELD_BYTES_CEILING,
+  MIN_FIELD_BYTES,
+  type Redactor,
+} from './payload-safety';
 import { systemScheduler, type Scheduler } from './scheduler';
 import { createHttpTransport, type TelemetryTransport } from './transport';
 
@@ -36,6 +42,19 @@ export interface TelemetryConfig {
   readonly requestTimeoutMs?: number | undefined;
   /** How long `shutdown()` may spend draining before it gives up and resolves anyway. */
   readonly shutdownTimeoutMs?: number | undefined;
+  /**
+   * §15's redaction hook. Runs client-side, before transmission, on every arbitrary JSON
+   * field. The shipped defaults (`Authorization`, `/api[_-]?key/i`, bearer tokens) run
+   * AFTER this hook, so supplying one narrows nothing.
+   */
+  readonly redact?: Redactor | undefined;
+  /** §15 default 32KB per field. Exceeding truncates and sets the `*Truncated` flag. */
+  readonly maxFieldBytes?: number | undefined;
+  /**
+   * §15's opt-out. `false` disables ToolCall input/output capture entirely while retaining
+   * timing and success data. Default `true`.
+   */
+  readonly captureToolIO?: boolean | undefined;
   readonly transport?: TelemetryTransport | undefined;
   readonly clock?: Clock | undefined;
   readonly idGenerator?: IdGenerator | undefined;
@@ -52,6 +71,9 @@ export interface ResolvedTelemetryConfig {
   readonly maxBackoffMs: number;
   readonly requestTimeoutMs: number;
   readonly shutdownTimeoutMs: number;
+  readonly redact: Redactor | undefined;
+  readonly maxFieldBytes: number;
+  readonly captureToolIO: boolean;
   readonly transport: TelemetryTransport;
   readonly clock: Clock;
   readonly idGenerator: IdGenerator;
@@ -69,6 +91,8 @@ export const TELEMETRY_DEFAULTS = Object.freeze({
   maxBackoffMs: 5_000,
   requestTimeoutMs: 5_000,
   shutdownTimeoutMs: 5_000,
+  maxFieldBytes: DEFAULT_MAX_FIELD_BYTES,
+  captureToolIO: true,
 });
 
 function positiveInt(
@@ -93,6 +117,20 @@ function nonNegativeInt(
   const resolved = value ?? fallback;
   if (!Number.isInteger(resolved) || resolved < 0 || resolved > max) {
     throw new TelemetryConfigError(`${name} must be an integer between 0 and ${max}`);
+  }
+  return resolved;
+}
+
+function boundedInt(
+  name: string,
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const resolved = value ?? fallback;
+  if (!Number.isInteger(resolved) || resolved < min || resolved > max) {
+    throw new TelemetryConfigError(`${name} must be an integer between ${min} and ${max}`);
   }
   return resolved;
 }
@@ -173,6 +211,18 @@ export function resolveConfig(config: TelemetryConfig): ResolvedTelemetryConfig 
       TELEMETRY_DEFAULTS.shutdownTimeoutMs,
       Number.MAX_SAFE_INTEGER,
     ),
+    // A per-field cap above §12's per-event cap cannot hold — the event would be dropped
+    // whole before the field cap mattered. Below MIN_FIELD_BYTES a truncated record has no
+    // room for its own marker.
+    maxFieldBytes: boundedInt(
+      'maxFieldBytes',
+      config.maxFieldBytes,
+      TELEMETRY_DEFAULTS.maxFieldBytes,
+      MIN_FIELD_BYTES,
+      MAX_FIELD_BYTES_CEILING,
+    ),
+    redact: config.redact,
+    captureToolIO: config.captureToolIO ?? TELEMETRY_DEFAULTS.captureToolIO,
     transport: resolveTransport(config),
     clock: config.clock ?? systemClock,
     idGenerator: config.idGenerator ?? systemIdGenerator,
