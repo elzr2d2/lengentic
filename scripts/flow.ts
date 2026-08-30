@@ -121,6 +121,30 @@ function slugify(s: string): string {
   return s.replace(/[^a-zA-Z0-9]+/g, '-');
 }
 
+/**
+ * Which of `packets` a wave record must not name, each with the reason.
+ *
+ * A wave record is read back by `transition()` as proof that those packets passed a gate, and
+ * nothing downstream re-checks them: `waveCoveredIn()` subtracts recorded ids from the segment's
+ * DONE set, so a packet recorded while it is still TODO is covered forever and never dispatches
+ * again. The Phase 4 wave gate is the worked example — two packets were oracle false greens, the
+ * supervisor's record command was built from that stale packet list (`scripts/autopilot/supervise.ts`,
+ * the `pnpm flow record wave` composition), and only the gate worker refusing DONE kept the lie
+ * off disk. A human deciding not to run a command is not a mechanism. This is the mechanism:
+ * the record cannot outlive the probes, exactly as it cannot outlive its evidence paths.
+ *
+ * Pure over an injected graph so `pnpm check:flow` can drive it; the CLI passes `resolveGraph()`.
+ */
+export function unrecordablePackets(packets: string[], byId: Map<string, Resolved>): string[] {
+  const out: string[] = [];
+  for (const id of packets) {
+    const n = byId.get(id);
+    if (!n) out.push(`${id} is in no node of the graph`);
+    else if (n.state !== 'DONE') out.push(`${id} is ${n.state}, not DONE, by its own probes`);
+  }
+  return out;
+}
+
 export function readGateRecords(dir: string = GATES_DIR): GateRecord[] {
   let files: string[];
   try {
@@ -513,6 +537,19 @@ async function main(): Promise<void> {
           `evidence paths do not exist: ${missing.join(', ')} — a record points at proof`,
         );
         process.exit(1);
+      }
+      if (gate === 'wave') {
+        const unrecordable = unrecordablePackets(packets, resolveGraph());
+        if (unrecordable.length > 0) {
+          console.error(
+            [
+              'refusing to record a wave gate over packets the probes do not call DONE:',
+              ...unrecordable.map((w) => `  ${w}`),
+              'a wave record is permanent coverage — recording an unbuilt packet retires it unbuilt',
+            ].join('\n'),
+          );
+          process.exit(1);
+        }
       }
       const head = ((): string => {
         try {

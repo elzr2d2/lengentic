@@ -19,6 +19,7 @@ import { resolve } from 'node:path';
 import {
   transition,
   segmentsOf,
+  unrecordablePackets,
   type FlowAction,
   type FlowInputs,
   type GateRecord,
@@ -473,6 +474,24 @@ export function run_(): number {
     return expect(
       action.action !== 'ERROR',
       `the live graph must produce a non-ERROR action; got ${JSON.stringify(action)}`,
+    );
+  });
+
+  scenario(15, 'a wave record naming a packet the probes do not call DONE is refused', () => {
+    const byId = new Map<string, Resolved>([
+      ['a', node({ id: 'a', phase: 4, state: 'DONE' })],
+      ['b', node({ id: 'b', phase: 4, state: 'TODO' })],
+      ['c', node({ id: 'c', phase: 4, state: 'PARTIAL' })],
+    ]);
+    const clean = unrecordablePackets(['a'], byId);
+    const dirty = unrecordablePackets(['a', 'b', 'c', 'ghost'], byId);
+    return (
+      expect(clean.length === 0, `an all-DONE packet list must record; got ${clean.join(', ')}`) ??
+      expect(
+        dirty.length === 3 && dirty.every((w) => /^(b|c|ghost) /.test(w)),
+        'TODO, PARTIAL and unknown packets must each be refused by name; got ' +
+          JSON.stringify(dirty),
+      )
     );
   });
 
