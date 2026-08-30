@@ -30,8 +30,8 @@ describe('parseTelemetryEvent — UNSUPPORTED_SCHEMA_VERSION', () => {
     if (!result.ok) expect(result.code).toBe('UNSUPPORTED_SCHEMA_VERSION');
   });
 
-  it('rejects schemaVersion "2"', () => {
-    const result = parseTelemetryEvent({ ...VALID_RUN_STARTED, schemaVersion: '2' });
+  it('rejects schemaVersion "3" — a version after the ADR-0005 bump', () => {
+    const result = parseTelemetryEvent({ ...VALID_RUN_STARTED, schemaVersion: '3' });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('UNSUPPORTED_SCHEMA_VERSION');
   });
@@ -206,7 +206,7 @@ describe('parseTelemetryEvent — bullet ordering', () => {
   it('reports UNSUPPORTED_SCHEMA_VERSION when both schemaVersion and type are wrong', () => {
     const result = parseTelemetryEvent({
       ...VALID_RUN_STARTED,
-      schemaVersion: '2',
+      schemaVersion: '3',
       type: 'not.a.real.type',
     });
     expect(result.ok).toBe(false);

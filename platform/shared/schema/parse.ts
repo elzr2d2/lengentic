@@ -1,5 +1,6 @@
 import { IdSchema } from './primitives';
-import { TelemetryEventEnvelopeSchema } from './envelope';
+import { TelemetryEventEnvelopeSchema, type TelemetryEventEnvelope } from './envelope';
+import { eventTypeAvailableAt, type TelemetryEventType } from './event-type';
 import { TELEMETRY_PAYLOAD_SCHEMAS, type TelemetryEvent, type TelemetryEventOf } from './registry';
 import { INGEST_ERROR_CODES, type IngestErrorCode } from './ingest';
 
@@ -113,70 +114,79 @@ export function parseTelemetryEvent(input: unknown): TelemetryEventParseResult {
   // Step 4: payload against its registered schema, per event type. Cross-field rules
   // over entityId/runId/parentStepId that used to live here were dropped — neither §12
   // nor §13 authorises them (see .artifacts/evidence/2/wire-contract-recovery.md S4).
-  switch (envelope.type) {
-    case 'run.started': {
-      const payloadResult = TELEMETRY_PAYLOAD_SCHEMAS[envelope.type].safeParse(envelope.payload);
-      if (!payloadResult.success) {
-        return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
-      }
-      const event: TelemetryEventOf<'run.started'> = {
-        eventId: envelope.eventId,
-        schemaVersion: envelope.schemaVersion,
-        type: 'run.started',
-        entityId: envelope.entityId,
-        runId: envelope.runId,
-        occurredAt: envelope.occurredAt,
-        payload: payloadResult.data,
-      };
-      return { ok: true, event };
-    }
-    case 'run.completed': {
-      const payloadResult = TELEMETRY_PAYLOAD_SCHEMAS[envelope.type].safeParse(envelope.payload);
-      if (!payloadResult.success) {
-        return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
-      }
-      const event: TelemetryEventOf<'run.completed'> = {
-        eventId: envelope.eventId,
-        schemaVersion: envelope.schemaVersion,
-        type: 'run.completed',
-        entityId: envelope.entityId,
-        runId: envelope.runId,
-        occurredAt: envelope.occurredAt,
-        payload: payloadResult.data,
-      };
-      return { ok: true, event };
-    }
-    case 'step.started': {
-      const payloadResult = TELEMETRY_PAYLOAD_SCHEMAS[envelope.type].safeParse(envelope.payload);
-      if (!payloadResult.success) {
-        return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
-      }
-      const event: TelemetryEventOf<'step.started'> = {
-        eventId: envelope.eventId,
-        schemaVersion: envelope.schemaVersion,
-        type: 'step.started',
-        entityId: envelope.entityId,
-        runId: envelope.runId,
-        occurredAt: envelope.occurredAt,
-        payload: payloadResult.data,
-      };
-      return { ok: true, event };
-    }
-    case 'step.completed': {
-      const payloadResult = TELEMETRY_PAYLOAD_SCHEMAS[envelope.type].safeParse(envelope.payload);
-      if (!payloadResult.success) {
-        return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
-      }
-      const event: TelemetryEventOf<'step.completed'> = {
-        eventId: envelope.eventId,
-        schemaVersion: envelope.schemaVersion,
-        type: 'step.completed',
-        entityId: envelope.entityId,
-        runId: envelope.runId,
-        occurredAt: envelope.occurredAt,
-        payload: payloadResult.data,
-      };
-      return { ok: true, event };
-    }
+  // Step 3b: the type must exist at the declared schemaVersion. ADR 0005 decision 3 —
+  // "New types arrive with a `schemaVersion` bump" — is only a rule if something enforces
+  // it; without this check '1' and '2' would accept the identical nine types and the bump
+  // would be a comment. Classified as UNKNOWN_EVENT_TYPE rather than
+  // UNSUPPORTED_SCHEMA_VERSION because the version IS supported: it is the type that does
+  // not exist in that version's vocabulary, which is §12's "unknown type" bullet.
+  if (!eventTypeAvailableAt(envelope.type, envelope.schemaVersion)) {
+    return reject(
+      eventId,
+      INGEST_ERROR_CODES.UNKNOWN_EVENT_TYPE,
+      `event type ${JSON.stringify(envelope.type)} requires a later schemaVersion than ` +
+        `${JSON.stringify(envelope.schemaVersion)}`,
+    );
   }
+
+  return BUILD_EVENT[envelope.type](envelope, eventId);
 }
+
+/**
+ * One builder per type, rather than one `switch` with nine near-identical arms.
+ *
+ * The switch was the Phase 2 shape and it does not survive nine members: it broke
+ * DESIGN-3 (cyclomatic complexity <= 15) at 22. Each builder is generic over its own
+ * literal `K`, which is what keeps the property the switch was there for — the event is
+ * constructed by naming every envelope field explicitly, never a blanket spread, so a
+ * field added to TelemetryEventEnvelopeSchema is a compile error here rather than a
+ * silently-dropped one. `satisfies Readonly<Record<TelemetryEventType, ...>>` is the
+ * exhaustiveness check the switch used to give: a new member of TELEMETRY_EVENT_TYPES
+ * with no builder does not compile.
+ */
+function buildEvent<K extends TelemetryEventType>(type: K) {
+  return (envelope: TelemetryEventEnvelope, eventId: string): TelemetryEventParseResult => {
+    const payloadResult = TELEMETRY_PAYLOAD_SCHEMAS[type].safeParse(envelope.payload);
+    if (!payloadResult.success) {
+      return reject(eventId, INGEST_ERROR_CODES.INVALID_PAYLOAD, 'payload failed validation');
+    }
+    // The `satisfies` clause is what carries the guarantee, and it is not decoration:
+    // `Omit<TelemetryEventEnvelope, 'type' | 'payload'>` requires every remaining envelope
+    // field by name, so a field added to TelemetryEventEnvelopeSchema and forgotten here is
+    // a compile error — the property the Phase 2 switch was written for, kept in one place
+    // instead of nine.
+    //
+    // The assertion narrows only `payload`. TypeScript cannot verify a mapped-type member
+    // for a still-generic `K`, so it widens `payloadResult.data` to the union of all nine
+    // payloads. What makes the narrowing true is that the schema was looked up by the very
+    // same `type` (`TELEMETRY_PAYLOAD_SCHEMAS[type]`), and the registry is keyed
+    // `satisfies Record<TelemetryEventType, z.ZodType>` — type and payload cannot disagree.
+    const event = {
+      eventId: envelope.eventId,
+      schemaVersion: envelope.schemaVersion,
+      type,
+      entityId: envelope.entityId,
+      runId: envelope.runId,
+      occurredAt: envelope.occurredAt,
+      payload: payloadResult.data,
+    } satisfies Omit<TelemetryEventEnvelope, 'type' | 'payload'> & { type: K; payload: unknown };
+    return { ok: true, event: event as TelemetryEventOf<K> };
+  };
+}
+
+const BUILD_EVENT = {
+  'run.started': buildEvent('run.started'),
+  'run.completed': buildEvent('run.completed'),
+  'step.started': buildEvent('step.started'),
+  'step.completed': buildEvent('step.completed'),
+  'decision.recorded': buildEvent('decision.recorded'),
+  'decision.outcome_attested': buildEvent('decision.outcome_attested'),
+  'model_call.recorded': buildEvent('model_call.recorded'),
+  'tool_call.recorded': buildEvent('tool_call.recorded'),
+  'error.recorded': buildEvent('error.recorded'),
+} satisfies Readonly<
+  Record<
+    TelemetryEventType,
+    (envelope: TelemetryEventEnvelope, eventId: string) => TelemetryEventParseResult
+  >
+>;
