@@ -1,16 +1,27 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { CLOCK, type Clock } from '../common/clock';
 import { STALE_THRESHOLD_MS } from './stale-threshold.provider';
-import type { RunRecord, StepRecord } from './run-record';
+import type {
+  DecisionRecord,
+  ErrorRecord,
+  ModelCallRecord,
+  RunRecord,
+  StepRecord,
+  ToolCallRecord,
+} from './run-record';
 import { RunsRepository } from './runs.repository';
 import { aggregateRunSummary, type RunSummary } from './run-summary';
 import { deriveRunViewStatus } from './stale';
 import type {
+  DecisionView,
+  ErrorView,
+  ModelCallView,
   RunDetailView,
   RunListView,
   RunSummaryView,
   RunsListQuery,
   StepView,
+  ToolCallView,
 } from '@lengentic/shared/read';
 
 /**
@@ -62,10 +73,22 @@ export class RunsService {
   }
 
   /**
-   * One run and every step recorded against it.
+   * One run and everything recorded against it — steps, decisions, model calls, tool calls
+   * and errors.
    *
    * `undefined` rather than a thrown 404: whether a missing run is an error is a transport
    * decision, and this service is also the seam a future analysis reader would call.
+   *
+   * The five collections are always present on the response, `[]` included. The schema makes
+   * them optional so that a consumer parsing an older deployment's response keeps the rest of
+   * the run (`RunDetailViewSchema`'s note), but this service is not that older deployment —
+   * omitting an empty array here would make "this run has no decisions" and "this API does
+   * not report decisions" indistinguishable to the one consumer that can tell them apart.
+   *
+   * Five queries in parallel rather than five awaited in turn: they are independent reads
+   * keyed on the same `runId`, and the detail page needs all of them before it renders
+   * anything. `Promise.all` also means one failing read rejects the whole response rather
+   * than yielding a partially-populated run that reads like a complete one.
    */
   async findById(id: string): Promise<RunDetailView | undefined> {
     const now = this.clock.now();
@@ -73,11 +96,21 @@ export class RunsService {
     const record = await this.repository.findRun(id);
     if (record === undefined) return undefined;
 
-    const steps = await this.repository.listSteps(id);
+    const [steps, decisions, modelCalls, toolCalls, errors] = await Promise.all([
+      this.repository.listSteps(id),
+      this.repository.listDecisions(id),
+      this.repository.listModelCalls(id),
+      this.repository.listToolCalls(id),
+      this.repository.listErrors(id),
+    ]);
 
     return {
       ...this.toRunSummaryView(record, now),
       steps: steps.map(toStepView),
+      decisions: decisions.map(toDecisionView),
+      modelCalls: modelCalls.map(toModelCallView),
+      toolCalls: toolCalls.map(toToolCallView),
+      errors: errors.map(toErrorView),
     };
   }
 
@@ -156,5 +189,91 @@ function toStepView(record: StepRecord): StepView {
     completedAt: toIsoOrNull(record.completedAt),
     receivedAt: record.receivedAt.toISOString(),
     metadata: record.metadata,
+  };
+}
+
+/**
+ * Every field is copied across explicitly rather than spread, in all four mappings below.
+ *
+ * The spread would compile and would also carry any column a future migration adds straight
+ * onto the wire — which is how a redacted-at-ingest product leaks the next `Json` column
+ * somebody stores. DATA-1's persistence edge is only an edge if something has to be written
+ * down to cross it.
+ *
+ * `availableOptions` is copied into a fresh array: `DecisionRecord` types it
+ * `readonly string[]`, and the view's `string[]` would otherwise be the record's own array,
+ * mutable through the response object.
+ */
+function toDecisionView(record: DecisionRecord): DecisionView {
+  return {
+    id: record.id,
+    runId: record.runId,
+    stepId: record.stepId,
+    decisionType: record.decisionType,
+    contextKey: record.contextKey,
+    contextKeyVersion: record.contextKeyVersion,
+    rawContext: record.rawContext,
+    availableOptions: record.availableOptions === null ? null : [...record.availableOptions],
+    selectedOption: record.selectedOption,
+    outcome: record.outcome,
+    outcomeAttestedBy: record.outcomeAttestedBy,
+    outcomeObservedAt: toIsoOrNull(record.outcomeObservedAt),
+    createdAt: record.createdAt.toISOString(),
+  };
+}
+
+function toModelCallView(record: ModelCallRecord): ModelCallView {
+  return {
+    id: record.id,
+    runId: record.runId,
+    stepId: record.stepId,
+    provider: record.provider,
+    model: record.model,
+    latencyMs: record.latencyMs,
+    inputTokens: record.inputTokens,
+    outputTokens: record.outputTokens,
+    status: record.status,
+    metadata: record.metadata,
+    createdAt: record.createdAt.toISOString(),
+  };
+}
+
+/**
+ * `durationMs` is the caller's stored measurement, passed through untouched.
+ *
+ * Recomputing it from `completedAt - startedAt` would look tidier and would be wrong twice:
+ * it would silently overwrite what the SDK actually measured, and on a client clock that
+ * moved backwards mid-call it would produce a negative duration the platform would then be
+ * asserting. §12: the client clocks are reported, never reconciled.
+ */
+function toToolCallView(record: ToolCallRecord): ToolCallView {
+  return {
+    id: record.id,
+    runId: record.runId,
+    stepId: record.stepId,
+    toolName: record.toolName,
+    input: record.input,
+    output: record.output,
+    inputTruncated: record.inputTruncated,
+    outputTruncated: record.outputTruncated,
+    inputBytes: record.inputBytes,
+    outputBytes: record.outputBytes,
+    startedAt: record.startedAt.toISOString(),
+    completedAt: record.completedAt.toISOString(),
+    durationMs: record.durationMs,
+    success: record.success,
+    error: record.error,
+  };
+}
+
+function toErrorView(record: ErrorRecord): ErrorView {
+  return {
+    id: record.id,
+    runId: record.runId,
+    stepId: record.stepId,
+    type: record.type,
+    message: record.message,
+    metadata: record.metadata,
+    createdAt: record.createdAt.toISOString(),
   };
 }

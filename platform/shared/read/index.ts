@@ -13,7 +13,13 @@
 export {
   RUN_VIEW_STATUSES,
   RunViewStatusSchema,
+  OUTCOME_ATTESTED_BY,
+  OutcomeAttestedBySchema,
   StepViewSchema,
+  DecisionViewSchema,
+  ModelCallViewSchema,
+  ToolCallViewSchema,
+  ErrorViewSchema,
   RunSummaryViewSchema,
   RunDetailViewSchema,
   RunListViewSchema,
@@ -23,7 +29,12 @@ export {
 } from './run-view';
 export type {
   RunViewStatus,
+  OutcomeAttestedBy,
   StepView,
+  DecisionView,
+  ModelCallView,
+  ToolCallView,
+  ErrorView,
   RunSummaryView,
   RunDetailView,
   RunListView,

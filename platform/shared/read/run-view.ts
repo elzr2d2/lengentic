@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { RunStatusSchema } from '../schema/status';
+import { DecisionOutcomeSchema } from '../schema/decision-events';
 import { MetadataSchema, TimestampSchema } from '../schema/primitives';
 
 /**
@@ -89,6 +90,140 @@ export const RunSummaryViewSchema = z.object({
 });
 
 /**
+ * §14's attestation provenance, read side only.
+ *
+ * Deliberately absent from `schema/decision-events.ts`: the wire has no `outcomeAttestedBy`
+ * field because the caller cannot choose it — the arrival of a `decision.outcome_attested`
+ * event *is* the evidence that a caller attested, so the value is derived at the persistence
+ * edge. A response must still report it, because `CLAUDE.md` ## Product claims requires every
+ * surface to be able to say "attested success rate" and name who attested. `INFERRED` is not
+ * a member here for the same reason §14 refuses it on the write side: no producer.
+ */
+export const OUTCOME_ATTESTED_BY = Object.freeze(['CALLER', 'UNKNOWN'] as const);
+
+export type OutcomeAttestedBy = (typeof OUTCOME_ATTESTED_BY)[number];
+
+export const OutcomeAttestedBySchema = z.enum(OUTCOME_ATTESTED_BY);
+
+/**
+ * A stored Decision, read back (§13, §14).
+ *
+ * Almost everything is nullable, and not because a *recorded* decision may omit it. §14
+ * makes attestation "an independent, idempotent telemetry event" that may arrive for an
+ * unknown `decisionId` — "accepted and stored, not rejected" — so a row can exist that only
+ * an attestation ever wrote. Those rows have no `decisionType`, no options and no selection,
+ * and the response has to be able to say so. The nullability mirrors the Prisma model
+ * column for column, which records the same reasoning.
+ *
+ * `contextKey` is exposed rather than folded away because §14 makes it the caller's
+ * obligation and the Run Explorer's Decisions view is required to show it: a null key means
+ * this decision is stored but EXCLUDED from aggregation, and a reader who cannot see the
+ * null cannot tell a decision that will never be grouped from one that will.
+ *
+ * `rawContext` is whatever survived §15's serialize → redact → cap order client-side. The
+ * platform stores what it was sent; nothing here re-redacts, because redaction that happens
+ * after transmission has already failed.
+ */
+export const DecisionViewSchema = z.object({
+  id: z.string(),
+  runId: z.string(),
+  /** Null only on an attestation-first row — see the note above, not "optional on record". */
+  stepId: z.string().nullable(),
+  decisionType: z.string().nullable(),
+  /** Null means: stored, and excluded from aggregation (§14). Never defaulted to a key. */
+  contextKey: z.string().nullable(),
+  contextKeyVersion: z.string().nullable(),
+  rawContext: MetadataSchema.nullable(),
+  availableOptions: z.array(z.string()).nullable(),
+  selectedOption: z.string().nullable(),
+  outcome: DecisionOutcomeSchema,
+  outcomeAttestedBy: OutcomeAttestedBySchema,
+  outcomeObservedAt: TimestampSchema.nullable(),
+  createdAt: TimestampSchema,
+});
+
+/**
+ * A stored ModelCall, read back (§13).
+ *
+ * Token counts stay `null` when the provider reported none rather than becoming `0`: §13
+ * marks exactly those two fields optional, and a zero would read as "this call used no
+ * tokens" — a measurement the platform never received. `RunSummary`'s
+ * `modelCallsMissingInputTokens` exists for the same reason at the aggregate level.
+ *
+ * `status` is a free string, matching the wire and the column. An enum invented on the read
+ * side would reject values ingestion already accepted, which is a response that cannot
+ * report its own database.
+ */
+export const ModelCallViewSchema = z.object({
+  id: z.string(),
+  runId: z.string(),
+  stepId: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  latencyMs: z.number().int(),
+  inputTokens: z.number().int().nullable(),
+  outputTokens: z.number().int().nullable(),
+  status: z.string(),
+  metadata: MetadataSchema.nullable(),
+  createdAt: TimestampSchema,
+});
+
+/**
+ * A stored ToolCall, read back (§13, §15).
+ *
+ * The four truncation columns travel with the payload, never apart from it. §15's whole
+ * point is that truncation must lose the payload and not the measurement, so a response
+ * carrying `input` without `inputTruncated` / `inputBytes` would show a developer a complete
+ * -looking tool input that is actually the first 32KB of one. The Run Explorer's Tool Calls
+ * view is required to flag exactly this.
+ *
+ * `input` / `output` are `z.unknown()` and not `MetadataSchema`: a tool's payload is not
+ * necessarily a JSON object — an array or a bare string is a legitimate tool shape, which is
+ * the same call `tool-call-events.ts` makes on the wire.
+ *
+ * No `createdAt`: §13 gives ToolCall none and the column does not exist. `startedAt` and
+ * `completedAt` are CLIENT clocks; `durationMs` is the client's own measurement and is not
+ * recomputed here — §12 forbids combining the two clock families in one duration, and the
+ * only server clock in this response is on the Run.
+ */
+export const ToolCallViewSchema = z.object({
+  id: z.string(),
+  runId: z.string(),
+  stepId: z.string(),
+  toolName: z.string(),
+  input: z.unknown(),
+  output: z.unknown(),
+  inputTruncated: z.boolean(),
+  outputTruncated: z.boolean(),
+  inputBytes: z.number().int(),
+  outputBytes: z.number().int(),
+  startedAt: TimestampSchema,
+  completedAt: TimestampSchema,
+  durationMs: z.number().int(),
+  success: z.boolean(),
+  /** Null on success. Unbounded — an error message is captured evidence (§13). */
+  error: z.string().nullable(),
+});
+
+/**
+ * A stored Error, read back (§13).
+ *
+ * An error the *instrumented system* reported as telemetry, not an ingestion rejection —
+ * rejections are `INGEST_ERROR_CODES` on the ingest response and never become rows. A
+ * consumer that showed these under a heading like "ingestion errors" would be reporting the
+ * platform's health from the agent's failures.
+ */
+export const ErrorViewSchema = z.object({
+  id: z.string(),
+  runId: z.string(),
+  stepId: z.string(),
+  type: z.string(),
+  message: z.string(),
+  metadata: MetadataSchema.nullable(),
+  createdAt: TimestampSchema,
+});
+
+/**
  * Steps arrive as a flat, deterministically ordered array carrying `parentStepId`.
  *
  * Not a server-built tree: a child whose parent has not arrived (§13 — no foreign key, and
@@ -96,9 +231,24 @@ export const RunSummaryViewSchema = z.object({
  * is an ordinary member of this array, and whether it renders nested or orphaned is one map
  * lookup at the consumer. Building the tree here would force the API to invent a placement
  * for a parent it has never seen.
+ *
+ * **The four Phase 4 collections are `.optional()`, and that is a load-bearing choice.**
+ * `.default([])` was rejected: it would turn a response that never mentioned decisions into
+ * "this run made no decisions", which is a claim the server did not make — the same
+ * manufactured-absence failure `RunSummary.droppedTelemetryEventCount` refuses to commit by
+ * reporting `null` instead of `0`. Required was rejected too, and for a reason about
+ * evidence rather than compatibility: this schema is what `platform/dashboard` `safeParse`s,
+ * so against an API deployment that predates these fields a required member makes the WHOLE
+ * run unreadable — a reader loses the timeline and the step tree as well, to report a
+ * missing decisions list. `undefined` says "this response did not carry them"; `[]` says
+ * "there are none". Those are different facts and the contract keeps them apart.
  */
 export const RunDetailViewSchema = RunSummaryViewSchema.extend({
   steps: z.array(StepViewSchema),
+  decisions: z.array(DecisionViewSchema).optional(),
+  modelCalls: z.array(ModelCallViewSchema).optional(),
+  toolCalls: z.array(ToolCallViewSchema).optional(),
+  errors: z.array(ErrorViewSchema).optional(),
 });
 
 export const RunListViewSchema = z.object({
@@ -124,6 +274,10 @@ export const RunsListQuerySchema = z.object({
 });
 
 export type StepView = z.infer<typeof StepViewSchema>;
+export type DecisionView = z.infer<typeof DecisionViewSchema>;
+export type ModelCallView = z.infer<typeof ModelCallViewSchema>;
+export type ToolCallView = z.infer<typeof ToolCallViewSchema>;
+export type ErrorView = z.infer<typeof ErrorViewSchema>;
 export type RunSummaryView = z.infer<typeof RunSummaryViewSchema>;
 export type RunDetailView = z.infer<typeof RunDetailViewSchema>;
 export type RunListView = z.infer<typeof RunListViewSchema>;

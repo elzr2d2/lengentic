@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Clock } from '../common/clock';
-import type { RunRecord, StepRecord } from './run-record';
+import type {
+  DecisionRecord,
+  ErrorRecord,
+  ModelCallRecord,
+  RunRecord,
+  StepRecord,
+  ToolCallRecord,
+} from './run-record';
 import { RunsService } from './runs.service';
 import type { RunsRepository } from './runs.repository';
 import type { ModelCallMetrics, ToolCallMetrics } from './run-summary';
@@ -73,6 +80,97 @@ function stepRecord(overrides: Partial<StepRecord> & Pick<StepRecord, 'id' | 'ru
   };
 }
 
+function decisionRecord(
+  overrides: Partial<DecisionRecord> & Pick<DecisionRecord, 'id' | 'runId'>,
+): DecisionRecord {
+  return {
+    stepId: 'step-a',
+    decisionType: 'execution_strategy',
+    contextKey: 'risk=low|tasks=2-3|deps=resolved|conflict=absent|validation=ready',
+    contextKeyVersion: 'v1',
+    rawContext: { riskBucket: 'low' },
+    availableOptions: ['sequential', 'parallel'],
+    selectedOption: 'sequential',
+    outcome: 'SUCCESS',
+    outcomeAttestedBy: 'CALLER',
+    outcomeObservedAt: new Date('2026-08-21T11:04:00.000Z'),
+    createdAt: new Date('2026-08-21T11:00:06.000Z'),
+    ...overrides,
+  };
+}
+
+function modelCallRecord(
+  overrides: Partial<ModelCallRecord> & Pick<ModelCallRecord, 'id' | 'runId'>,
+): ModelCallRecord {
+  return {
+    stepId: 'step-a',
+    provider: 'anthropic',
+    model: 'claude-opus-5',
+    latencyMs: 812,
+    inputTokens: 1200,
+    outputTokens: 340,
+    status: 'ok',
+    metadata: null,
+    createdAt: new Date('2026-08-21T11:00:07.000Z'),
+    ...overrides,
+  };
+}
+
+function toolCallRecord(
+  overrides: Partial<ToolCallRecord> & Pick<ToolCallRecord, 'id' | 'runId'>,
+): ToolCallRecord {
+  return {
+    stepId: 'step-a',
+    toolName: 'read_file',
+    input: { path: '/etc/hosts' },
+    output: 'ok',
+    inputTruncated: false,
+    outputTruncated: false,
+    inputBytes: 24,
+    outputBytes: 2,
+    startedAt: new Date('2026-08-21T11:00:08.000Z'),
+    completedAt: new Date('2026-08-21T11:00:08.250Z'),
+    durationMs: 250,
+    success: true,
+    error: null,
+    ...overrides,
+  };
+}
+
+function errorRecord(
+  overrides: Partial<ErrorRecord> & Pick<ErrorRecord, 'id' | 'runId'>,
+): ErrorRecord {
+  return {
+    stepId: 'step-a',
+    type: 'ToolExecutionError',
+    message: 'read_file: ENOENT',
+    metadata: null,
+    createdAt: new Date('2026-08-21T11:00:09.000Z'),
+    ...overrides,
+  };
+}
+
+/**
+ * The one member of a collection the case is about, narrowed once instead of at every
+ * assertion.
+ *
+ * `RunDetailView`'s Phase 4 collections are optional and their members are indexed, so
+ * asserting on them directly means a `?.` per field — three of the cases below crossed the
+ * complexity limit on optional chaining alone. Narrowing here is not a convenience: the
+ * length assertion is the one that would otherwise be missing, and it is what makes "the
+ * response contains exactly this row" a claim rather than "the first row, if any, looks
+ * right".
+ */
+function only<T>(items: readonly T[] | undefined): T {
+  expect(items).toHaveLength(1);
+
+  const [first] = items ?? [];
+
+  if (first === undefined) throw new Error('expected exactly one item, found none');
+
+  return first;
+}
+
 /**
  * `as unknown as RunsRepository` is the test-double carve-out `docs/ENGINEERING_STANDARDS.md`
  * TS-3 allows and `health.service.spec.ts` already uses: the object satisfies every method
@@ -91,13 +189,30 @@ function fakeRepository(
     // that aggregated every model call in the table would pass an unkeyed fake.
     listModelCallMetrics: (runId: string) => Promise.resolve(calls.modelCalls?.[runId] ?? []),
     listToolCallMetrics: (runId: string) => Promise.resolve(calls.toolCalls?.[runId] ?? []),
+    listDecisions: (runId: string) => Promise.resolve(calls.decisions?.[runId] ?? []),
+    listModelCalls: (runId: string) => Promise.resolve(calls.modelCallRows?.[runId] ?? []),
+    listToolCalls: (runId: string) => Promise.resolve(calls.toolCallRows?.[runId] ?? []),
+    listErrors: (runId: string) => Promise.resolve(calls.errors?.[runId] ?? []),
   } as unknown as RunsRepository;
 }
 
-/** Per-run ModelCall / ToolCall projections, addressed the way the repository addresses them. */
+/**
+ * Per-run projections, addressed the way the repository addresses them.
+ *
+ * `modelCalls` / `toolCalls` are §23's metric projections and `modelCallRows` / `toolCallRows`
+ * are the whole rows the detail read returns. They are held apart on purpose even though both
+ * describe the same tables: `listToolCallMetrics` selects one boolean and `listToolCalls`
+ * selects the payloads, so a `findById` that reached for the metrics projection would compile
+ * and would silently return tool calls with no `input`, no truncation flags and no timing. One
+ * shared bucket here would make that indistinguishable from correct.
+ */
 interface RunCalls {
   readonly modelCalls?: Readonly<Record<string, readonly ModelCallMetrics[]>>;
   readonly toolCalls?: Readonly<Record<string, readonly ToolCallMetrics[]>>;
+  readonly decisions?: Readonly<Record<string, readonly DecisionRecord[]>>;
+  readonly modelCallRows?: Readonly<Record<string, readonly ModelCallRecord[]>>;
+  readonly toolCallRows?: Readonly<Record<string, readonly ToolCallRecord[]>>;
+  readonly errors?: Readonly<Record<string, readonly ErrorRecord[]>>;
 }
 
 function serviceOver(
@@ -360,6 +475,250 @@ describe('RunsService.findById', () => {
     ).findById('run-1');
 
     expect(RunDetailViewSchema.safeParse(detail).success).toBe(true);
+  });
+});
+
+/**
+ * Seam: the four Phase 4 collections `p4.read-model` adds to `findById`.
+ *
+ * The rows already existed (`p4.entities`) and nothing read them out, which is the exact
+ * failure this node was created to fix — so the assertions below are about the round trip
+ * reaching the response, not about the aggregation in `run-summary.ts`. Every case names one
+ * run and puts a row of the same shape on a second run, because a `findById` that ignored
+ * `runId` and returned the whole table would satisfy a single-run fixture.
+ */
+describe('RunsService.findById — Phase 4 entities', () => {
+  it('returns the run own decisions with contextKey and attestation intact', async () => {
+    const service = serviceOver(
+      [runRecord({ id: 'run-1' }), runRecord({ id: 'run-2' })],
+      [],
+      undefined,
+      {
+        decisions: {
+          'run-1': [decisionRecord({ id: 'dec-1', runId: 'run-1' })],
+          'run-2': [decisionRecord({ id: 'dec-2', runId: 'run-2' })],
+        },
+      },
+    );
+
+    const detail = await service.findById('run-1');
+
+    const decision = only(detail?.decisions);
+
+    expect(decision.id).toBe('dec-1');
+    expect(decision.contextKey).toBe(
+      'risk=low|tasks=2-3|deps=resolved|conflict=absent|validation=ready',
+    );
+    expect(decision.contextKeyVersion).toBe('v1');
+    expect(decision.availableOptions).toStrictEqual(['sequential', 'parallel']);
+    expect(decision.selectedOption).toBe('sequential');
+    // "Attested", never "measured": the caller asserted this, and the field that records who
+    // asserted it has to survive the read or the Dashboard cannot say so.
+    expect(decision.outcome).toBe('SUCCESS');
+    expect(decision.outcomeAttestedBy).toBe('CALLER');
+    expect(decision.outcomeObservedAt).toBe('2026-08-21T11:04:00.000Z');
+  });
+
+  it('keeps a decision with no contextKey in the response', async () => {
+    // §14 excludes a keyless decision from AGGREGATION. Dropping it from the run's own detail
+    // would hide a decision the agent demonstrably made, and the Decisions view exists partly
+    // to show that the key is missing — a decision that will never be grouped looks exactly
+    // like one that will if the row never arrives.
+    const service = serviceOver([runRecord({ id: 'run-1' })], [], undefined, {
+      decisions: {
+        'run-1': [
+          decisionRecord({
+            id: 'dec-keyless',
+            runId: 'run-1',
+            contextKey: null,
+            contextKeyVersion: null,
+          }),
+        ],
+      },
+    });
+
+    const detail = await service.findById('run-1');
+
+    expect(detail?.decisions?.map((decision) => decision.id)).toStrictEqual(['dec-keyless']);
+    expect(detail?.decisions?.[0]?.contextKey).toBeNull();
+  });
+
+  it('keeps an attestation-first decision, whose recorded-only fields are all null', async () => {
+    // §14: an attestation for an unknown decisionId is "accepted and stored, not rejected",
+    // so a row can exist that only an attestation ever wrote. A mapping that assumed every
+    // decision was recorded first would throw or invent values here.
+    const service = serviceOver([runRecord({ id: 'run-1' })], [], undefined, {
+      decisions: {
+        'run-1': [
+          decisionRecord({
+            id: 'dec-attested-only',
+            runId: 'run-1',
+            stepId: null,
+            decisionType: null,
+            contextKey: null,
+            contextKeyVersion: null,
+            rawContext: null,
+            availableOptions: null,
+            selectedOption: null,
+            outcome: 'FAILURE',
+          }),
+        ],
+      },
+    });
+
+    const detail = await service.findById('run-1');
+
+    expect(detail?.decisions?.[0]?.stepId).toBeNull();
+    expect(detail?.decisions?.[0]?.decisionType).toBeNull();
+    expect(detail?.decisions?.[0]?.availableOptions).toBeNull();
+    expect(detail?.decisions?.[0]?.outcome).toBe('FAILURE');
+    expect(RunDetailViewSchema.safeParse(detail).success).toBe(true);
+  });
+
+  it('reports an unreported token count as null and never as zero', async () => {
+    // §13 marks exactly the two token fields optional. `0` would read as "this call used no
+    // tokens" — a measurement the platform never received — and would then be summed into a
+    // total that looks complete. `RunSummary.modelCallsMissingInputTokens` exists for the
+    // same reason one level up.
+    const service = serviceOver([runRecord({ id: 'run-1' })], [], undefined, {
+      modelCallRows: {
+        'run-1': [
+          modelCallRecord({
+            id: 'mc-1',
+            runId: 'run-1',
+            inputTokens: null,
+            outputTokens: null,
+          }),
+        ],
+      },
+    });
+
+    const detail = await service.findById('run-1');
+
+    const modelCall = only(detail?.modelCalls);
+
+    expect(modelCall.inputTokens).toBeNull();
+    expect(modelCall.outputTokens).toBeNull();
+    expect(modelCall.latencyMs).toBe(812);
+    expect(modelCall.provider).toBe('anthropic');
+    expect(modelCall.model).toBe('claude-opus-5');
+  });
+
+  it('carries the truncation flags and byte counts alongside a clipped tool payload', async () => {
+    // §15: truncation must lose the payload, not the measurement. A response that returned
+    // `input` without `inputTruncated` / `inputBytes` shows a developer a complete-looking
+    // tool input that is the first 32KB of a 1MB one, and the Tool Calls view is required to
+    // flag exactly that.
+    const service = serviceOver([runRecord({ id: 'run-1' })], [], undefined, {
+      toolCallRows: {
+        'run-1': [
+          toolCallRecord({
+            id: 'tc-1',
+            runId: 'run-1',
+            input: { prompt: 'clipped…' },
+            output: null,
+            inputTruncated: true,
+            outputTruncated: false,
+            inputBytes: 1_048_576,
+            outputBytes: 0,
+            success: false,
+            error: 'timed out',
+          }),
+        ],
+      },
+    });
+
+    const detail = await service.findById('run-1');
+
+    const toolCall = only(detail?.toolCalls);
+
+    expect(toolCall.toolName).toBe('read_file');
+    expect(toolCall.input).toStrictEqual({ prompt: 'clipped…' });
+    expect(toolCall.inputTruncated).toBe(true);
+    expect(toolCall.inputBytes).toBe(1_048_576);
+    expect(toolCall.outputTruncated).toBe(false);
+    expect(toolCall.outputBytes).toBe(0);
+    expect(toolCall.success).toBe(false);
+    expect(toolCall.error).toBe('timed out');
+  });
+
+  it('reports the stored durationMs even when the client clock ran backwards', async () => {
+    // The mapping must not recompute `completedAt - startedAt`. Doing so would overwrite what
+    // the SDK measured and, on a clock that moved backwards mid-call, would have the platform
+    // asserting a negative duration it never observed. §12: client clocks are reported, never
+    // reconciled — so both the stored duration AND the inverted instants survive the read.
+    const service = serviceOver([runRecord({ id: 'run-1' })], [], undefined, {
+      toolCallRows: {
+        'run-1': [
+          toolCallRecord({
+            id: 'tc-reversed',
+            runId: 'run-1',
+            startedAt: new Date('2026-08-21T11:00:08.000Z'),
+            completedAt: new Date('2026-08-21T11:00:07.000Z'),
+            durationMs: 250,
+          }),
+        ],
+      },
+    });
+
+    const detail = await service.findById('run-1');
+
+    expect(detail?.toolCalls?.[0]?.durationMs).toBe(250);
+    expect(detail?.toolCalls?.[0]?.startedAt).toBe('2026-08-21T11:00:08.000Z');
+    expect(detail?.toolCalls?.[0]?.completedAt).toBe('2026-08-21T11:00:07.000Z');
+  });
+
+  it('returns the errors the instrumented system reported, for this run only', async () => {
+    const service = serviceOver(
+      [runRecord({ id: 'run-1' }), runRecord({ id: 'run-2' })],
+      [],
+      undefined,
+      {
+        errors: {
+          'run-1': [errorRecord({ id: 'err-1', runId: 'run-1' })],
+          'run-2': [errorRecord({ id: 'err-2', runId: 'run-2' })],
+        },
+      },
+    );
+
+    const detail = await service.findById('run-1');
+
+    expect(detail?.errors?.map((error) => error.id)).toStrictEqual(['err-1']);
+    expect(detail?.errors?.[0]?.type).toBe('ToolExecutionError');
+    expect(detail?.errors?.[0]?.message).toBe('read_file: ENOENT');
+    expect(detail?.errors?.[0]?.createdAt).toBe('2026-08-21T11:00:09.000Z');
+  });
+
+  it('returns each empty collection as [], not as an absent field', async () => {
+    // The schema makes all four optional so an older deployment's response stays readable,
+    // which means `undefined` and `[]` are different facts on the wire: "not reported" versus
+    // "none". This service is never the older deployment, so it must always say which.
+    const detail = await serviceOver([runRecord({ id: 'run-1' })]).findById('run-1');
+
+    expect(detail?.decisions).toStrictEqual([]);
+    expect(detail?.modelCalls).toStrictEqual([]);
+    expect(detail?.toolCalls).toStrictEqual([]);
+    expect(detail?.errors).toStrictEqual([]);
+  });
+
+  it('produces a fully populated detail that satisfies the published response schema', async () => {
+    const detail = await serviceOver(
+      [runRecord({ id: 'run-1' })],
+      [stepRecord({ id: 'step-a', runId: 'run-1' })],
+      undefined,
+      {
+        decisions: { 'run-1': [decisionRecord({ id: 'dec-1', runId: 'run-1' })] },
+        modelCallRows: { 'run-1': [modelCallRecord({ id: 'mc-1', runId: 'run-1' })] },
+        toolCallRows: { 'run-1': [toolCallRecord({ id: 'tc-1', runId: 'run-1' })] },
+        errors: { 'run-1': [errorRecord({ id: 'err-1', runId: 'run-1' })] },
+      },
+    ).findById('run-1');
+
+    const parsed = RunDetailViewSchema.safeParse(detail);
+
+    // The error is reported rather than swallowed by `.success`: a shape mismatch here is the
+    // whole defect this node exists to prevent, and "false" alone does not say which field.
+    expect(parsed.success ? null : parsed.error.issues).toBeNull();
   });
 });
 
