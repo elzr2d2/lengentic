@@ -3014,3 +3014,129 @@ still needs the type to say it.
 render from the detail response alone, which cannot answer the drop count at all. (a) is a type
 relocation with no behaviour change. **Trigger:** `p4.run-explorer`'s next dispatch, or the Phase
 4 phase gate — whichever comes first.
+
+## Discovered at the Phase 4 wave 2 gate (2026-08-31)
+
+Flushed from `.artifacts/evidence/4/p4.run-summary/deferred-backlog-entries.md`. That file
+listed three entries; only the first reached `BACKLOG.md`, at commit `e50ffc0`. The other two
+are below. `p4.run-summary`'s `allowed_paths` is `platform/api/src/**` and `checkOwnership`
+accepts nothing but `.artifacts/**` on top of it, so the lane could not file them itself —
+widening its own boundary to write a backlog item is what its stop conditions forbid.
+
+### Nothing on the wire carries the SDK's dropped-event count, so a Phase 4 DoD line cannot be answered from stored telemetry
+
+**Source:** `p4.run-summary`, 2026-08-31 —
+`.artifacts/evidence/4/p4.run-summary/deferred-backlog-entries.md`. Independently reached in
+Phase 2: `.artifacts/framing/phase-2-plan-facts.md:277-279`, "Nothing in §12's envelope or
+`IngestResponse` carries a drop count — it is client-side state only."
+
+§23 lists `Dropped telemetry event count` and says the SDK already counts drops. It does:
+`platform/telemetry-sdk/src/client.ts` `stats()` returns `droppedOverflow`, `droppedInvalid`,
+`droppedTooLarge`, `droppedAfterShutdown` and `droppedUndeliverable` — §16's five distinct
+reasons. All five are **client-side state only**. `TelemetryEventEnvelopeSchema` has no field
+for them, `IngestRequestSchema` has no batch-level field, `IngestResponse` runs server→client,
+and no column stores them.
+
+`MVP_PLAN_V3.md:1811` — "- [ ] Dropped-event count is visible in the Dashboard." — is a Phase 4
+DoD line, and `p4.run-explorer` owns Ingestion Health in the UI. Neither node can satisfy it
+from stored telemetry, because nothing is stored. `RunSummary.droppedTelemetryEventCount`
+therefore ships as `number | null` and is `null` today; `0` was rejected explicitly, because it
+asserts "no events were dropped" from the absence of a signal the platform never receives,
+which is the green that lies. `run-summary.spec.ts` pins both halves — `null` when unknown, and
+pass-through including a genuine `0` when a source exists.
+
+**Why not here:** the fix is a `platform/shared/schema/**` wire change with a `schemaVersion`
+question attached (ADR 0005), which is a contract packet's decision, not this lane's — and
+option (c) is a plan change, not an implementation choice.
+
+**Options:** (a) a batch-level `droppedSinceLastBatch` on the ingest request, folded into a
+per-run counter at the persistence edge — cheapest, needs a schema field and a column;
+(b) a dedicated `sdk.health` telemetry event type carrying all five counters, stored as an
+entity — more faithful to §16, more schema; (c) accept that the count is client-side only and
+rewrite the DoD line to say what the Dashboard can actually show.
+
+**Cost of not doing it:** the Phase 4 DoD line stays unbindable, and Ingestion Health renders
+"no drop count has been reported" forever. `summaryFor` in `runs.service.ts` already passes the
+field explicitly rather than defaulting it, so whichever option lands is a one-line change at a
+grep-able site. **Trigger:** the Phase 4 phase gate — the line cannot be checked off without
+one of the three.
+
+### `RunSummary.repeatedFailedActions` — ship it after `p5.repeated-failed`, never recompute it
+
+**Source:** `p4.run-summary`, 2026-08-31; stated in the packet's own contract note.
+
+§23 lists "Repeated failed actions". Its definition is §20.2's — same `runId`, same `toolName`,
+same sanitized `inputFingerprint`, at least three _consecutive_ failures with no success
+between — and that is `p5.repeated-failed`'s deliverable in `platform/analysis-engine`.
+Computing it a second time inside the API would be a second definition of the analyzer, free to
+disagree with the one the product ships.
+
+The field is **absent, not null**, and `run-summary.spec.ts` asserts its absence so that a
+well-meaning re-implementation turns a test red instead of shipping the divergence quietly.
+
+**Why not here:** `p5.repeated-failed` is 5b wave 3 and has not landed; `platform/analysis-engine`
+is outside this lane.
+
+**Do:** once `p5.repeated-failed` lands, add the field to `RunSummary` sourced from the
+analyzer's own output rather than recomputed. **Trigger:** `p5.repeated-failed` merging, or the
+first consumer that asks §23 for the count — whichever comes first.
+
+### A contract packet's per-node Validator, Reviewer and Watchdog are prose, and nothing checks they ran
+
+**Source:** the Phase 4 wave 2 gate, 2026-08-31. `p4.read-model` is change class `contract`,
+risk `high`. `pnpm oracle packet p4.read-model` prints its chain — "per packet: builder →
+validator → reviewer → watchdog", "review cadence: per node — this class is inherited
+downstream; review lands before the next lane builds on it". Only the Builder ran.
+`.autopilot/handoffs/dispatch-p4.read-model-940687f2.json` reports DONE off the Builder's own
+mutation sweep, and `pnpm lanes handoff .artifacts/handoffs/4-p4.read-model-builder.json` exits
+0 with no Validator, Reviewer or Watchdog evidence anywhere in it. The same is true of every
+Phase 4 contract node: `.artifacts/handoffs/` holds `4-p4.entities-builder.json`,
+`4-p4.wire-decisions-builder.json` and `4-p4.read-model-builder.json` and no per-node companion
+for any of them.
+
+The rule itself is mechanical where it is enforced at all — `scripts/lanes.ts:593` computes
+`requiredCaps` from `perPacketCaps(...)` and its own comment says "A chain this function prints
+is a chain that gets dispatched, so this is where the rule either binds or stays prose." It
+prints. Nothing reads it back. `scripts/flow.ts` only ever emits `agents` for a gate
+(`gateAgents(..., 'perWave')` at :395, `'perPhase'` at :424), so the supervisor's DISPATCH
+action carries no chain at all, and `scripts/autopilot/**` names no agent role outside its own
+selftest fixtures. The chain reaches a dispatch worker as prose inside the packet brief and
+survives or not on that worker's judgement.
+
+**Consequence:** for `contract` — the one class whose whole point is that "everything downstream
+inherits the mistake" — the review that is supposed to land _before the next lane builds on it_
+can be skipped silently, and the handoff checker calls the result DONE. This is not the oracle
+lying about what is on disk; it is the agent lifecycle lying about what was checked.
+
+**Closed for this one node, not for the rule:** the wave 2 gate dispatched the missing Reviewer
+and Watchdog over `743a3db` retroactively —
+`.artifacts/evidence/4/wave-gate/wave-2/reviewer-p4.read-model.md` and
+`watchdog-p4.read-model.md` — because `p4.run-explorer` dispatches next and that was the last
+cheap moment. A gate catching this by hand is exactly the failure the mechanism exists to
+prevent.
+
+**Options:** (a) `pnpm lanes handoff` requires, for a node whose class has a non-empty
+`perPacket` beyond `implement`, an evidence path per required capability — the same shape as the
+existing "DONE requires a commit" rule; (b) `pnpm flow next` emits `agents` on DISPATCH as it
+already does on the two gates, so the supervisor can dispatch the chain instead of hoping;
+(c) leave it and accept that per-node review is advisory. **Ruled out:** trusting the packet
+brief harder — the brief already says it plainly and it still did not happen.
+
+**Trigger:** the Phase 4 phase gate, or the next `contract`-class node dispatched anywhere —
+whichever comes first.
+
+### `RunSummaryView` and §23's `RunSummary` collide by name before the relocation lands
+
+**Source:** the per-node Reviewer owed to `p4.read-model`, run retroactively at the Phase 4 wave
+2 gate — `.artifacts/evidence/4/wave-gate/wave-2/reviewer-p4.read-model.md`, finding S6.
+
+`platform/shared/read/run-view.ts` already uses `RunSummaryView` to mean **a run list row**.
+§23's `RunSummary` is the **metric roll-up** returned by `GET /v1/runs/:id/summary`. The two are
+unrelated shapes one word apart, in the module the relocation entry above ("§23's `RunSummary`
+type still lives in the API") proposes moving the roll-up into. `platform/api/src/runs/run-summary.ts`
+documents the collision at its head; nothing in `platform/shared/read/**` does.
+
+**Do:** whichever name survives, decide it at the moment of the move rather than after both are
+exported from the same barrel. `RunSummaryView` for the list row and `RunMetricsView` (or
+`RunSummaryMetrics`) for §23's roll-up keeps the reader honest. **Trigger:** the `RunSummary`
+relocation above — same dispatch, do not split them.
