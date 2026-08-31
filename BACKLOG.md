@@ -2985,3 +2985,32 @@ left implicit.
 is the first consumer that has to choose what to draw. **Options:** a nullable `inputBytes`, or a
 `capturedIO: boolean` on the payload. **Ruled out:** a sentinel like `-1`, which is the same
 ambiguity with a worse type. **Trigger:** `p4.run-explorer`.
+
+### §23's `RunSummary` type still lives in the API, so Ingestion Health has no shared vocabulary
+
+**Source:** `platform/api/src/runs/run-summary.ts`'s own header records this as deferred: "the
+read model is the right home — the Dashboard cannot import `platform/api/src/**`
+(`pnpm check:boundaries`), so §23's DoD line 'Dropped-event count is visible in the Dashboard'
+needs this vocabulary to be shared eventually. Recorded as a deferred item, not silently done by
+widening a lane boundary." `p4.run-summary`'s `allowed_paths` excluded `platform/shared/read/**`,
+so it could not move it.
+
+`p4.read-model` owns both paths and could have. It did not, because its binding deliverable names
+four collections — "RunDetailView gains decisions, modelCalls, toolCalls and errors" — and the
+§23 roll-up is not one of them. Starting an adjacent deliverable inside a contract packet is the
+shape `p4.run-summary`'s own amendment note argues against.
+
+**Consequence today:** `GET /v1/runs/:id/summary` returns a shape only the API can name. The Run
+Explorer's eighth required view, Ingestion Health, is the one that reads
+`droppedTelemetryEventCount` — and that field is `null` by design (no wire field carries §16's
+client-side counters), so the view's honest rendering is "no drop count has been reported", which
+still needs the type to say it.
+
+**Why not here:** scope. Not a boundary problem — the paths are already owned.
+
+**What would make it worth doing:** before `p4.run-explorer` builds Ingestion Health. **Options:**
+(a) move the `RunSummary` interface to `platform/shared/read/run-summary-view.ts` and have
+`run-summary.ts` import it, keeping the aggregation in the API; (b) leave it and let the view
+render from the detail response alone, which cannot answer the drop count at all. (a) is a type
+relocation with no behaviour change. **Trigger:** `p4.run-explorer`'s next dispatch, or the Phase
+4 phase gate — whichever comes first.
