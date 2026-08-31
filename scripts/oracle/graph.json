@@ -112,6 +112,7 @@
     "p4.payload-safety": ["15"],
     "p4.sdk-decisions": ["13", "14", "16"],
     "p4.attestation": ["14"],
+    "p4.read-model": ["13", "14", "15", "PHASE 4"],
     "p4.run-explorer": ["PHASE 4"],
     "p4.run-summary": ["23"],
     "p5.engine-pkg": ["18", "19", "PHASE 0"],
@@ -945,7 +946,8 @@
       ],
       "note": "Probe is schema-source only: platform/shared/test already contains 'decision.recorded' in a NEGATIVE spec (rejection-reasons.spec.ts), which satisfied a wider probe before any work — the exact oracle-lie mode check:probes exists for. Added 2026-08-30 at the trigger-6 escalation (graph gap): ADR 0005 deferred decision wire types to Phase 4 but no Phase 4 node owned platform/shared. Option A of .artifacts/evidence/4/p4.sdk-decisions-blocked-wire-contract.md; B (lane widening) rejected per CLAUDE.md dispatch rules, C (client-side stub) rejected as a Sc-A false-green rerun. SECOND AMENDMENT 2026-08-30, human decision at the trigger-6 escalation (option B of .artifacts/evidence/4/p4.wire-decisions-blocked-api-seam.md): this node also owns platform/api/src/telemetry/**, because widening TELEMETRY_EVENT_TYPES makes event-mapping.ts non-exhaustive and a contract must land with its only server-side consumer. p4.attestation and p4.run-summary both forbid that surface so no two nodes claim it. BINDING, and no gate catches it: entityKindOf routes by type.startsWith('run.'), so all five new types silently classify as 'step' — a fix that only satisfies tsc and eslint leaves a green that lies. Route or explicitly exclude the five types AND fix entityKindOf; the acceptance criteria are not met by an exhaustive switch alone.",
       "own": {
-        "allowed": ["platform/shared/**", "platform/api/src/telemetry/**"]
+        "allowed": ["platform/shared/**", "platform/api/src/telemetry/**"],
+        "forbidden": ["platform/shared/read/**"]
       },
       "validate": ["pnpm typecheck", "pnpm check:boundaries", "pnpm gates"],
       "risk": "high",
@@ -1023,19 +1025,57 @@
       "changeClass": "behavior"
     },
     {
+      "id": "p4.read-model",
+      "phase": 4,
+      "lane": "contract",
+      "title": "Run detail read model — RunDetailView gains decisions, modelCalls, toolCalls and errors, and the API reads them out (§13/§14/§15)",
+      "owner": "builder",
+      "needs": ["p4.entities", "p4.wire-decisions"],
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/shared/read",
+          "pattern": "modelCalls"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/shared/read",
+          "pattern": "toolCalls"
+        }
+      ],
+      "note": "Added 2026-08-30, human decision at the p4.run-explorer trigger-6 escalation (option B of .artifacts/evidence/4/run-explorer/README.md). p4.entities landed model Decision/ModelCall/ToolCall/Error, but platform/shared/read/run-view.ts is the whole response vocabulary and declares none of them — RunDetailViewSchema is RunSummaryViewSchema.extend({ steps }) — and the Dashboard safeParses every response against it, so a field the schema does not declare cannot reach a component. The rows exist and nothing reads them out. Rejected: widening the already-DONE p4.run-summary (one node's surface swallowing another's, which its own amendment note argues against) and reopening p4.wire-decisions (one contract change split across two nodes). Probes sit in platform/shared/read, which this node now solely owns — p4.wire-decisions forbids it — so no other node's deliverable can satisfy them; both patterns are absent there today.",
+      "own": {
+        "allowed": ["platform/shared/read/**", "platform/api/src/runs/**"]
+      },
+      "validate": ["pnpm typecheck", "pnpm check:boundaries", "pnpm gates"],
+      "risk": "high",
+      "changeClass": "contract"
+    },
+    {
       "id": "p4.run-explorer",
       "phase": 4,
       "lane": "ui",
       "title": "Run Explorer — timeline, hierarchy, decisions, calls, errors, ingestion health",
       "owner": "builder",
-      "needs": ["p4.entities", "p2.dashboard-runs"],
+      "needs": ["p4.entities", "p2.dashboard-runs", "p4.read-model"],
       "probes": [
         {
           "kind": "grep",
           "dir": "platform/dashboard/src",
           "pattern": "timeline|Timeline"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/dashboard/src",
+          "pattern": "modelCalls"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/dashboard/src",
+          "pattern": "toolCalls"
         }
       ],
+      "note": "Amended 2026-08-30, human decision at the p4.run-explorer trigger-6 escalation. The single `timeline|Timeline` probe was an ORACLE FALSE GREEN: attempt 1 delivered the Execution Timeline alone — 3 of the 8 views MVP_PLAN_V3.md:1779-1789 requires — and the probe went green on it, so the oracle reported Phase 4 at 6/7 while Decisions, Model Calls, Tool Calls, Errors and Ingestion Health were unrenderable. The added probes name read-model fields (`modelCalls`, `toolCalls`) rather than component names, so they track the contract this node consumes instead of a naming convention a builder is free to change. Both are absent from platform/dashboard/src today; only the remaining views can satisfy them. Ingestion Health is deliberately NOT probed — p4.run-summary ships the dropped-event count as null because nothing on the wire carries it, so a probe for it would livelock this node on a field no Phase 4 packet can produce; the wave gate binds that DoD line instead.",
       "own": {
         "allowed": ["platform/dashboard/src/**"]
       },
