@@ -3176,3 +3176,34 @@ produces feeds Watchdog, which already covers the case at higher cost but zero f
 risk. **Worth doing when:** a Watchdog scope pass misses this class in a real diff, or diffs grow
 past the size where reading them per packet is affordable. **Ruled out:** BLOCK severity, and any
 line-count or file-count proxy — `## DESIGN` rejects those by name for punishing cohesive code.
+
+## Discovered while building the cross-reference checker (2026-09-01)
+
+### Resolve a bare-basename citation against gitignored files, not just tracked ones
+
+**Source:** the Task 4 review of the `pnpm kb xref` build (finding C2, severity-downgraded from
+an unmet requirement after adjudication).
+
+The checker resolves a citation's path through `git ls-files`, so a citation whose target is
+gitignored can never bind. Task 4 added an exemption for that class, but it keys on the
+resolution _outcome_: a fully-qualified gitignored path resolves as `ambiguous` when its
+basename collides with a tracked file, and that is the case the exemption catches. A citation
+that gives only a bare basename with no tracked homonym resolves as `missing` instead, slips
+past the exemption, and is reported as drift that no edit can ever fix.
+
+**Why deferred:** all three live instances sit in `BACKLOG.md`, which the checker runs in report
+mode, so they surface as WARN and block nothing today. Fixing it means widening path resolution
+to consult the working tree as well as the index, which is a behaviour change to the resolver
+that Tasks 6-11 all build on — not a change worth making mid-branch to silence three warnings.
+
+**Worth doing when:** the pattern appears in a red-mode file. There it is RED forever: the target
+is unreachable by construction, so the only remedies are rewriting the citation to name a
+directory or spending one of the five corpus-wide `xref-ignore` markers on a checker defect.
+Task 9's pre-commit hook blocks on RED, so that day it stops being cosmetic and starts blocking
+commits.
+
+**Ruled out:** spending an `xref-ignore` marker on any of the three. The cap is a corpus-wide
+five and exceeding it is itself RED; the marker is reserved for deliberate historical
+restatement, never for a checker false positive. The plan's own answer to its third open
+question directs a false positive to be fixed in the grammar with a scenario, which is what this
+entry defers.
