@@ -135,7 +135,10 @@ const CORE =
   /(?<![\w/.-])((?:[\w.-]+\/)*[\w.-]+\.(?:md|ts|tsx|json|js|mjs|cjs|yml|yaml|prisma)):(\d+)(?:-(\d+))?(?:@([0-9a-f]{7,40}))?/g;
 // Tightened from the plan's first draft: after the closing backtick only `\s?\(?\s?` is
 // allowed (no `)`), else "not bound: (`a.md:3`) "quoted prose later"" parses as bound.
-const TAIL = /^`?\s?\(?\s?["'“‘]([^"'”’\n]{12,240})["'”’]/;
+// Tightened again: the closing quote must match the class of the opener. A single class for
+// both let `aggregate.ts:100's blended rate … sides."` open on the possessive apostrophe and
+// close on an unrelated later `"`. The fragment then begins with a lone `s` — the tell.
+const TAIL = /^`?\s?\(?\s?(?:["“]([^"'”’\n]{12,240})["”]|['‘]([^"'”’\n]{12,240})['’])/;
 
 export function parseCitations(text: string): Citation[] {
   const out: Citation[] = [];
@@ -152,7 +155,7 @@ export function parseCitations(text: string): Citation[] {
       line,
       endLine: endText ? Number(endText) : line,
       commit: m[4] ?? null,
-      fragment: tail?.[1] ?? null,
+      fragment: tail?.[1] ?? tail?.[2] ?? null,
       index,
       numberIndex: index + path.length + 1,
       numberLength: lineText.length + (endText ? 1 + endText.length : 0),

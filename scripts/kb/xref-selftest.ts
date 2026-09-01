@@ -410,6 +410,43 @@ scenario(
   },
 );
 
+// ── citation grammar: the closing quote must match the opening class ────────────────────
+
+scenario(
+  20,
+  'parseCitations: a possessive apostrophe does not open a fragment a later " closes',
+  () => {
+    const text = [
+      'graph note: spike/aggregate.ts:100\'s blended rate lands on opposite sides."',
+      'mirror image: `notes.md:7` "an opening double quote closed by an apostrophe\'',
+    ].join('\n');
+    const got = parseCitations(text).map((c) => `${c.path}:${c.line}=${c.fragment ?? '<bare>'}`);
+    const want = ['spike/aggregate.ts:100=<bare>', 'notes.md:7=<bare>'];
+    return got.join(' ') === want.join(' ')
+      ? null
+      : `expected ${want.join(' ')}, got ${got.join(' ')}`;
+  },
+);
+
+scenario(21, 'parseCitations: matched quote pairs still bind — straight and curly', () => {
+  const text = [
+    'a `a.md:1` "straight double fragment"',
+    "b `b.md:2` 'straight single fragment'",
+    'c `c.md:3` “curly double fragment”',
+    'd `d.md:4` ‘curly single fragment’',
+  ].join('\n');
+  const got = parseCitations(text).map((c) => c.fragment ?? '<bare>');
+  const want = [
+    'straight double fragment',
+    'straight single fragment',
+    'curly double fragment',
+    'curly single fragment',
+  ];
+  return got.join(' | ') === want.join(' | ')
+    ? null
+    : `expected ${want.join(' | ')}, got ${got.join(' | ')}`;
+});
+
 // ── report ────────────────────────────────────────────────────────────────────────────
 
 function report(): number {
