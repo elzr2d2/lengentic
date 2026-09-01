@@ -183,3 +183,154 @@ export function trackedFiles(): string[] {
   }
   return trackedCache;
 }
+
+// ── findings ──────────────────────────────────────────────────────────────────────────
+
+export type Severity = 'RED' | 'WARN';
+
+export interface Finding {
+  check: 'A' | 'B' | 'C' | 'P';
+  severity: Severity;
+  file: string;
+  line: number;
+  message: string;
+  /** Check C: a bound citation whose fragment moved — `--fix` rewrites LINE[-LINE] to this. */
+  fix?: { citation: Citation; line: number; endLine: number };
+}
+
+const finding = (
+  check: Finding['check'],
+  severity: Severity,
+  file: string,
+  line: number,
+  message: string,
+): Finding => ({ check, severity, file, line, message });
+
+// ── exemptions that live in the document ──────────────────────────────────────────────
+
+/** 7–40 hex chars with at least one digit and one letter: a commit, never an English word. */
+const COMMITISH = /(?<![\w])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w])/;
+const IGNORE = /<!--\s*xref-ignore:\s*([^>]*?)\s*-->/;
+
+export function ignoreReason(blockText: string): string | null {
+  const m = IGNORE.exec(blockText);
+  if (!m) return null;
+  const reason = (m[1] ?? '').trim();
+  return reason.length >= 20 ? reason : null;
+}
+
+export function hasIgnoreMarker(blockText: string): boolean {
+  return IGNORE.test(blockText);
+}
+
+export function isHistorical(blockText: string): boolean {
+  return COMMITISH.test(blockText) || ignoreReason(blockText) !== null;
+}
+
+// ── check C ───────────────────────────────────────────────────────────────────────────
+
+export interface CheckCInput {
+  file: string;
+  text: string;
+  tracked: string[];
+  readTarget: (file: string) => string | null;
+}
+
+/**
+ * A JSON source has no blank lines, so `blocksOf` would make it one block and a commit hash
+ * in any note would exempt every citation in the file. One line, one block, for JSON.
+ */
+export function linesAsBlocks(text: string): Block[] {
+  return text
+    .split(/\r?\n/)
+    .map((l, i) => ({ line: i + 1, endLine: i + 1, text: l, fenced: false }))
+    .filter((b) => b.text.trim() !== '');
+}
+
+export function checkC(input: CheckCInput, severity: Severity): Finding[] {
+  const out: Finding[] = [];
+  const srcBlocks = input.file.endsWith('.json') ? linesAsBlocks(input.text) : blocksOf(input.text);
+  const targetBlocks = new Map<string, Block[]>();
+
+  for (const c of parseCitations(input.text)) {
+    if (c.commit !== null) continue;
+    const at = lineOfIndex(input.text, c.index);
+    const holder = blockAt(srcBlocks, at);
+    if (holder && isHistorical(holder.text)) continue;
+
+    const r = resolvePath(c.path, input.tracked);
+    if (r.kind === 'missing') {
+      out.push(finding('C', severity, input.file, at, `${c.raw}: file is not tracked`));
+      continue;
+    }
+    if (r.kind === 'ambiguous') {
+      out.push(
+        finding('C', severity, input.file, at, `${c.raw}: ambiguous — ${r.candidates.join(', ')}`),
+      );
+      continue;
+    }
+    const target = input.readTarget(r.file);
+    if (target === null) {
+      out.push(finding('C', severity, input.file, at, `${c.raw}: ${r.file} is unreadable`));
+      continue;
+    }
+    const total = target.split(/\r?\n/).length;
+    if (c.endLine > total) {
+      out.push(finding('C', severity, input.file, at, `${c.raw}: ${r.file} has ${total} lines`));
+      continue;
+    }
+    if (c.fragment === null) continue; // bare: existence is the whole rule
+
+    let blocks = targetBlocks.get(r.file);
+    if (!blocks) {
+      blocks = blocksOf(target);
+      targetBlocks.set(r.file, blocks);
+    }
+    const want = normalize(c.fragment);
+    const covering = blocks.filter((b) => b.endLine >= c.line && b.line <= c.endLine);
+    if (covering.some((b) => normalize(b.text).includes(want))) continue;
+
+    const elsewhere = blocks.filter((b) => normalize(b.text).includes(want));
+    if (elsewhere.length === 1) {
+      const b = elsewhere[0] as Block;
+      out.push({
+        ...finding(
+          'C',
+          severity,
+          input.file,
+          at,
+          `${c.raw}: fragment moved to ${r.file}:${b.line} — run --fix`,
+        ),
+        fix: { citation: c, line: b.line, endLine: c.line === c.endLine ? b.line : b.endLine },
+      });
+      continue;
+    }
+    out.push(
+      finding(
+        'C',
+        severity,
+        input.file,
+        at,
+        elsewhere.length === 0
+          ? `${c.raw}: fragment "${c.fragment}" is no longer in ${r.file}`
+          : `${c.raw}: fragment is in ${elsewhere.length} blocks of ${r.file} — bind a longer one`,
+      ),
+    );
+  }
+  return out;
+}
+
+/** Rewrites every repairable citation in one source text, last offset first. */
+export function applyFixes(text: string, findings: Finding[]): { text: string; applied: number } {
+  const fixes = findings
+    .filter((f): f is Finding & { fix: NonNullable<Finding['fix']> } => f.fix !== undefined)
+    .sort((a, b) => b.fix.citation.numberIndex - a.fix.citation.numberIndex);
+  let out = text;
+  for (const f of fixes) {
+    const c = f.fix.citation;
+    const replacement =
+      f.fix.line === f.fix.endLine ? `${f.fix.line}` : `${f.fix.line}-${f.fix.endLine}`;
+    out = out.slice(0, c.numberIndex) + replacement + out.slice(c.numberIndex + c.numberLength);
+  }
+  return { text: out, applied: fixes.length };
+}

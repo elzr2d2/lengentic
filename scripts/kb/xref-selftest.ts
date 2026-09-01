@@ -8,7 +8,18 @@
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
-import { blocksOf, blockAt, normalize, parseCitations, resolvePath } from './xref.ts';
+import {
+  applyFixes,
+  blockAt,
+  blocksOf,
+  checkC,
+  ignoreReason,
+  isHistorical,
+  lineOfIndex,
+  normalize,
+  parseCitations,
+  resolvePath,
+} from './xref.ts';
 
 interface Result {
   n: number;
@@ -118,6 +129,109 @@ scenario(6, 'resolvePath: repo-relative, unique basename, ambiguous, missing', (
   const got = [r('CLAUDE.md'), r('merge-rules.ts'), r('validator.md'), r('nope.md')].join(' ');
   const want = 'CLAUDE.md a/merge-rules.ts ambiguous missing';
   return got === want ? null : `expected ${want}, got ${got}`;
+});
+
+scenario(7, 'lineOfIndex maps a text offset to its 1-based line number', () => {
+  const text = 'first\nsecond\nthird';
+  const idx = text.indexOf('third');
+  const got = lineOfIndex(text, idx);
+  return got === 3 ? null : `expected 3, got ${got}`;
+});
+
+// ── check C ───────────────────────────────────────────────────────────────────────────
+
+const PLAN = `# PART III
+
+- [ ] R4 and R5 both emit.
+- [ ] \`spike/\` is deleted.
+
+**Validation gate.** GREEN advances.
+`;
+const targets = (files: Record<string, string>) => (f: string) => files[f] ?? null;
+
+scenario(8, 'FC: a bound citation whose fragment left the block is RED', () => {
+  const src = 'owns deleting `spike/` (`MVP_PLAN_V3.md:3` "R1 and R2 both emit").';
+  const f = checkC(
+    {
+      file: 'CLAUDE.md',
+      text: src,
+      tracked: ['MVP_PLAN_V3.md'],
+      readTarget: targets({ 'MVP_PLAN_V3.md': PLAN }),
+    },
+    'RED',
+  );
+  return f.length === 1 && f[0]?.severity === 'RED' && /no longer in/.test(f[0].message)
+    ? null
+    : `expected one RED "no longer in", got ${JSON.stringify(f)}`;
+});
+
+scenario(9, 'FC-bare: the same citation without a fragment stays green', () => {
+  const src = 'owns deleting `spike/` (`MVP_PLAN_V3.md:3`).';
+  const f = checkC(
+    {
+      file: 'CLAUDE.md',
+      text: src,
+      tracked: ['MVP_PLAN_V3.md'],
+      readTarget: targets({ 'MVP_PLAN_V3.md': PLAN }),
+    },
+    'RED',
+  );
+  return f.length === 0 ? null : `expected no finding, got ${JSON.stringify(f)}`;
+});
+
+scenario(
+  10,
+  'FC-fix: a fragment found in exactly one other block is repairable, and --fix rewrites',
+  () => {
+    const src = 'owns deleting `spike/` (`MVP_PLAN_V3.md:3` "spike/ is deleted").';
+    const f = checkC(
+      {
+        file: 'CLAUDE.md',
+        text: src,
+        tracked: ['MVP_PLAN_V3.md'],
+        readTarget: targets({ 'MVP_PLAN_V3.md': PLAN }),
+      },
+      'RED',
+    );
+    if (f.length !== 1 || !f[0]?.fix)
+      return `expected one fixable finding, got ${JSON.stringify(f)}`;
+    const { text, applied } = applyFixes(src, f);
+    return applied === 1 && text.includes('`MVP_PLAN_V3.md:4` "spike/ is deleted"')
+      ? null
+      : `expected the line rewritten to 4, got ${text}`;
+  },
+);
+
+scenario(
+  11,
+  'a block carrying a commit hash, or an @commit citation, is historical and skipped',
+  () => {
+    const src = [
+      'At `8ce66d5` line 278 said `CLAUDE.md:999` "nothing about spike".',
+      '',
+      'And `CLAUDE.md:999@8ce66d5` too.',
+    ].join('\n');
+    const f = checkC(
+      {
+        file: 'spec.md',
+        text: src,
+        tracked: ['CLAUDE.md'],
+        readTarget: targets({ 'CLAUDE.md': 'one line' }),
+      },
+      'RED',
+    );
+    const hist =
+      isHistorical('defaced facade decade') === false && isHistorical('see 130c43a') === true;
+    return f.length === 0 && hist
+      ? null
+      : `expected no findings and hex-word safety, got ${JSON.stringify(f)} ${hist}`;
+  },
+);
+
+scenario(12, 'an xref-ignore needs a reason of at least 20 characters', () => {
+  const ok = ignoreReason('x <!-- xref-ignore: restates the 08-18 contradiction on purpose -->');
+  const short = ignoreReason('x <!-- xref-ignore: history -->');
+  return ok !== null && short === null ? null : `expected reason/null, got ${ok}/${short}`;
 });
 
 // ── report ────────────────────────────────────────────────────────────────────────────
