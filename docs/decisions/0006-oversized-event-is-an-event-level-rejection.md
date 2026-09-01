@@ -39,11 +39,11 @@ Concretely:
 1. `platform/shared/schema/**` gains a rejection reason for an oversized event, exported as a
    named constant beside the other §12 rejection reasons. It is **event-level**: the offending
    event is `REJECTED`, the other 499 in the batch are still processed. This follows
-   `MVP_PLAN_V3.md:543-544` — "A malformed event never rejects the whole batch. One bad event
+   `MVP_PLAN_V3.md:543-544` "A malformed event never rejects the whole batch. One bad event
    in a 500-event flush must not discard 499 good ones."
 2. The measurement is on the serialized event, and the limit constant is the one already
    declared for it. There is one number, in one place, read by both sides.
-3. The SDK's capping pipeline (`MVP_PLAN_V3.md:788` — "safe serialization → redaction → size
+3. The SDK's capping pipeline (`MVP_PLAN_V3.md:788` "safe serialization → redaction → size
    cap / truncation") measures the whole event after per-field capping. If the event still
    exceeds the limit, the SDK truncates further and sets the `*Truncated` flag rather than
    sending something it knows the server will refuse.

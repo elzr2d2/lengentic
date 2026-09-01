@@ -1112,9 +1112,9 @@ the reason this could not wait.
 
 ### Defect 1 — "validation gate" vs "human approval gate" — is meaning drift, and no string method reaches it
 
-**Source:** `docs/specs/2026-08-18-cross-reference-checker.md:59-74`, which classifies it out of
-scope and owes this entry (spec implementation step 8). Original observation: the 5a gate,
-2026-08-18.
+**Source:** `docs/specs/2026-08-18-cross-reference-checker.md:68` "The three defects, honestly
+classified", which classifies it out of scope and owes this entry (spec implementation step 10).
+Original observation: the 5a gate, 2026-08-18.
 
 `CLAUDE.md` `## Plan discipline` calls a phase boundary a **validation gate**; the plan's phase
 prose reads in places as a **human approval gate**. Nine different phrasings across the two
@@ -1136,7 +1136,8 @@ answer once, in one place.
 ### The product half — a decision graph inside LenGentic — is out of scope, and revival is trigger 2
 
 **Source:** human decision 2026-08-18, at the first question of the decision-graph design loop.
-Recorded in `docs/specs/2026-08-18-cross-reference-checker.md:15-23`.
+Recorded in `docs/specs/2026-08-18-cross-reference-checker.md:29` "The product half of the
+original request".
 
 The original request had two halves. The dev-harness half became the cross-reference checker
 spec. The product half — a decision graph _inside_ the product, recording and linking the
@@ -1432,7 +1433,9 @@ structure; `validate-phase:45-46` mis-cites where GREEN's four sources are defin
 commit; `review-diff:3` says per-commit review while `agent-activation.json` and
 `CONTEXT.md:131` say per-wave; `agent-activation.json:82` cites `pnpm lanes selftest` (alias is
 `check:lanes`); the "disjoint by construction" comment is false and already logged at
-`BACKLOG.md:1067-1104`; `format-changed.mjs:40` exempts `MVP_PLAN.md` but not `MVP_PLAN_V3.md`;
+`BACKLOG.md:1067-1104`; `format-changed.mjs:40` (deleted at `d6a158a`, folded into `scripts/precommit.ts`'s staged-scope
+ladder) exempted `MVP_PLAN.md` but not `MVP_PLAN_V3.md` — moot now that the replacement formats
+every staged file uniformly, with no per-file exemption;
 `validate-handoff.mjs` brace-regex is non-greedy and can truncate nested objects outside a
 fence; three definitions of DONE (lane schema, phase GREEN, `log.finish()`) with only the first
 machine-enforced; ADR 0004 vs `agent-activation.json` disagree by design with the machine output
@@ -2261,7 +2264,7 @@ The finding was carried in prose across two repairs and never written down, whil
 twice as filed. `review-diff` §5 names this exact failure mode. Recording that here because the
 process defect is the more expensive half: a finding believed filed is never re-derived.
 
-**The technical substance, now at two sites.** `platform/api/test/nested-steps/nested-steps.integration.spec.ts:384-398`
+**The technical substance, now at two sites.** `platform/api/test/nested-steps/nested-steps.integration.spec.ts:256-270`
 inlines the logic of `killAndWait` (`platform/api/test/stale-on-kill/kill-mid-run.integration.spec.ts:164-172`)
 without naming it:
 
@@ -2321,7 +2324,7 @@ group).
 
 That entry says it is worth doing "when anything starts _asserting_ on these counters as an
 accounting identity" and names `stale-on-kill/fixtures/abandoned-run.ts:51` as the first such
-site. `nested-steps.integration.spec.ts:426-428` is now the second — it asserts `recorded` is 10,
+site. `nested-steps.integration.spec.ts:298-300` is now the second — it asserts `recorded` is 10,
 `delivered` is 10 and `undeliverable` is 0. The condition is met; the entry is no longer waiting
 on a hypothetical.
 

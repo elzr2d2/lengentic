@@ -33,7 +33,7 @@ until the directory is thirty files deep and nobody reads any of them.
 
 ## Why the folder exists at all
 
-`BACKLOG.md:152` — "Nine-agent roster — deliberate deviation from §18 / v3 §9". Source:
+`BACKLOG.md:135` "Nine-agent roster — deliberate deviation from §18 / v3 §9". Source:
 "human decision, 2026-08-16". It records what was chosen, why, what it costs, and the
 mechanism that will detect if it was wrong.
 

@@ -17,7 +17,7 @@ Cheap to overturn — see Detection.
 
 ## Context
 
-`MVP_PLAN_V3.md:505-506` — "Completion fields (completedAt, status, output) — last writer wins by
+`MVP_PLAN_V3.md:505-506` "Completion fields (completedAt, status, output) — last writer wins by
 occurredAt, not arrival order." Two completion events carrying an **identical** `occurredAt` are
 unspecified for `completedAt` and `output`.
 

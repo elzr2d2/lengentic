@@ -27,7 +27,7 @@ Parallelism is never decided by judgement. `CLAUDE.md:99` states it:
 > `execution_decision`.
 
 The gate is fifteen hard requirements (R1-R15) evaluated by `scripts/lanes.ts`, and the
-default resolves the wrong way on purpose. `docs/PARALLEL_EXECUTION.md:288`:
+default resolves the wrong way on purpose. `docs/PARALLEL_EXECUTION.md:186`:
 
 > **Sequential is the default and unknown counts as false.** A requirement nobody checked
 > is not a requirement that passed.

@@ -1301,7 +1301,7 @@
       "phase": 5,
       "lane": "engine",
       "title": "spike/ deleted — 5b wave 4, NOT 5a",
-      "note": "MVP_PLAN_V3.md:2236 puts this in the 5b Definition of Done, and .artifacts/plans/remaining-roadmap.md:369-374 assigns it to wave 4: 'here, not earlier. Until this packet it is the independent cross-check on 5a's numbers.' The needs edge below is satisfied after wave 3, which makes the node look available at the 5a gate. It is not. Deleting spike/ destroys the only on-disk record of the seven rows where the spike disagrees with the grid by design.",
+      "note": "MVP_PLAN_V3.md:2262 'spike/ is deleted' puts this in the 5b Definition of Done, and .artifacts/plans/remaining-roadmap.md:375 'spike/ is deleted here, not earlier' assigns it to wave 4. The needs edge below is satisfied after wave 3, which makes the node look available at the 5a gate. It is not. Deleting spike/ destroys the only on-disk record of the seven rows where the spike disagrees with the grid by design.",
       "owner": "builder",
       "needs": ["p5.det-candidate"],
       "probes": [

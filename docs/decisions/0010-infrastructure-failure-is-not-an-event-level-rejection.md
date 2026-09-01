@@ -90,6 +90,7 @@ logs and artifacts only. The leak was reproduced (T1): the wire carried
 `…\platform\api\dist\telemetry\telemetry.repository.js:157:22`, four lines of compiled
 source, and SQLSTATE `22008`; the lock-contention variant additionally echoed the
 `pg_advisory_xact_lock` SQL.
+<!-- xref-ignore: verbatim forensic reproduction of a leaked stack trace, not a live citation -->
 
 **Rejected: admitting `PROCESSING_FAILED` to the wire contract as a retryable event-level
 code.** It is the smaller diff and it buys the wrong thing. It would redefine `REJECTED` from

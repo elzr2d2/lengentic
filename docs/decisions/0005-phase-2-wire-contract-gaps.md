@@ -109,7 +109,7 @@ A decision nobody can catch being violated is a decision that will be violated.
   assert the per-event `DUPLICATE` results, not only the row counts.
 - 3 is enforced by the Zod union in `platform/shared/schema/**` rejecting an unknown type, and
   by a negative fixture asserting the rejection is per-event and does not fail the batch
-  (`MVP_PLAN_V3.md:1611`, "A malformed event in a batch rejects only itself").
+  (`MVP_PLAN_V3.md:1611` "A malformed event in a batch rejects only itself").
 - 4 is enforced by a test that advances a clock past the threshold and asserts the response
   flips to `STALE` while the stored row still reads `RUNNING`. If the stored row can ever read
   `STALE`, the derivation has leaked into persistence.

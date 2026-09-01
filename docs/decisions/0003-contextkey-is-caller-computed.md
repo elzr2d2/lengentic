@@ -10,7 +10,7 @@ lives in the plan; this record holds the trade-off and its detection.
 
 ## Context
 
-`MVP_PLAN_V3.md:695` — "Normalization is the hardest problem in the product":
+`MVP_PLAN_V3.md:695` "Normalization is the hardest problem in the product":
 
 ```text
 Too coarse  →  distinct decisions merge   →  fake dominance

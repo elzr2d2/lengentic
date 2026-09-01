@@ -28,7 +28,8 @@ No new dependencies.
 - `scripts/kb/xref.ts` imports from `../oracle.ts` **type-only** (`import type`). `oracle.ts`
   imports `./kb/xref.ts` at runtime; a value import back would be a cycle.
 - No LLM step, no embeddings, no hand-typed ledger, no suppression _list_: exemptions live in
-  the document (commit hash in the block, or `<!-- xref-ignore: reason -->`, reason ≥ 20 chars).
+  the document (a commit hash in the block, or an `xref-ignore` HTML comment whose reason text
+  is at least 20 characters).
 - Line width 100, prettier + eslint clean before every commit (`pnpm exec prettier --write`,
   `pnpm exec eslint`). Commit prefix `feat(harness):` / `fix(harness):` / `docs:`.
 - Every "run it" step quotes real output. A fixture that stays green is a failed criterion.
@@ -469,8 +470,9 @@ export function trackedFiles(): string[] {
 }
 ```
 
-Note the scenario-4 trap: `(`a.md:3`) "quoted prose later"` — TAIL allows `` ` `` then `)` then a
-space then a quote, so that one **is** parsed bound by the regex above. That is wrong; tighten:
+Note the scenario-4 trap: `(`FILE.ext:N`) "quoted prose later"` — TAIL allows `` ` `` then `)`
+then a space then a quote, so that one **is** parsed bound by the regex above. That is wrong;
+tighten:
 after the closing backtick only `\s?\(?\s?` is allowed (no `)`). Use:
 
 ```ts

@@ -187,7 +187,7 @@ Wire the pre-commit hook when the Phase 1 debt batch lands it. Do not block on t
 Three retro fixtures, each a repository state restored from history, each of which must turn the
 checker RED:
 
-- F2 — `CLAUDE.md:278`'s original text, against a graph carrying `subphase: "5b"`. Check A.
+- F2 — the original text at `CLAUDE.md:278`, against a graph carrying `subphase: "5b"`. Check A.
 - F3 — the `graph.json` brief citing "§21 output" on a 5a node. Check B.
 - FC — a document carrying a **bound** citation whose enclosing block no longer contains the
   quoted fragment. Check C. The live `CLAUDE.md:288` citation of `MVP_PLAN_V3.md:2236` is the
