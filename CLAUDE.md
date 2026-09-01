@@ -297,3 +297,87 @@ DoD checkboxes, and was RED. And cross-agent agreement is evidence of independen
 correctness — two blind computations agreed, cell for cell, on a wrong column; only an
 adversarial pass with a different question caught it
 (`.artifacts/evidence/5a/fixture-semantics-review.md`).
+
+## Coding principles (Karpathy)
+
+Four behavioural guidelines, merged in from
+`forrestchang/andrej-karpathy-skills`. They bias toward caution over speed; for trivial tasks,
+use judgement.
+
+**They are subordinate to everything above.** Where one conflicts with a rule in this file,
+`docs/ENGINEERING_STANDARDS.md`, `CONTEXT.md` or `MVP_PLAN_V3.md`, the project rule wins and the
+principle is read as advice about _how_ to execute it. The known collision is stated under
+Think Before Coding.
+
+### 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+
+- State your assumptions explicitly.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, name what's confusing.
+
+The upstream text ends each of those with "ask the human". Here it does not. Plan discipline
+already decides who gets asked: the six escalation triggers, and nothing else. Unclear and
+below a trigger means **decide from the rules, document the assumption in the handoff, and
+continue** — prefer the reversible option. `frame-phase` is where open decisions get settled in
+bulk, before a packet is cut, which is cheaper than settling them mid-implementation.
+
+### 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+Already a standard, and stated better there: `DESIGN-1` (an abstraction needs a second real
+variation), `DESIGN-6` (the named smells), `PERF-1` (no speculative optimization), `REFAC-7`
+(no refactor for an imaginable abstraction), and the five-question anti-overengineering gate
+under `## DESIGN`. Owned by **Reviewer**, deliberately unmechanised.
+
+Upstream's "if you write 200 lines and it could be 50, rewrite it" is **not** adopted. The
+standards file rejects every line-count proxy for complexity by name, because each one
+punishes the cohesive code it was meant to protect. Use the five questions.
+
+Speculative value that is real goes to `BACKLOG.md`, never into the diff.
+
+### 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+Already a standard: `REFAC-3` (a change stays inside its blast radius — Watchdog scope pass
+plus `pnpm lanes check`), `REFAC-4` (debt discovered is recorded, not followed), `REFAC-6`
+(smallest diff that gets the same improvement), and the three lists under `## REFAC` — what a
+micro-refactor is, what is not one, and what Reviewer does _not_ flag. Orphan cleanup is the
+"delete dead code the change exposed" clause; pre-existing dead code is a `BACKLOG.md` entry.
+
+The one line upstream has that the standards did not is now `DESIGN-7`: match the prevailing
+style of the code you are editing, even where you would write it differently.
+
+The test: every changed line traces to the request. That is the same boundary a lane's
+`allowed_paths` draws, one level down — inside an allowed file, the packet is still the limit.
+
+### 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Turn tasks into verifiable goals:
+
+- "Add validation" → "write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "write a test that reproduces it, then make it pass"
+- "Refactor X" → "ensure tests pass before and after"
+
+For multi-step work, state the plan as steps with their checks:
+
+```
+1. [step] → verify: [check]
+2. [step] → verify: [check]
+```
+
+A criterion whose check is "the command exited 0" is a weak criterion — a command that did not
+exercise the criterion is not evidence for it. Each acceptance criterion carries its own
+expected, actual and result; that is what `pnpm lanes handoff` enforces and what makes `DONE` a
+claim about evidence rather than about an exit code.
+
+**These principles are working if:** fewer unnecessary changes in diffs, fewer rewrites due to
+overcomplication, and assumptions surfaced in the handoff rather than discovered in review.

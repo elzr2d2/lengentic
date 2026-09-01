@@ -170,14 +170,15 @@ the findings only a Reviewer can produce.
 
 ## DESIGN — shape
 
-| ID       | Class      | Rule                                                                                                                            | Enforced by                                                                  |
-| -------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| DESIGN-1 | `[MUST]`   | An abstraction is introduced when a second real variation exists — not for a hypothetical one.                                  | **Reviewer**, anti-overengineering gate below                                |
-| DESIGN-2 | `[MUST]`   | Duplication is removed when both copies are the same domain rule and change for the same reason.                                | **Reviewer.** Textual similarity is not sameness, and a tool only sees text. |
-| DESIGN-3 | `[MUST]`   | Cyclomatic complexity ≤ 15 in `platform/**` and `playground/**`.                                                                | `complexity` (ESLint)                                                        |
-| DESIGN-4 | `[SHOULD]` | A module's public contract is readable without loading its implementation, and its implementation is deeper than its interface. | **Reviewer** + the `codebase-design` skill                                   |
-| DESIGN-5 | `[SHOULD]` | Pure domain rules with I/O at the edge. The analysis engine is the enforced instance of this.                                   | `analysis-engine-is-pure` (cruiser) for that package; Reviewer elsewhere     |
-| DESIGN-6 | `[AVOID]`  | `utils.ts`, a `BaseService`, a repository that renames Prisma methods, a wrapper class with no behaviour.                       | Reviewer                                                                     |
+| ID       | Class      | Rule                                                                                                                                                   | Enforced by                                                                    |
+| -------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| DESIGN-1 | `[MUST]`   | An abstraction is introduced when a second real variation exists — not for a hypothetical one.                                                         | **Reviewer**, anti-overengineering gate below                                  |
+| DESIGN-2 | `[MUST]`   | Duplication is removed when both copies are the same domain rule and change for the same reason.                                                       | **Reviewer.** Textual similarity is not sameness, and a tool only sees text.   |
+| DESIGN-3 | `[MUST]`   | Cyclomatic complexity ≤ 15 in `platform/**` and `playground/**`.                                                                                       | `complexity` (ESLint)                                                          |
+| DESIGN-4 | `[SHOULD]` | A module's public contract is readable without loading its implementation, and its implementation is deeper than its interface.                        | **Reviewer** + the `codebase-design` skill                                     |
+| DESIGN-5 | `[SHOULD]` | Pure domain rules with I/O at the edge. The analysis engine is the enforced instance of this.                                                          | `analysis-engine-is-pure` (cruiser) for that package; Reviewer elsewhere       |
+| DESIGN-6 | `[AVOID]`  | `utils.ts`, a `BaseService`, a repository that renames Prisma methods, a wrapper class with no behaviour.                                              | Reviewer                                                                       |
+| DESIGN-7 | `[SHOULD]` | Code matches the prevailing style of the module it is edited into — naming, idiom, comment density — even where the author would write it differently. | **Reviewer.** Prettier and ESLint settle formatting; neither can see an idiom. |
 
 ### The anti-overengineering gate
 

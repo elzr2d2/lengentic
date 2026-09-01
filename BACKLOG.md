@@ -3140,3 +3140,32 @@ documents the collision at its head; nothing in `platform/shared/read/**` does.
 exported from the same barrel. `RunSummaryView` for the list row and `RunMetricsView` (or
 `RunSummaryMetrics`) for §23's roll-up keeps the reader honest. **Trigger:** the `RunSummary`
 relocation above — same dispatch, do not split them.
+
+---
+
+## Discovered during the Karpathy-principles merge into `CLAUDE.md` (2026-09-01)
+
+### Make REFAC-3 mechanical: a diff-scope check for churn outside the packet's surface
+
+**Source:** merging the four `forrestchang/andrej-karpathy-skills` principles into `CLAUDE.md`
+(2026-09-01). Three of the four already had a home in `docs/ENGINEERING_STANDARDS.md`; the
+"Surgical Changes" principle was the only one whose enforcement is a person reading a diff.
+
+`REFAC-3` says a change stays inside its blast radius, and `pnpm lanes check <id>` proves that at
+**path** granularity — the lane wrote only inside `allowed_paths`. Inside an allowed file nothing
+checks anything, so the failure mode the principle names is invisible to every rung of the
+enforcement ladder: a packet edits its own file and, in passing, reformats a neighbouring
+function, rewraps comments, or renames a local nobody asked about. Watchdog catches it by
+reading, which costs a dispatch and a context window and scales with diff size.
+
+The check that would hold it: per hunk in the diff, classify as behavioural or cosmetic
+(whitespace-only, comment-only, pure reflow — `git diff -w` collapsing the hunk to nothing is the
+cheap first approximation), then flag cosmetic hunks in files the packet's deliverables do not
+name. Rung 5 of the ladder, `scripts/check-diff-scope.ts`, WARN not BLOCK — a legitimate
+formatter run exists and only a reader tells the two apart, exactly as `TEST-2b` handles skips.
+
+**Why deferred:** it is harness work with no Phase 4 Definition-of-Done binding, and the WARN it
+produces feeds Watchdog, which already covers the case at higher cost but zero false-positive
+risk. **Worth doing when:** a Watchdog scope pass misses this class in a real diff, or diffs grow
+past the size where reading them per packet is affordable. **Ruled out:** BLOCK severity, and any
+line-count or file-count proxy — `## DESIGN` rejects those by name for punishing cohesive code.
