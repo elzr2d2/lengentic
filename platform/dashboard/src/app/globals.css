@@ -401,3 +401,158 @@ a {
 .placement-unplaced {
   color: var(--orphan);
 }
+
+/* ---------------------------------------------------------------------------
+   The Phase 4 collections — Decisions, Model Calls, Tool Calls, Errors — and the
+   Ingestion Health reading over them.
+
+   One row shape across all four cards on purpose: a reader who has learned that a bordered
+   mono chip is "why this row is not the ordinary case" on the Steps card should not have to
+   learn it again three more times. `.placement` and `.note-alarm` are reused unchanged for
+   the same reason; only the tones below are new.
+   --------------------------------------------------------------------------- */
+
+/* An absence the API never answered, as opposed to one it did. `.note-alarm` is the Dashboard
+   accusing itself of a defect and stays reserved for that; this is the response being short of
+   an answer, which is neither a fault nor a finding about the run. */
+.note-absent {
+  color: var(--orphan);
+}
+
+.telemetry-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+
+.telemetry-row {
+  padding: 0.75rem 0;
+}
+
+.telemetry-row + .telemetry-row {
+  border-top: 1px solid var(--border);
+}
+
+.telemetry-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.telemetry-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.telemetry-tag {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.telemetry-tag-ok {
+  color: var(--ok);
+}
+
+.telemetry-tag-down {
+  color: var(--down);
+}
+
+.telemetry-tag-muted {
+  color: var(--text-muted);
+}
+
+/* Two columns where there is room and one where there is not. The fields are label→value
+   pairs and read as a table; forcing them into a single column on a wide screen buries the
+   later ones (a Decision has seven). */
+.telemetry-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0 1.5rem;
+  margin-top: 0.35rem;
+}
+
+.field {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.25rem 0;
+  overflow-wrap: anywhere;
+}
+
+.field-label {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.telemetry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-top: 0.4rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* A payload and its size measurement are one object. §15's rule is that truncation loses the
+   payload and not the measurement, so the label — which carries the truncation flag — is
+   attached to the body rather than floating in a summary elsewhere on the card. */
+.payload {
+  margin-top: 0.5rem;
+}
+
+.payload-label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.25rem;
+}
+
+.payload-truncated .payload-label {
+  color: var(--warn);
+}
+
+/* Scrolled, never shortened. §15 has already capped what is here at 32KB, and a second cut in
+   CSS would hide bytes the page was given without saying it had. A scrollbar says "there is
+   more"; an ellipsis the component invented does not. */
+.payload-body {
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  max-height: 14rem;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.payload-truncated .payload-body {
+  border-left-color: var(--warn);
+}
+
+.placement-succeeded {
+  color: var(--ok);
+}
+
+.placement-failed {
+  color: var(--down);
+}
+
+/* A gap in what the caller reported — a null token count, a missing contextKey, a row that
+   exists only because an attestation arrived for it. Not a fault, and deliberately not the
+   same colour as one: `--orphan` is already the Dashboard's "this is placed, but not the way
+   you would assume" tone on the Steps and Timeline cards. */
+.placement-unreported,
+.placement-excluded,
+.placement-attestation-only {
+  color: var(--orphan);
+}

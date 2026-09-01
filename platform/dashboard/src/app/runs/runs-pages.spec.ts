@@ -831,3 +831,596 @@ describe('GET /runs/[id] — the run detail page', () => {
     expect(emittedSteps(markup)).toStrictEqual([]);
   });
 });
+
+/**
+ * The five remaining Run Explorer views — Decisions, Model Calls, Tool Calls, Errors and
+ * Ingestion Health (`MVP_PLAN_V3.md:1785-1789`).
+ *
+ * ## Why the fixtures below lead with the empty shapes
+ *
+ * `CLAUDE.md` ## Product claims: "write the negative fixtures before the positive path".
+ * These five cards render four `.optional()` collections, and the failure mode is not a
+ * missing row — it is a card that answers a question the API never answered. `entityKindOf`
+ * returns `null` for all five Phase 4 event types today, so `GET /v1/runs/:id` carries
+ * `decisions: []` at best and the field not at all at worst; a page that prints "0 decisions"
+ * over either is asserting something about the agent from a gap in the platform.
+ *
+ * `RUN_WITH_TREE` above is the *absent* fixture and is reused here unchanged: it is typed
+ * `satisfies RunDetailView` while naming none of the four collections, which is also one of
+ * the three places in the repo where that optionality is pinned at compile time. Do not add
+ * collections to it.
+ */
+const RUN_WITH_TELEMETRY = {
+  id: 'run-telemetry',
+  traceId: 'trace-telemetry',
+  workflowName: 'checkout-agent',
+  workflowVersion: '1.4.0',
+  status: 'FAILED',
+  startedAt: '2026-08-21T11:00:00.000Z',
+  completedAt: '2026-08-21T11:00:10.000Z',
+  receivedAt: '2026-08-21T19:00:00.000Z',
+  lastEventAt: '2026-08-21T19:00:00.000Z',
+  metadata: null,
+  steps: [],
+  decisions: [
+    {
+      id: 'decision-01-strategy',
+      runId: 'run-telemetry',
+      stepId: 'step-01',
+      // §29's execution strategy is "an ordinary Decision" — MVP_PLAN_V3.md:641. Its evidence
+      // is `rawContext`, "the awarenessContext object", and the Decisions view is required to
+      // show it: "strategy evidence per §29".
+      decisionType: 'execution_strategy',
+      contextKey: 'batch:small',
+      contextKeyVersion: 'v1',
+      rawContext: { fanOut: 3, sharedState: false },
+      availableOptions: ['sequential', 'parallel'],
+      selectedOption: 'parallel',
+      outcome: 'SUCCESS',
+      outcomeAttestedBy: 'CALLER',
+      outcomeObservedAt: '2026-08-21T11:00:09.000Z',
+      createdAt: '2026-08-21T11:00:01.000Z',
+    },
+    {
+      // §14's attestation-first row: an attestation arrived for a `decisionId` nothing had
+      // recorded, and "is accepted and stored, not rejected". Everything the record event
+      // would have written is null, and the card has to be able to say so rather than render
+      // five blanks that read as a rendering fault.
+      id: 'decision-02-orphan-attestation',
+      runId: 'run-telemetry',
+      stepId: null,
+      decisionType: null,
+      contextKey: null,
+      contextKeyVersion: null,
+      rawContext: null,
+      availableOptions: null,
+      selectedOption: null,
+      outcome: 'FAILURE',
+      outcomeAttestedBy: 'UNKNOWN',
+      outcomeObservedAt: '2026-08-21T11:00:08.000Z',
+      createdAt: '2026-08-21T11:00:08.000Z',
+    },
+  ],
+  modelCalls: [
+    {
+      id: 'call-01-complete',
+      runId: 'run-telemetry',
+      stepId: 'step-01',
+      provider: 'anthropic',
+      model: 'claude-opus-4',
+      latencyMs: 1200,
+      inputTokens: 1500,
+      outputTokens: 240,
+      status: 'ok',
+      metadata: null,
+      createdAt: '2026-08-21T11:00:02.000Z',
+    },
+    {
+      // §13 marks exactly the two token fields optional. `run-view.ts`: a `0` here "would read
+      // as 'this call used no tokens' — a measurement the platform never received."
+      id: 'call-02-no-usage',
+      runId: 'run-telemetry',
+      stepId: 'step-01',
+      provider: 'openai',
+      model: 'gpt-5',
+      latencyMs: 800,
+      inputTokens: null,
+      outputTokens: null,
+      status: 'error',
+      metadata: null,
+      createdAt: '2026-08-21T11:00:03.000Z',
+    },
+  ],
+  toolCalls: [
+    {
+      // The DoD line "A 1MB tool output is truncated and flagged". `outputBytes` is the size
+      // before §15's cap, so 1,048,576 is what the reader must see — not the 32KB that
+      // survived, and not the length of whatever `output` renders as.
+      id: 'tool-01-truncated',
+      runId: 'run-telemetry',
+      stepId: 'step-01',
+      toolName: 'fetch_ledger',
+      input: { accountId: 'acct-9' },
+      output: { rows: 'the first 32KB of a very long answer' },
+      inputTruncated: false,
+      outputTruncated: true,
+      inputBytes: 22,
+      outputBytes: 1_048_576,
+      startedAt: '2026-08-21T11:00:04.000Z',
+      completedAt: '2026-08-21T11:00:05.000Z',
+      durationMs: 1000,
+      success: true,
+      error: null,
+    },
+    {
+      // A completion that precedes its start, and a negative duration to go with it. The
+      // validator confirmed `durationMs` is passed through and not recomputed, so a backwards
+      // client clock reaches this component intact and must arrive at the reader intact too.
+      id: 'tool-02-backwards',
+      runId: 'run-telemetry',
+      stepId: 'step-01',
+      toolName: 'charge_card',
+      input: { amount: 40 },
+      output: null,
+      inputTruncated: false,
+      outputTruncated: false,
+      inputBytes: 14,
+      outputBytes: 0,
+      startedAt: '2026-08-21T11:00:07.000Z',
+      completedAt: '2026-08-21T11:00:06.000Z',
+      durationMs: -1000,
+      success: false,
+      error: 'card declined',
+    },
+  ],
+  errors: [
+    {
+      id: 'error-01',
+      runId: 'run-telemetry',
+      stepId: 'step-01',
+      type: 'ToolTimeout',
+      message: 'charge_card did not answer within 30s',
+      metadata: { attempt: 2 },
+      createdAt: '2026-08-21T11:00:07.500Z',
+    },
+  ],
+} satisfies RunDetailView;
+
+/**
+ * The same run, answered with all four collections **present and empty**.
+ *
+ * Four characters apart from `RUN_WITH_TREE` on the wire and the opposite meaning: here the
+ * API answered "none", there it answered nothing at all. Every card below is asserted against
+ * both, and the two must not produce the same sentence.
+ */
+const RUN_WITH_EMPTY_TELEMETRY = {
+  ...RUN_WITH_TELEMETRY,
+  decisions: [],
+  modelCalls: [],
+  toolCalls: [],
+  errors: [],
+} satisfies RunDetailView;
+
+/**
+ * One card of the run detail page, read back out of the markup the way a reader sees it.
+ *
+ * Located by its heading, like `timelineCard` and for the same reason: five new cards are
+ * being added below an existing three, and any helper that found a card by position would
+ * silently retarget onto its neighbour the first time the order changed.
+ *
+ * The card is sliced at the *next* `<section`, not at `</section>`: these cards nest elements
+ * and a lazy `[\s\S]*?</section>` stops at the first inner close. The slice is deliberately
+ * generous in the other direction — if a card emits nothing, the slice runs into the following
+ * card and the assertions read that card's rows, which is a mismatch rather than a pass.
+ */
+function telemetryCard(
+  markup: string,
+  heading: string,
+): {
+  title: string;
+  notes: string[];
+  rows: { name: string; marks: string[]; tag: string; fields: [string, string][] }[];
+  ids: string[];
+} {
+  const card = cardSection(markup, heading);
+
+  return {
+    title: stripTags(/<h2 class="card-title">([\s\S]*?)<\/h2>/.exec(card)?.[1] ?? '(no title)'),
+    notes: [...card.matchAll(/<p class="note-inline[^"]*">([\s\S]*?)<\/p>/g)].map((m) =>
+      stripTags(m[1] ?? ''),
+    ),
+    rows: [...card.matchAll(/<li class="telemetry-row">([\s\S]*?)<\/li>/g)].map((match) => {
+      const row = match[1] ?? '';
+
+      return {
+        name: /<span class="telemetry-name">([^<]*)<\/span>/.exec(row)?.[1] ?? '(no name element)',
+        marks: [
+          ...row.matchAll(/<span class="placement placement-[a-z-]+">([\s\S]*?)<\/span>/g),
+        ].map((m) => stripTags(m[1] ?? '')),
+        tag: stripTags(/<span class="telemetry-tag[^"]*">([\s\S]*?)<\/span>/.exec(row)?.[1] ?? ''),
+        fields: [
+          ...row.matchAll(
+            /<div class="field"><span class="field-label">([^<]*)<\/span>([\s\S]*?)<\/div>/g,
+          ),
+        ].map((m): [string, string] => [m[1] ?? '', stripTags(m[2] ?? '')]),
+      };
+    }),
+    ids: [...card.matchAll(/<div class="telemetry-meta"><code>([^<]*)<\/code>/g)].map(
+      (m) => m[1] ?? '',
+    ),
+  };
+}
+
+/**
+ * The `<pre>` payload blocks of a card, each with the label above it.
+ *
+ * The body is entity-decoded, unlike everywhere else in this file. A payload is JSON and JSON
+ * is mostly double quotes, which React escapes to `&quot;` in a text node — so an assertion
+ * written against the raw markup would be a claim about React's escaping rather than about
+ * the payload the reader sees. `stripTags` is left alone: every other assertion here is about
+ * prose, where decoding would hide a page that emitted a literal `&amp;lt;` at a reader.
+ */
+function payloadsOf(markup: string, heading: string): [string, string][] {
+  return [
+    ...cardSection(markup, heading).matchAll(
+      /<span class="payload-label">([\s\S]*?)<\/span>[\s\S]*?<pre class="payload-body">([\s\S]*?)<\/pre>/g,
+    ),
+  ].map((m): [string, string] => [
+    decodeEntities(stripTags(m[1] ?? '')),
+    decodeEntities(stripTags(m[2] ?? '')),
+  ]);
+}
+
+/** The five characters React escapes in a text node, back to what the reader sees. */
+function decodeEntities(text: string): string {
+  return text
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#x27;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&');
+}
+
+function cardSection(markup: string, heading: string): string {
+  const start = markup.indexOf(`<h2 class="card-title">${heading}`);
+  if (start === -1) return `(no ${heading} card on the page)`;
+
+  const rest = markup.slice(start);
+  const next = rest.indexOf('<section class="card">');
+
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+describe('GET /runs/[id] — the Phase 4 collections, and the difference between none and unanswered', () => {
+  it('says a collection the response never carried is unanswered, and never that there were none', async () => {
+    // The governing rule for this whole card set — `CLAUDE.md` ## Product claims. An empty
+    // collection means "not answerable", not "none happened", and today that is the ONLY
+    // shape a real deployment produces: `entityKindOf` returns null for all five Phase 4
+    // event types, so nothing is stored and nothing is returned.
+    stubApi({ '/v1/runs/run-tree': { status: 200, body: RUN_WITH_TREE } });
+
+    const markup = await renderPage(RunDetailPage({ params: Promise.resolve({ id: 'run-tree' }) }));
+
+    for (const [heading, plural] of [
+      ['Decisions', 'decisions'],
+      ['Model calls', 'model calls'],
+      ['Tool calls', 'tool calls'],
+      ['Errors', 'errors'],
+    ] as const) {
+      const card = telemetryCard(markup, heading);
+
+      expect(card.rows).toStrictEqual([]);
+      expect(card.notes).toContain(
+        `This response did not carry ${plural}. That is not a claim that none occurred — the API did not answer the question.`,
+      );
+      // The paired negative, per card: the sentence the API DID answer must not appear.
+      expect(card.notes).not.toContain(`The API reported no ${plural} for this run.`);
+    }
+  });
+
+  it('says the API reported none when the API actually reported none — a different sentence', async () => {
+    stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_EMPTY_TELEMETRY } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+
+    for (const [heading, plural] of [
+      ['Decisions', 'decisions'],
+      ['Model calls', 'model calls'],
+      ['Tool calls', 'tool calls'],
+      ['Errors', 'errors'],
+    ] as const) {
+      const card = telemetryCard(markup, heading);
+
+      expect(card.rows).toStrictEqual([]);
+      expect(card.notes).toContain(`The API reported no ${plural} for this run.`);
+      expect(card.notes).not.toContain(
+        `This response did not carry ${plural}. That is not a claim that none occurred — the API did not answer the question.`,
+      );
+    }
+  });
+
+  it('renders every decision with its contextKey, its options and who attested the outcome', async () => {
+    // "Decisions (contextKey visible; strategy evidence per §29)" — MVP_PLAN_V3.md:1785.
+    // Every expected value below is the fixture's own field, transcribed by hand.
+    stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+    const card = telemetryCard(markup, 'Decisions');
+
+    expect(card.ids).toStrictEqual(['decision-01-strategy', 'decision-02-orphan-attestation']);
+    expect(card.rows[0]).toStrictEqual({
+      name: 'execution_strategy',
+      marks: [],
+      tag: 'SUCCESS',
+      fields: [
+        ['contextKey', 'batch:small'],
+        ['contextKeyVersion', 'v1'],
+        ['Options', 'sequential, parallel'],
+        ['Selected', 'parallel'],
+        ['Outcome attested by', 'CALLER'],
+        ['Outcome observed', '2026-08-21T11:00:09.000Z'],
+        ['Step', 'step-01'],
+      ],
+    });
+  });
+
+  it('marks a decision with no contextKey as excluded from aggregation rather than leaving it blank', async () => {
+    // §14: "If a caller supplies no `contextKey`, the decision is stored but **excluded from
+    // aggregation**." A reader who cannot see the null cannot tell a decision that will never
+    // be grouped from one that will — `run-view.ts` says exactly that, and this is its alarm.
+    stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+    const card = telemetryCard(markup, 'Decisions');
+
+    expect(card.rows[1]).toStrictEqual({
+      name: '(no decision.recorded event — attestation only)',
+      marks: [
+        'no contextKey · stored, excluded from aggregation',
+        'attested for an id nothing recorded',
+      ],
+      tag: 'FAILURE',
+      fields: [
+        ['contextKey', 'none — excluded from aggregation'],
+        ['contextKeyVersion', '—'],
+        ['Options', '—'],
+        ['Selected', '—'],
+        ['Outcome attested by', 'UNKNOWN'],
+        ['Outcome observed', '2026-08-21T11:00:08.000Z'],
+        ['Step', '—'],
+      ],
+    });
+  });
+
+  it('shows the strategy evidence a §29 decision was taken on, not just the option it picked', async () => {
+    // MVP_PLAN_V3.md:641-651 — `rawContext` is "the awarenessContext object". Without it the
+    // Decisions view shows which strategy was chosen and nothing about why, which is the half
+    // §29 calls evidence.
+    stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+
+    expect(payloadsOf(markup, 'Decisions')).toStrictEqual([
+      [
+        'rawContext — the evidence this decision was taken on (§29)',
+        '{"fanOut":3,"sharedState":false}',
+      ],
+    ]);
+  });
+
+  it('renders each model call, reporting an unreported token count as unreported and not as zero', async () => {
+    stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+    const card = telemetryCard(markup, 'Model calls');
+
+    expect(card.ids).toStrictEqual(['call-01-complete', 'call-02-no-usage']);
+    expect(card.rows).toStrictEqual([
+      {
+        name: 'anthropic / claude-opus-4',
+        marks: [],
+        tag: '1200ms',
+        fields: [
+          ['Input tokens', '1,500'],
+          ['Output tokens', '240'],
+          ['Status', 'ok'],
+          ['Step', 'step-01'],
+          ['Recorded', '2026-08-21T11:00:02.000Z'],
+        ],
+      },
+      {
+        name: 'openai / gpt-5',
+        marks: ['no token usage reported'],
+        tag: '800ms',
+        fields: [
+          ['Input tokens', 'not reported'],
+          ['Output tokens', 'not reported'],
+          ['Status', 'error'],
+          ['Step', 'step-01'],
+          ['Recorded', '2026-08-21T11:00:03.000Z'],
+        ],
+      },
+    ]);
+  });
+
+  it('flags a truncated tool payload with the size it had before it was cut', async () => {
+    // "Tool Calls (truncation flagged)" — MVP_PLAN_V3.md:1787 — and the DoD line about a 1MB
+    // output. §15's point is that truncation loses the payload and not the measurement.
+    stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+    const card = telemetryCard(markup, 'Tool calls');
+
+    expect(card.ids).toStrictEqual(['tool-01-truncated', 'tool-02-backwards']);
+    expect(card.rows[0]?.name).toBe('fetch_ledger');
+    expect(card.rows[0]?.marks).toStrictEqual(['succeeded']);
+    // The truncation flag travels with the payload it is about, never in a summary line
+    // elsewhere: §15's whole point is that a payload shown without its flag reads as complete.
+    expect(payloadsOf(markup, 'Tool calls').slice(0, 2)).toStrictEqual([
+      ['Input · 22 bytes', '{"accountId":"acct-9"}'],
+      [
+        'Output · truncated · 1,048,576 bytes before the cap',
+        '{"rows":"the first 32KB of a very long answer"}',
+      ],
+    ]);
+  });
+
+  it('reports a tool call whose client clock ran backwards instead of tidying it into agreement', async () => {
+    stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+    const card = telemetryCard(markup, 'Tool calls');
+
+    expect(card.rows[1]).toStrictEqual({
+      name: 'charge_card',
+      marks: [
+        'failed',
+        'reversed client clock · completion precedes start',
+        'negative duration as reported by the caller',
+      ],
+      // The caller's own number, verbatim and unclamped. A `0ms` here would be the Dashboard
+      // adjudicating a measurement it has no basis to correct.
+      tag: '-1000ms',
+      fields: [
+        ['Started', '2026-08-21T11:00:07.000Z'],
+        ['Completed', '2026-08-21T11:00:06.000Z'],
+        ['Error', 'card declined'],
+        ['Step', 'step-01'],
+      ],
+    });
+  });
+
+  it('renders reported errors as the agent’s failures, not as ingestion rejections', async () => {
+    // `run-view.ts`, ErrorView: these are errors "the *instrumented system* reported as
+    // telemetry, not an ingestion rejection — rejections are `INGEST_ERROR_CODES` on the
+    // ingest response and never become rows. A consumer that showed these under a heading
+    // like 'ingestion errors' would be reporting the platform's health from the agent's
+    // failures." This asserts the page does not make that mistake.
+    stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+    const card = telemetryCard(markup, 'Errors');
+
+    expect(card.ids).toStrictEqual(['error-01']);
+    expect(card.rows[0]?.name).toBe('ToolTimeout');
+    expect(card.rows[0]?.fields).toStrictEqual([
+      ['Message', 'charge_card did not answer within 30s'],
+      ['Step', 'step-01'],
+      ['Recorded', '2026-08-21T11:00:07.500Z'],
+    ]);
+    expect(card.notes).toContain(
+      'Reported by the instrumented system as telemetry. These are the agent’s own failures, not ingestion rejections — a rejected event never becomes a row.',
+    );
+  });
+
+  it('says the dropped-event count is unreported, and why, rather than printing a zero', async () => {
+    // "Ingestion Health (dropped events, if any)" — MVP_PLAN_V3.md:1789. §16's drop counters
+    // are client-side SDK state; no envelope field, no ingest-response field and no column
+    // carries them to the platform, so `GET /v1/runs/:id` has nothing to report and
+    // `run-summary.ts` answers `null` on the one endpoint that names the field at all.
+    // A `0` here would be the green that lies: "no events were dropped", asserted from the
+    // absence of a signal the platform never receives.
+    stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+
+    expect(labelledRow(markup, 'Dropped telemetry events')).toBe('not reported');
+    expect(telemetryCard(markup, 'Ingestion health').notes).toContain(
+      '§16’s drop counters are client-side SDK state. No envelope field, no ingest response and no column carries them to the platform, so no drop count has been reported for this run. That is not a claim that none were dropped.',
+    );
+  });
+
+  it('reports what the telemetry lost — truncation, token gaps and self-contradicting clocks', async () => {
+    stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+
+    expect(labelledRow(markup, 'Tool inputs truncated')).toBe('0');
+    expect(labelledRow(markup, 'Tool outputs truncated')).toBe('1');
+    expect(labelledRow(markup, 'Payload bytes lost to truncation')).toBe('1,048,576 bytes');
+    expect(labelledRow(markup, 'Tool calls with a self-contradicting clock')).toBe('1');
+    expect(labelledRow(markup, 'Model calls missing an input token count')).toBe('1');
+    expect(labelledRow(markup, 'Model calls missing an output token count')).toBe('1');
+  });
+
+  it('reports every loss measure as unanswered when its collection was never carried', async () => {
+    // The nullable-count rule of `lib/run-telemetry.ts`, at the page. A health card printing
+    // "0 truncated" over a response with no tool calls asserts a clean run from a signal that
+    // never arrived — the same manufactured absence as the dropped-event count above.
+    stubApi({ '/v1/runs/run-tree': { status: 200, body: RUN_WITH_TREE } });
+
+    const markup = await renderPage(RunDetailPage({ params: Promise.resolve({ id: 'run-tree' }) }));
+
+    expect(labelledRow(markup, 'Tool inputs truncated')).toBe('not reported');
+    expect(labelledRow(markup, 'Payload bytes lost to truncation')).toBe('not reported');
+    expect(labelledRow(markup, 'Tool calls with a self-contradicting clock')).toBe('not reported');
+    expect(labelledRow(markup, 'Model calls missing an input token count')).toBe('not reported');
+    expect(labelledRow(markup, 'Dropped telemetry events')).toBe('not reported');
+  });
+
+  it('states which of the four collections the API answered at all', async () => {
+    // A run with only errors — one of the negative shapes this node was told to cover. Three
+    // collections unanswered, one answered with a row, and the card says which is which.
+    stubApi({
+      '/v1/runs/run-telemetry': {
+        status: 200,
+        body: { ...RUN_WITH_TREE, id: 'run-telemetry', errors: RUN_WITH_TELEMETRY.errors },
+      },
+    });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+
+    expect(labelledRow(markup, 'Decisions')).toBe('not answered by this response');
+    expect(labelledRow(markup, 'Model calls')).toBe('not answered by this response');
+    expect(labelledRow(markup, 'Tool calls')).toBe('not answered by this response');
+    expect(labelledRow(markup, 'Errors')).toBe('1');
+  });
+
+  it('renders all eight required views, in the order the plan lists them', async () => {
+    // MVP_PLAN_V3.md:1779-1789. The oracle false green this node was reopened for was a probe
+    // that went green on three of these eight; the alarm for it is the list itself, read off
+    // the rendered page in document order rather than counted.
+    stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY } });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+
+    expect(
+      [...markup.matchAll(/<h2 class="card-title">([\s\S]*?)<\/h2>/g)].map(
+        (m) => stripTags(m[1] ?? '').split(' · ')[0],
+      ),
+    ).toStrictEqual([
+      'checkout-agent',
+      'Execution timeline',
+      'Steps',
+      'Decisions',
+      'Model calls',
+      'Tool calls',
+      'Errors',
+      'Ingestion health',
+    ]);
+  });
+});

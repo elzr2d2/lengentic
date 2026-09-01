@@ -11,6 +11,11 @@ import {
 import { RunStatusBadge } from '../run-status-badge';
 import { FetchFailureCard } from '../fetch-failure';
 import { TimelineCard } from './timeline-card';
+import { DecisionsCard } from './decisions-card';
+import { ModelCallsCard } from './model-calls-card';
+import { ToolCallsCard } from './tool-calls-card';
+import { ErrorsCard } from './errors-card';
+import { IngestionHealthCard } from './ingestion-health-card';
 
 // Same reason as the list: `status` is derived per request from the server's clock.
 export const dynamic = 'force-dynamic';
@@ -38,6 +43,20 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
               view list puts execution first (`MVP_PLAN_V3.md:1782-1784`). */}
           <TimelineCard run={result.run} />
           <StepsCard run={result.run} />
+          {/* The remaining five of the eight required views, in the order
+              `MVP_PLAN_V3.md:1779-1789` lists them. Ingestion Health is last on purpose: it is
+              a reading *over* the four collections above, and a reader who meets "3 tool calls,
+              1 truncated" before seeing the tool calls has nothing to attach it to.
+
+              Every one of these cards renders unconditionally, including for a run that carried
+              none of the collections. A card that hid itself when it had nothing to show would
+              make "the API did not answer" and "this page does not have that view" identical on
+              screen — which is the shape of the false green this node was reopened for. */}
+          <DecisionsCard run={result.run} />
+          <ModelCallsCard run={result.run} />
+          <ToolCallsCard run={result.run} />
+          <ErrorsCard run={result.run} />
+          <IngestionHealthCard run={result.run} />
         </>
       ) : (
         <FetchFailureCard failure={result} />
