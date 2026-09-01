@@ -8,7 +8,7 @@
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
-import { blocksOf, blockAt, normalize } from './xref.ts';
+import { blocksOf, blockAt, normalize, parseCitations, resolvePath } from './xref.ts';
 
 interface Result {
   n: number;
@@ -75,6 +75,49 @@ scenario(3, 'normalize strips formatting and collapses whitespace', () => {
   const got = normalize('owns deleting `spike/`   (**5b**),\n  *not* 5a <!-- x -->');
   const want = 'owns deleting spike/ (5b), not 5a';
   return got === want ? null : `expected "${want}", got "${got}"`;
+});
+
+// ── citations ─────────────────────────────────────────────────────────────────────────
+
+scenario(4, 'parseCitations: bare, range, bound (both quote styles), @commit, basename', () => {
+  const text = [
+    'see `MVP_PLAN_V3.md:2262` and `x/merge-rules.ts:56-60` for the rule.',
+    'bound: `CLAUDE.md:291` "owns deleting spike/" and note.md:12 \'twelve chars ok\'',
+    'historical `CLAUDE.md:278@8ce66d5`; not bound: (`a.md:3`) "quoted prose later"',
+  ].join('\n');
+  const got = parseCitations(text).map(
+    (c) => `${c.path}:${c.line}-${c.endLine}${c.commit ? '@' : ''}${c.fragment ? 'B' : ''}`,
+  );
+  const want = [
+    'MVP_PLAN_V3.md:2262-2262',
+    'x/merge-rules.ts:56-60',
+    'CLAUDE.md:291-291B',
+    'note.md:12-12B',
+    'CLAUDE.md:278-278@',
+    'a.md:3-3',
+  ];
+  return got.join(' ') === want.join(' ')
+    ? null
+    : `expected ${want.join(' ')}, got ${got.join(' ')}`;
+});
+
+scenario(5, 'parseCitations records where the number sits, for --fix', () => {
+  const text = 'x `docs/a.md:10-12` y';
+  const c = parseCitations(text)[0];
+  if (!c) return 'no citation parsed';
+  const slice = text.slice(c.numberIndex, c.numberIndex + c.numberLength);
+  return slice === '10-12' ? null : `expected "10-12", got "${slice}"`;
+});
+
+scenario(6, 'resolvePath: repo-relative, unique basename, ambiguous, missing', () => {
+  const tracked = ['CLAUDE.md', 'a/merge-rules.ts', 'b/validator.md', 'c/validator.md'];
+  const r = (p: string): string => {
+    const x = resolvePath(p, tracked);
+    return x.kind === 'ok' ? x.file : x.kind;
+  };
+  const got = [r('CLAUDE.md'), r('merge-rules.ts'), r('validator.md'), r('nope.md')].join(' ');
+  const want = 'CLAUDE.md a/merge-rules.ts ambiguous missing';
+  return got === want ? null : `expected ${want}, got ${got}`;
 });
 
 // ── report ────────────────────────────────────────────────────────────────────────────
