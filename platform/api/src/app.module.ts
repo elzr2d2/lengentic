@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
 import { validateEnv, type Env } from './config/env.schema';
+import { DecisionsModule } from './decisions/decisions.module';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RunsModule } from './runs/runs.module';
@@ -62,6 +63,15 @@ import { TelemetryModule } from './telemetry/telemetry.module';
     HealthModule,
     TelemetryModule,
     RunsModule,
+
+    // Registered although nothing injects `DecisionsService` yet: routing a
+    // `decision.outcome_attested` event out of an ingest batch means changing
+    // `src/telemetry/**`, which belongs to another node (`entityKindOf` returns `null` for
+    // the type today, so the event is rejected as `EVENT_TYPE_NOT_INGESTIBLE` before it
+    // could reach the service). Leaving the module unregistered would make the attestation
+    // path unbuildable at runtime rather than merely uncalled — a different and worse state
+    // to hand the node that lands the routing.
+    DecisionsModule,
   ],
 })
 export class AppModule {}
