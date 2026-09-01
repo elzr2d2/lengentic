@@ -234,6 +234,125 @@ scenario(12, 'an xref-ignore needs a reason of at least 20 characters', () => {
   return ok !== null && short === null ? null : `expected reason/null, got ${ok}/${short}`;
 });
 
+// ── check C: five previously-uncovered branches ──────────────────────────────────────
+
+scenario(
+  13,
+  'checkC on a .json source scopes history per line, not per file (linesAsBlocks)',
+  () => {
+    // No blank line separates these two lines, so blocksOf would merge them into one
+    // block and the commit hash on line 1 would exempt the citation on line 2. A .json
+    // source must use linesAsBlocks instead, keeping each line its own block.
+    const src = [
+      'historical: fixed at 8ce66d5',
+      'cite: MVP_PLAN_V3.md:3 "R1 and R2 both emit"',
+    ].join('\n');
+    const f = checkC(
+      {
+        file: 'data/notes.json',
+        text: src,
+        tracked: ['MVP_PLAN_V3.md'],
+        readTarget: targets({ 'MVP_PLAN_V3.md': PLAN }),
+      },
+      'RED',
+    );
+    return f.length === 1 && f[0]?.line === 2 && /no longer in/.test(f[0].message)
+      ? null
+      : `expected one RED "no longer in" at line 2, got ${JSON.stringify(f)}`;
+  },
+);
+
+scenario(
+  14,
+  'checkC: citing an untracked file, and citing an ambiguous basename, are both RED',
+  () => {
+    const src = ['missing: `nope.md:5`', 'ambiguous: `validator.md:2`'].join('\n');
+    const f = checkC(
+      {
+        file: 'CLAUDE.md',
+        text: src,
+        tracked: ['a/validator.md', 'b/validator.md'],
+        readTarget: () => null,
+      },
+      'RED',
+    );
+    const missing = f.find((x) => /is not tracked/.test(x.message));
+    const ambiguous = f.find((x) => /ambiguous/.test(x.message));
+    return f.length === 2 && missing && ambiguous
+      ? null
+      : `expected one "is not tracked" and one "ambiguous", got ${JSON.stringify(f)}`;
+  },
+);
+
+scenario(
+  15,
+  'checkC: a bare citation beyond the target file length is RED with the line count',
+  () => {
+    const src = 'see `MVP_PLAN_V3.md:99`.';
+    const f = checkC(
+      {
+        file: 'CLAUDE.md',
+        text: src,
+        tracked: ['MVP_PLAN_V3.md'],
+        readTarget: targets({ 'MVP_PLAN_V3.md': PLAN }),
+      },
+      'RED',
+    );
+    const total = PLAN.split(/\r?\n/).length;
+    const want = `MVP_PLAN_V3.md:99: MVP_PLAN_V3.md has ${total} lines`;
+    return f.length === 1 && f[0]?.message === want
+      ? null
+      : `expected "${want}", got ${JSON.stringify(f)}`;
+  },
+);
+
+scenario(
+  16,
+  "checkC fix: a range citation whose fragment moved uses the target block's endLine",
+  () => {
+    // DOC's paragraph block spans lines 3-4 (see scenario 1): line !== endLine there, so
+    // this only passes if the fix math actually reads b.endLine and not b.line.
+    const src = 'see `MVP_PLAN_V3.md:10-11` "wraps across lines is one block."';
+    const f = checkC(
+      {
+        file: 'CLAUDE.md',
+        text: src,
+        tracked: ['MVP_PLAN_V3.md'],
+        readTarget: targets({ 'MVP_PLAN_V3.md': DOC }),
+      },
+      'RED',
+    );
+    const fix = f[0]?.fix;
+    return f.length === 1 && fix && fix.line === 3 && fix.endLine === 4
+      ? null
+      : `expected one fix {line:3,endLine:4}, got ${JSON.stringify(f)}`;
+  },
+);
+
+scenario(17, 'checkC: a fragment found in more than one block asks to bind a longer one', () => {
+  const target = [
+    'Intro paragraph.',
+    '',
+    'alpha shared phrase beta.',
+    '',
+    'gamma shared phrase delta.',
+  ].join('\n');
+  const src = 'moved: `notes.md:1` "shared phrase"';
+  const f = checkC(
+    {
+      file: 'CLAUDE.md',
+      text: src,
+      tracked: ['notes.md'],
+      readTarget: targets({ 'notes.md': target }),
+    },
+    'RED',
+  );
+  const want = 'notes.md:1: fragment is in 2 blocks of notes.md — bind a longer one';
+  return f.length === 1 && f[0]?.message === want
+    ? null
+    : `expected "${want}", got ${JSON.stringify(f)}`;
+});
+
 // ── report ────────────────────────────────────────────────────────────────────────────
 
 function report(): number {
