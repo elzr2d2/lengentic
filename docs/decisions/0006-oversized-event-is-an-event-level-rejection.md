@@ -59,8 +59,8 @@ guaranteed this". Simpler server, no new rejection code.
 
 Rejected because it makes the stated limit not a limit. A 500-event batch of 60 KB events is
 30 MB and is caught only by the body cap; a single 4 MB event is accepted and stored, which
-is the exact outcome `MVP_PLAN_V3.md:794` forbids in the client's own words — "Never silently
-store a 4MB blob." A limit that trusts the caller to enforce it is not enforced, and the
+is the exact outcome `MVP_PLAN_V3.md:794` "Never silently store a 4MB blob." forbids, in the
+client's own words. A limit that trusts the caller to enforce it is not enforced, and the
 caller here is a public SDK that any consumer can fork or bypass.
 
 ## Consequences

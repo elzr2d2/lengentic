@@ -83,13 +83,14 @@ artifact, bought with breaking-change risk in Phase 3 and paid for with nothing.
 
 ### A-12 — Phase 2 ships the safe-serializer and cap seams; Phase 4 ships redaction defaults
 
-Reading 1. `MVP_PLAN_V3.md:848` binds the Phase 2 SDK: record methods "must not throw
-because of circular data, redaction failure, serialization failure, transport failure, or
-buffer overflow" — impossible with a naive `JSON.stringify` path. So Phase 2 lands the
-§15 ordered pipeline seams (safe serialization → cap → enqueue) with tests; Phase 4 adds
-redaction defaults and the `*Truncated` flags. The testing-ownership table
-(`MVP_PLAN_V3.md:1330`) is read as who _hardens_, not who first tests — the same document
-forbids introducing the first meaningful tests late (`:1335-1336`).
+Reading 1. `MVP_PLAN_V3.md:848` "must not throw because of circular data" binds the Phase 2
+SDK's record methods, and the same sentence runs on through redaction failure, serialization
+failure, transport failure and buffer overflow — impossible with a naive `JSON.stringify`
+path. So Phase 2 lands the §15 ordered pipeline seams (safe serialization → cap → enqueue)
+with tests; Phase 4 adds redaction defaults and the `*Truncated` flags. The
+testing-ownership table (`MVP_PLAN_V3.md:1330`) is read as who _hardens_, not who first
+tests — the same document forbids introducing the first meaningful tests late
+(`:1335-1336`).
 
 ### A-13 — §17 injection seams land in Phase 2; ratified
 

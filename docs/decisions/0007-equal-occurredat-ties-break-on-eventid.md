@@ -26,12 +26,12 @@ unspecified for `completedAt` and `output`.
 
 Two readings, and the plan does not treat them equally:
 
-- **Arrival order** — the physically last write wins. `MVP_PLAN_V3.md:511-512` rejects exactly
-  this shape in the neighbouring rule: "silently picking the later one makes the result depend on
-  network timing."
-- **A deterministic total order** — the Definition of Done at `MVP_PLAN_V3.md:1608` requires
-  conflicting terminal states to resolve "deterministically". A same-`occurredAt` tie is the case
-  where that word was not yet defined.
+- **Arrival order** — the physically last write wins. The neighbouring rule rejects exactly
+  this shape: silently picking the later one is what
+  `MVP_PLAN_V3.md:511-512` "makes the result depend on network timing."
+- **A deterministic total order** — `MVP_PLAN_V3.md:1608` "deterministically" is the
+  Definition of Done's requirement for how conflicting terminal states resolve. A
+  same-`occurredAt` tie is the case where that word was not yet defined.
 
 The framing note recorded that "nothing in the plan authorizes" the second reading. That is true
 about authorization and beside the point about inference: the first reading is explicitly rejected

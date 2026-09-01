@@ -36,8 +36,9 @@ and better for debugging ingestion, but Phase 2's own objective is "Implement on
 `CLAUDE.md` says prefer the simplest solution satisfying the current Definition of Done.
 
 The cost is accepted and named: raw events cannot be replayed or audited later without a
-migration. `MVP_PLAN_V3.md:1560` warns these are "cheap columns now and expensive migrations
-in Phase 5" — this is the one place we take that bet deliberately rather than by omission.
+migration. `MVP_PLAN_V3.md:1561` "cheap columns now and expensive migrations in Phase 5" is
+the plan's own warning — this is the one place we take that bet deliberately rather than by
+omission.
 
 ### 2. `eventId` is unique per run, not globally
 
@@ -67,8 +68,8 @@ lies; accepting data with nowhere to put it is exactly that shape. New types arr
 
 ### 4. `STALE` replaces `RUNNING` in the API response
 
-Stored `status` stays `RUNNING` forever — `MVP_PLAN_V3.md:592` is explicit that `STALE` is
-"Derived, not stored", and it is absent from the `status` enum at `:583`. A killed script
+Stored `status` stays `RUNNING` forever — `MVP_PLAN_V3.md:592` "Derived, not stored" is
+explicit about `STALE`, and it is absent from the `status` enum at `:583`. A killed script
 leaves `RUNNING` in the database and nothing ever writes `STALE`.
 
 The **response** type is a view model, not the row. It reports `STALE`, computed server-side

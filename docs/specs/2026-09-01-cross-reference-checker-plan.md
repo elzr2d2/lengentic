@@ -470,10 +470,11 @@ export function trackedFiles(): string[] {
 }
 ```
 
-Note the scenario-4 trap: `(`FILE.ext:N`) "quoted prose later"` — TAIL allows `` ` `` then `)`
+Note the scenario-4 trap: `(`a.md:3`) "quoted prose later"` — TAIL allows `` ` `` then `)`
 then a space then a quote, so that one **is** parsed bound by the regex above. That is wrong;
 tighten:
 after the closing backtick only `\s?\(?\s?` is allowed (no `)`). Use:
+<!-- xref-ignore: a.md:3 above is scenario 4's literal fixture text, not a real file citation -->
 
 ```ts
 const TAIL = /^`?\s?\(?\s?["'“‘]([^"'”’\n]{12,240})["'”’]/;

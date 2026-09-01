@@ -1433,15 +1433,19 @@ structure; `validate-phase:45-46` mis-cites where GREEN's four sources are defin
 commit; `review-diff:3` says per-commit review while `agent-activation.json` and
 `CONTEXT.md:131` say per-wave; `agent-activation.json:82` cites `pnpm lanes selftest` (alias is
 `check:lanes`); the "disjoint by construction" comment is false and already logged at
-`BACKLOG.md:1067-1104`; `format-changed.mjs:40` (deleted at `d6a158a`, folded into `scripts/precommit.ts`'s staged-scope
-ladder) exempted `MVP_PLAN.md` but not `MVP_PLAN_V3.md` — moot now that the replacement formats
-every staged file uniformly, with no per-file exemption;
-`validate-handoff.mjs` brace-regex is non-greedy and can truncate nested objects outside a
-fence; three definitions of DONE (lane schema, phase GREEN, `log.finish()`) with only the first
-machine-enforced; ADR 0004 vs `agent-activation.json` disagree by design with the machine output
-known-wrong (`docs/decisions/0004:95`) — an `agentOverride` per node would encode it; diagnose/
-architecture/retrospective have `activationConditions` but are never optional, while `review` is
-optional in two classes with no condition.
+`BACKLOG.md:1067-1104`; `validate-handoff.mjs` brace-regex is non-greedy and can truncate
+nested objects outside a fence; three definitions of DONE (lane schema, phase GREEN,
+`log.finish()`) with only the first machine-enforced; ADR 0004 vs `agent-activation.json`
+disagree by design with the machine output known-wrong (`docs/decisions/0004:95`) — an
+`agentOverride` per node would encode it; diagnose/architecture/retrospective have
+`activationConditions` but are never optional, while `review` is optional in two classes with
+no condition.
+
+One §6 item is already history, and this paragraph carries the commit hash for that reason
+alone — it exempts this sentence and nothing above it. `format-changed.mjs:40` was deleted at
+`d6a158a`, folded into `scripts/precommit.ts`'s staged-scope ladder; it had exempted
+`MVP_PLAN.md` but not `MVP_PLAN_V3.md`, which is moot now that the replacement formats every
+staged file uniformly, with no per-file exemption.
 
 ### Agents cannot run their own mandated procedures
 
