@@ -26,3 +26,7 @@ docs/archive/
 # Written by `pnpm autopilot` during a run, gitignored, and not source. Same reason
 # `.artifacts/` is ignored by eslint: a supervisor writing state must not fail a shared gate.
 .autopilot/
+
+# Scratch briefs and reports written by the SDD loop. Gitignored by .superpowers/sdd/.gitignore,
+# so a shared gate must not fail on files git refuses to track.
+.superpowers/
