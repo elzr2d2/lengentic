@@ -11,15 +11,16 @@
  * the disk. Imports from oracle.ts are type-only: oracle.ts imports this file at runtime.
  */
 
-// Later tasks extend these imports: Task 4 adds `readFileSync`, `writeFileSync`, `join`,
-// `relative`, `classify`, `corpus`, `resolveTarget`, `walkMarkdown` from '../kb.ts' and
-// `import type { Graph } from '../oracle.ts'`.
-
 import { execSync } from 'node:child_process';
-import { basename, dirname, resolve } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { classify, corpus, resolveTarget, walkMarkdown } from '../kb.ts';
+import type { Graph } from '../oracle.ts';
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const GRAPH = 'scripts/oracle/graph.json';
 
 // ── blocks ────────────────────────────────────────────────────────────────────────────
 
@@ -184,6 +185,28 @@ export function trackedFiles(): string[] {
   return trackedCache;
 }
 
+/**
+ * Which of these repo-relative paths git ignores (`.artifacts/**`, `dist/**`,
+ * `.claude/*.local.md`, …) — one `git check-ignore --stdin` call for the whole batch, never
+ * one per citation. `git check-ignore` exits 1 (throwing from execSync) when none of the
+ * input paths match any pattern; its stdout on that path is still the correct, empty answer.
+ */
+export function gitIgnored(paths: string[]): Set<string> {
+  const uniq = [...new Set(paths)];
+  if (uniq.length === 0) return new Set();
+  try {
+    const out = execSync('git check-ignore --stdin', {
+      cwd: ROOT,
+      input: uniq.join('\n'),
+      encoding: 'utf8',
+    });
+    return new Set(out.split(/\r?\n/).filter((l) => l !== ''));
+  } catch (e: unknown) {
+    const out = (e as { stdout?: string }).stdout ?? '';
+    return new Set(out.split(/\r?\n/).filter((l) => l !== ''));
+  }
+}
+
 // ── findings ──────────────────────────────────────────────────────────────────────────
 
 export type Severity = 'RED' | 'WARN';
@@ -234,6 +257,13 @@ export interface CheckCInput {
   text: string;
   tracked: string[];
   readTarget: (file: string) => string | null;
+  /**
+   * A citation whose resolved path git ignores by design (`.artifacts/**`, `dist/**`,
+   * `.claude/*.local.md`) is never RED — `trackedFiles()` can never contain it, so it would
+   * be permanently unresolvable regardless of whether the cited line is accurate. Defaults to
+   * "nothing is ignored" so existing callers that omit it are unaffected.
+   */
+  isIgnored?: (path: string) => boolean;
 }
 
 /**
@@ -251,6 +281,7 @@ export function checkC(input: CheckCInput, severity: Severity): Finding[] {
   const out: Finding[] = [];
   const srcBlocks = input.file.endsWith('.json') ? linesAsBlocks(input.text) : blocksOf(input.text);
   const targetBlocks = new Map<string, Block[]>();
+  const isIgnored = input.isIgnored ?? ((): boolean => false);
 
   for (const c of parseCitations(input.text)) {
     if (c.commit !== null) continue;
@@ -259,11 +290,14 @@ export function checkC(input: CheckCInput, severity: Severity): Finding[] {
     if (holder && isHistorical(holder.text)) continue;
 
     const r = resolvePath(c.path, input.tracked);
+    const p = c.path.replace(/^\.\//, '').replace(/\\/g, '/');
     if (r.kind === 'missing') {
+      if (isIgnored(p)) continue;
       out.push(finding('C', severity, input.file, at, `${c.raw}: file is not tracked`));
       continue;
     }
     if (r.kind === 'ambiguous') {
+      if (isIgnored(p)) continue;
       out.push(
         finding('C', severity, input.file, at, `${c.raw}: ambiguous — ${r.candidates.join(', ')}`),
       );
@@ -334,3 +368,197 @@ export function applyFixes(text: string, findings: Finding[]): { text: string; a
   }
   return { text: out, applied: fixes.length };
 }
+
+// ── sources ───────────────────────────────────────────────────────────────────────────
+
+export type Mode = 'red' | 'report' | 'skip';
+
+export function modeOf(file: string): Mode {
+  const f = file.replace(/\\/g, '/');
+  const s = classify(f);
+  if (s === 'historical') return 'skip';
+  if (s === 'generated' || f === 'BACKLOG.md' || f === '.claude/autopilot.local.md')
+    return 'report';
+  return 'red';
+}
+
+export interface Source {
+  file: string;
+  text: string;
+  mode: Mode;
+}
+
+/** Every tracked markdown file the kb walks, plus the graph — its titles and notes are briefs. */
+export function sources(): Source[] {
+  const tracked = new Set(trackedFiles());
+  const out: Source[] = [];
+  for (const abs of walkMarkdown()) {
+    const file = relative(ROOT, abs).replace(/\\/g, '/');
+    if (!tracked.has(file)) continue;
+    const mode = modeOf(file);
+    if (mode === 'skip') continue;
+    out.push({ file, text: readFileSync(abs, 'utf8'), mode });
+  }
+  out.push({ file: GRAPH, text: readFileSync(join(ROOT, GRAPH), 'utf8'), mode: 'red' });
+  return out;
+}
+
+export function readTracked(file: string): string | null {
+  try {
+    return readFileSync(join(ROOT, file), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** `§18` exists in the plan iff kb resolves it to a chunk of `planRef`. */
+export function sectionExistsLive(graph: Graph, section: string): boolean {
+  return resolveTarget(corpus(), `§${section}`).some((c) => c.file === graph.planRef);
+}
+
+// ── stubs replaced in Tasks 6–8 ───────────────────────────────────────────────────────
+
+export function checkPartition(_graph: Graph, _sectionExists: (s: string) => boolean): Finding[] {
+  return []; // filled in Task 6
+}
+export function checkA(
+  _file: string,
+  _text: string,
+  _graph: Graph,
+  _severity: Severity,
+): Finding[] {
+  return []; // filled in Task 7
+}
+export function checkB(_graph: Graph, _graphText: string): Finding[] {
+  return []; // filled in Task 8
+}
+
+// ── run ───────────────────────────────────────────────────────────────────────────────
+
+export const IGNORE_CAP = 5;
+
+export interface RunInput {
+  fix: boolean;
+  graph: Graph;
+  graphText: string;
+  srcs: Source[];
+  tracked: string[];
+  readTarget: (file: string) => string | null;
+  sectionExists: (section: string) => boolean;
+  /** Which resolved citation paths git ignores by design — see `CheckCInput.isIgnored`. */
+  isIgnored?: (path: string) => boolean;
+  /** Called with the repaired text of each source that had fixes. */
+  write?: (file: string, text: string) => void;
+}
+
+export interface RunResult {
+  findings: Finding[];
+  ignores: number;
+  fixed: number;
+  red: number;
+}
+
+export function run(input: RunInput): RunResult {
+  const findings: Finding[] = [];
+  let ignores = 0;
+  let fixed = 0;
+
+  findings.push(...checkPartition(input.graph, input.sectionExists));
+  findings.push(...checkB(input.graph, input.graphText));
+
+  for (const s of input.srcs) {
+    const severity: Severity = s.mode === 'red' ? 'RED' : 'WARN';
+    for (const b of blocksOf(s.text)) {
+      if (!hasIgnoreMarker(b.text)) continue;
+      if (ignoreReason(b.text) === null) {
+        findings.push(
+          finding('C', severity, s.file, b.line, 'xref-ignore without a reason of 20+ chars'),
+        );
+      } else ignores += 1;
+    }
+    // Check A is a rule about prose. The graph's briefs are Check B's domain, and pretty-printed
+    // JSON has no blank lines — it would be one block naming every packet and every phase.
+    if (s.file !== GRAPH) findings.push(...checkA(s.file, s.text, input.graph, severity));
+    const c = checkC(
+      {
+        file: s.file,
+        text: s.text,
+        tracked: input.tracked,
+        readTarget: input.readTarget,
+        ...(input.isIgnored ? { isIgnored: input.isIgnored } : {}),
+      },
+      severity,
+    );
+    if (input.fix && c.some((f) => f.fix)) {
+      const { text, applied } = applyFixes(s.text, c);
+      input.write?.(s.file, text);
+      fixed += applied;
+      findings.push(...c.filter((f) => !f.fix));
+    } else findings.push(...c);
+  }
+  if (ignores > IGNORE_CAP) {
+    findings.push(
+      finding(
+        'C',
+        'RED',
+        '(corpus)',
+        0,
+        `${ignores} xref-ignore markers exceed the cap of ${IGNORE_CAP} — Check A is measuring the ignores, not the corpus`,
+      ),
+    );
+  }
+  const red = findings.filter((f) => f.severity === 'RED').length;
+  return { findings, ignores, fixed, red };
+}
+
+export function render(r: RunResult): string {
+  const out: string[] = [''];
+  for (const f of r.findings.sort((a, b) =>
+    a.severity === b.severity ? 0 : a.severity === 'RED' ? -1 : 1,
+  )) {
+    const tag = f.fix ? 'FIX ' : f.severity === 'RED' ? 'RED ' : 'WARN';
+    out.push(`  ${tag}  ${f.check}  ${f.file}:${f.line}  ${f.message}`);
+  }
+  const warn = r.findings.length - r.red;
+  out.push(
+    '',
+    `  xref: ${r.red} RED, ${warn} WARN, ${r.ignores} ignores (cap ${IGNORE_CAP})${r.fixed ? `, ${r.fixed} fixed` : ''}`,
+    '',
+  );
+  return out.join('\n');
+}
+
+export function cli(argv: string[]): number {
+  const fix = argv.includes('--fix');
+  const json = argv.includes('--json');
+  const graphText = readFileSync(join(ROOT, GRAPH), 'utf8');
+  const graph = JSON.parse(graphText) as Graph;
+  const srcs = sources();
+  // One batched `git check-ignore` call for every citation path in the corpus, not one per
+  // citation — see `gitIgnored`'s own note.
+  const allPaths = srcs.flatMap((s) =>
+    parseCitations(s.text).map((c) => c.path.replace(/^\.\//, '').replace(/\\/g, '/')),
+  );
+  const ignored = gitIgnored(allPaths);
+  const result = run({
+    fix,
+    graph,
+    graphText,
+    srcs,
+    tracked: trackedFiles(),
+    readTarget: readTracked,
+    sectionExists: (s) => sectionExistsLive(graph, s),
+    isIgnored: (p) => ignored.has(p),
+    write: (file, text) => writeFileSync(join(ROOT, file), text, 'utf8'),
+  });
+  console.log(json ? JSON.stringify(result, null, 2) : render(result));
+  return result.red > 0 ? 1 : 0;
+}
+
+function isDirectRun(): boolean {
+  const invoked = process.argv[1];
+  if (!invoked) return false;
+  return resolve(invoked).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
+}
+
+if (isDirectRun()) process.exit(cli(process.argv.slice(2)));

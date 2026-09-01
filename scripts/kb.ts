@@ -650,6 +650,7 @@ const USAGE = `usage: pnpm kb <command>
   term <name>       CONTEXT.md definition + where the word is actually used
   map               what each document costs to read, in tokens
   stale             research notes past review-by, and generated files behind their source
+  xref              cross-reference check: packet/phase, §/segment, FILE:LINE   [--fix] [--json]
 
   --all     include HISTORICAL documents (MVP_PLAN.md v2, docs/superpowers/**)
   --today   YYYY-MM-DD, for staleness. Defaults to the system date`;
@@ -811,6 +812,12 @@ function main(): void {
       }
       console.log('');
       if (notes.length > 0) process.exit(1);
+      break;
+    }
+
+    case 'xref': {
+      // Dynamic on purpose: xref imports this file, and a static import back would be a cycle.
+      void import('./kb/xref.ts').then((m) => process.exit(m.cli(argv)));
       break;
     }
 

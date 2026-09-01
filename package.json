@@ -33,7 +33,7 @@
     "check:flow": "tsx scripts/flow/selftest.ts",
     "check:autopilot": "tsx scripts/autopilot/selftest.ts",
     "check:probes": "tsx scripts/lanes.ts probes",
-    "check:kb": "tsx scripts/kb/selftest.ts",
+    "check:kb": "tsx scripts/kb/selftest.ts && tsx scripts/kb/xref-selftest.ts",
     "check:decide": "tsx scripts/decide/selftest.ts",
     "check:integrity-self": "tsx scripts/check-integrity/selftest.ts",
     "gates": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm check:boundaries && pnpm check:integrity",

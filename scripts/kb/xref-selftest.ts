@@ -353,6 +353,63 @@ scenario(17, 'checkC: a fragment found in more than one block asks to bind a lon
     : `expected "${want}", got ${JSON.stringify(f)}`;
 });
 
+// ── check C: the gitignore exemption (Task 4's added requirement) ───────────────────────
+
+scenario(
+  18,
+  'checkC: a citation into a gitignored path is not RED even though the file is untracked',
+  () => {
+    const src = 'see `.artifacts/evidence/xref/run-log.md:5` for the run.';
+    const notIgnored = checkC(
+      { file: 'BACKLOG.md', text: src, tracked: ['CLAUDE.md'], readTarget: () => null },
+      'RED',
+    );
+    const ignored = checkC(
+      {
+        file: 'BACKLOG.md',
+        text: src,
+        tracked: ['CLAUDE.md'],
+        readTarget: () => null,
+        isIgnored: (p) => p === '.artifacts/evidence/xref/run-log.md',
+      },
+      'RED',
+    );
+    return notIgnored.length === 1 &&
+      /is not tracked/.test(notIgnored[0]?.message ?? '') &&
+      ignored.length === 0
+      ? null
+      : `expected RED without the exemption and none with it, got ${JSON.stringify(notIgnored)} / ${JSON.stringify(ignored)}`;
+  },
+);
+
+scenario(
+  19,
+  'checkC: a gitignored path whose basename collides with tracked files stays exempt, not ambiguous',
+  () => {
+    const src = 'see `.artifacts/evidence/2/tester-human-repair/README.md:188` for detail.';
+    const tracked = ['a/README.md', 'b/README.md'];
+    const notIgnored = checkC(
+      { file: 'BACKLOG.md', text: src, tracked, readTarget: () => null },
+      'RED',
+    );
+    const ignored = checkC(
+      {
+        file: 'BACKLOG.md',
+        text: src,
+        tracked,
+        readTarget: () => null,
+        isIgnored: (p) => p === '.artifacts/evidence/2/tester-human-repair/README.md',
+      },
+      'RED',
+    );
+    return notIgnored.length === 1 &&
+      /ambiguous/.test(notIgnored[0]?.message ?? '') &&
+      ignored.length === 0
+      ? null
+      : `expected ambiguous without the exemption and none with it, got ${JSON.stringify(notIgnored)} / ${JSON.stringify(ignored)}`;
+  },
+);
+
 // ── report ────────────────────────────────────────────────────────────────────────────
 
 function report(): number {
