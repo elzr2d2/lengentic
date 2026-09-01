@@ -13,6 +13,7 @@ import {
   blockAt,
   blocksOf,
   checkC,
+  checkPartition,
   ignoreReason,
   isHistorical,
   lineOfIndex,
@@ -20,6 +21,7 @@ import {
   parseCitations,
   resolvePath,
 } from './xref.ts';
+import type { Graph, Node } from '../oracle.ts';
 
 interface Result {
   n: number;
@@ -61,6 +63,38 @@ code p5.spike-deleted at the 5a gate
 
 Last paragraph.
 `;
+
+function node(id: string, phase: number, title: string, note = ''): Node {
+  return {
+    id,
+    phase,
+    lane: 'engine',
+    title,
+    owner: 'builder',
+    needs: [],
+    probes: [],
+    note,
+  };
+}
+const G: Graph = {
+  planRef: 'MVP_PLAN_V3.md',
+  executionOrder: ['4', '5a', '5b'],
+  segments: { '5a': ['p5.det-candidate'], '5b': ['p5.spike-deleted'] },
+  segmentSections: { '5a': ['18', '19', '20'], '5b': ['21', '22'] },
+  lanePolicy: {} as Graph['lanePolicy'],
+  decisions: [],
+  sections: { 'p5.det-candidate': ['18', '19', '21'], 'p5.spike-deleted': ['PHASE 0'] },
+  nodes: [
+    node('p4.attestation', 4, 'Cross-process attestOutcome (§14)'),
+    node(
+      'p5.det-candidate',
+      5,
+      'Deterministic candidate analyzer — §18 aggregation, §19 gates (§21 output is 5b)',
+    ),
+    node('p5.spike-deleted', 5, 'spike/ deleted — 5b wave 4, NOT 5a'),
+  ],
+};
+const exists = (s: string): boolean => ['14', '18', '19', '20', '21', '22'].includes(s);
 
 // ── blocks ────────────────────────────────────────────────────────────────────────────
 
@@ -445,6 +479,36 @@ scenario(21, 'parseCitations: matched quote pairs still bind — straight and cu
   return got.join(' | ') === want.join(' | ')
     ? null
     : `expected ${want.join(' | ')}, got ${got.join(' | ')}`;
+});
+
+scenario(22, 'partition: the fixture table is complete', () => {
+  const f = checkPartition(G, exists);
+  return f.length === 0 ? null : `expected none, got ${f.map((x) => x.message).join(' | ')}`;
+});
+
+scenario(23, 'partition: missing segment, unknown §, and an unmapped cited § are each RED', () => {
+  const has = (msgs: string[], want: string[]): string | null => {
+    const missing = want.filter((w) => !msgs.some((m) => m.includes(w)));
+    return missing.length === 0 && msgs.length === want.length
+      ? null
+      : `expected exactly [${want.join(' | ')}], got [${msgs.join(' | ')}]`;
+  };
+  // (i) 5b has no row; §99 is not in the plan. §21 is mapped (to 5a), so nothing about it fires.
+  const a = has(
+    checkPartition({ ...G, segmentSections: { '5a': ['18', '19', '21', '99'] } }, exists).map(
+      (x) => x.message,
+    ),
+    ['no entry for segment "5b"', '§99 is mapped to 5a but is not a section'],
+  );
+  // (ii) both rows present, but §21 — cited by p5.det-candidate's title and slice — is unmapped.
+  //      §20 is unmapped too and cited by nobody, so it must stay silent.
+  const b = has(
+    checkPartition({ ...G, segmentSections: { '5a': ['18', '19'], '5b': ['22'] } }, exists).map(
+      (x) => x.message,
+    ),
+    ['p5.det-candidate (5a) cites §21, which segmentSections does not map'],
+  );
+  return a ?? b;
 });
 
 // ── report ────────────────────────────────────────────────────────────────────────────

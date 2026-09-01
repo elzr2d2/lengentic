@@ -7,6 +7,8 @@
     "5a": ["p5.engine-pkg", "p5.negative-fixtures", "p5.det-candidate", "p5.repeated-failed"],
     "5b": ["p5.rec-persistence", "p5.analysis-endpoint", "p5.recs-ui", "p5.spike-deleted"]
   },
+  "$segmentSectionsComment": "§→segment for split phases. A node in 5a may slice §21 for its output shape (`sections` is a manifest, not a whitelist) but its title/note may not call §21 its own without saying '5b'. pnpm check:kb asserts every § a phase-5 node cites is mapped exactly once.",
+  "segmentSections": { "5a": ["18", "19", "20"], "5b": ["21", "22"] },
   "$lanePolicyComment": "Path ownership for parallel dispatch. `pnpm lanes decide` reads this. Annotation is the OPT-IN to parallelism: a node without `own.allowed` and `validate` fails the eligibility gate and falls back to sequential. That is deliberate — an unannotated node has no verified write surface, and dispatching one into a worktree beside another is exactly the collision the gate exists to prevent.",
   "lanePolicy": {
     "maxConcurrency": 2,

@@ -419,11 +419,67 @@ export function sectionExistsLive(graph: Graph, section: string): boolean {
   return resolveTarget(corpus(), `§${section}`).some((c) => c.file === graph.planRef);
 }
 
-// ── stubs replaced in Tasks 6–8 ───────────────────────────────────────────────────────
+// ── segments ──────────────────────────────────────────────────────────────────────────
 
-export function checkPartition(_graph: Graph, _sectionExists: (s: string) => boolean): Finding[] {
-  return []; // filled in Task 6
+export const SECTION = /§(\d+(?:\.\d+)?)/g;
+
+export function segmentOf(id: string, graph: Graph): string | null {
+  for (const [seg, ids] of Object.entries(graph.segments ?? {})) if (ids.includes(id)) return seg;
+  return null;
 }
+
+export function segmentOfSection(section: string, graph: Graph): string | null {
+  const top = section.split('.')[0] ?? section;
+  for (const [seg, secs] of Object.entries(graph.segmentSections ?? {})) {
+    if (secs.includes(top)) return seg;
+  }
+  return null;
+}
+
+/**
+ * Once any phase is split, its partition must be complete: every segment has a row, every
+ * mapped section exists in the plan exactly once in the table, and every section a segmented
+ * node cites (title, note, slice manifest) is mapped. An incomplete partition is RED, so the
+ * change that introduces a split owns finishing it.
+ */
+export function checkPartition(graph: Graph, sectionExists: (s: string) => boolean): Finding[] {
+  const out: Finding[] = [];
+  const segs = graph.segments ?? {};
+  const table = graph.segmentSections ?? {};
+  const red = (m: string): void => {
+    out.push(finding('P', 'RED', GRAPH, 0, m));
+  };
+
+  for (const seg of Object.keys(segs))
+    if (!table[seg]) red(`segmentSections has no entry for segment "${seg}"`);
+  for (const seg of Object.keys(table))
+    if (!segs[seg]) red(`segmentSections names "${seg}", which graph.segments does not define`);
+
+  const owner = new Map<string, string>();
+  for (const [seg, secs] of Object.entries(table)) {
+    for (const s of secs) {
+      if (owner.has(s)) red(`§${s} is mapped to both ${owner.get(s)} and ${seg}`);
+      owner.set(s, seg);
+      if (!sectionExists(s))
+        red(`§${s} is mapped to ${seg} but is not a section of ${graph.planRef}`);
+    }
+  }
+
+  for (const [seg, ids] of Object.entries(segs)) {
+    for (const id of ids) {
+      const n = graph.nodes.find((x) => x.id === id);
+      if (!n) continue;
+      const cited = new Set<string>();
+      for (const m of `${n.title} ${n.note ?? ''}`.matchAll(SECTION))
+        cited.add((m[1] ?? '').split('.')[0] ?? '');
+      for (const s of graph.sections[id] ?? []) if (/^\d+$/.test(s)) cited.add(s);
+      for (const s of cited)
+        if (!owner.has(s)) red(`${id} (${seg}) cites §${s}, which segmentSections does not map`);
+    }
+  }
+  return out;
+}
+
 export function checkA(
   _file: string,
   _text: string,

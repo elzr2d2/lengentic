@@ -82,6 +82,11 @@ export interface Graph {
   executionOrder?: string[];
   /** For a split phase: segment id → the node ids it owns. */
   segments?: Record<string, string[]>;
+  /**
+   * For a split phase: segment id → the plan's numbered sections it owns (top-level numbers;
+   * `20` covers `20.1`). Authored with the split; `pnpm check:kb` fails until it is complete.
+   */
+  segmentSections?: Record<string, string[]>;
   lanePolicy: LanePolicy;
   decisions: Decision[];
   sections: Record<string, string[]>;
