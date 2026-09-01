@@ -3169,3 +3169,153 @@ produces feeds Watchdog, which already covers the case at higher cost but zero f
 risk. **Worth doing when:** a Watchdog scope pass misses this class in a real diff, or diffs grow
 past the size where reading them per packet is affordable. **Ruled out:** BLOCK severity, and any
 line-count or file-count proxy — `## DESIGN` rejects those by name for punishing cohesive code.
+
+---
+
+## Discovered at the Phase 4 wave 5 gate (2026-09-01)
+
+Wave 5 is `p4.attestation` + `p4.run-explorer`, merged into `main` as `6d03010` and `d968837`.
+The gate closed GREEN: `pnpm gates` exit 0, `pnpm test:integration` 6 files / 41 tests exit 0
+against a real Testcontainers Postgres, Reviewer PASS 0 blocking, Validator PASS 0 blocking.
+Everything below is non-blocking and filed with the trigger that should wake it.
+
+### An attestation-first Decision row is permanently homed on the attester's `runId`
+
+**Source:** Phase 4 wave 5 gate Reviewer, finding S1 —
+`.artifacts/evidence/4/wave-5/reviewer/review-diff.md`.
+
+`platform/api/src/decisions/decisions.repository.ts:30-39` states the invariant — "a
+`decision.recorded` event is the authority on which run a decision belongs to" — and implements
+only the half it can reach: `runId` is create-only, so a late attestation cannot re-home a row
+that was already recorded. The other half is missing. When the **attestation arrives first**, the
+row is created with the attester's `runId`, and the later `decision.recorded` never corrects it
+because that write does not exist yet. `platform/api/src/runs/runs.repository.ts:277` lists
+decisions `where: { runId }`, so the decision then surfaces under the wrong run in the Run
+Explorer.
+
+**Do:** `decision.recorded`'s write must set `runId` in its **update** branch, not only its
+create branch — the mirror of the rule the attestation write follows. **Trigger:**
+`p4.wire-decisions`, or whichever node lands the `decision.recorded` persistence path. Not a
+defect in shipped code: nothing produces the row today.
+
+### The Decisions card can claim an attestation above a field denying one
+
+**Source:** Phase 4 wave 5 gate Reviewer, finding S2 —
+`.artifacts/evidence/4/wave-5/reviewer/review-diff.md`.
+
+`platform/dashboard/src/app/runs/[id]/decisions-card.tsx:79-81` derives the mark "attested for an
+id nothing recorded" from `decisionType === null`, while the field below it can print
+`Outcome attested by: UNKNOWN`. The fixture that pins this, `decision-02-orphan-attestation` in
+`runs-pages.spec.ts`, sets `outcomeAttestedBy: 'UNKNOWN'` on a row this wave's write path can only
+ever produce as `'CALLER'`. Unreachable today; wrong the moment a second producer of partial
+Decision rows lands.
+
+**Do:** derive the mark from attestation evidence (`outcomeAttestedBy === 'CALLER'`), not from the
+absence of `decisionType`, and re-pin the fixture to a state the write path can actually produce.
+**Trigger:** `p4.wire-decisions`, or any second producer of partial Decision rows.
+
+### `UnsizedPayload` returns before the label that carries `truncated` and `bytes`
+
+**Source:** Phase 4 wave 5 gate Reviewer, finding S3 —
+`.artifacts/evidence/4/wave-5/reviewer/review-diff.md`.
+
+`platform/dashboard/src/app/runs/[id]/telemetry-parts.tsx:146` does
+`if (value === undefined) return null;` — returning before the label that carries the `truncated`
+flag and the byte count. A tool call's `input` and `output` are `z.unknown()`, an omittable key,
+so an API that stopped sending payloads would take the §15 truncation measurement away with them
+and the card would say nothing rather than "truncated, payload not sent". Not reachable now:
+`platform/api/src/runs/runs.repository.ts:183` yields `null`, never `undefined`.
+
+**Do:** render the measurement label independently of whether the payload body is present.
+**Trigger:** `p4.read-model`, or any change that lets `input`/`output` be omitted from the read
+contract.
+
+### `UnsizedPayload` collapses `null` into `undefined`, hiding a recorded decision's absent `rawContext`
+
+**Source:** Phase 4 wave 5 gate Validator, finding 2 (MEDIUM) — verified live with a throwaway
+`renderToStaticMarkup` probe, deleted after use.
+
+`telemetry-parts.tsx`'s `UnsizedPayload` renders nothing for `value === null` and nothing for
+`value === undefined`. But `Decision.rawContext` is `.nullable()` (always present), not
+`.optional()` — `platform/shared/read/run-view.ts:136` — and `schema/decision-events.ts:54` marks
+it `.nullish()` at write time too. So a **fully recorded** decision (`decisionType` present, it
+went through `decision.recorded`) can legitimately carry `rawContext: null`, meaning "the caller
+sent no context", which is a different fact from the attestation-only case. `DecisionRow` marks
+the attestation-only case explicitly, keyed on `decisionType === null`; the recorded-with-null
+case gets no mark and no evidence block, so nothing on screen distinguishes it from a render that
+silently dropped the field. No fixture in `runs-pages.spec.ts` isolates the combination.
+
+This is the exact "renderer collapses absence" failure `platform/dashboard/src/lib/run-telemetry.ts`
+says in its own module doc that it exists to prevent, reappearing one layer down — for the one
+field `MVP_PLAN_V3.md:1785` requires visible. No live-data impact today: `entityKindOf` returns
+`null` for all five Phase 4 event types, so the whole path is unreachable.
+
+**Do:** give `UnsizedPayload` the same three-state treatment `run-telemetry.ts` gives collections,
+and add the missing fixture. **Trigger:** `p4.wire-decisions` — the moment a Decision row can
+reach the Dashboard from real telemetry, this becomes live.
+
+### `decisions.module.spec.ts` does not actually pin the module's `exports`
+
+**Source:** Phase 4 wave 5 gate Validator, finding 1 (LOW). Mutation: emptying
+`DecisionsModule.exports` (`[DecisionsService]` to `[]`) left 16/16 green — the only mutant that
+survived in this wave.
+
+`moduleRef.get(DecisionsService)` without `{ strict: true }` resolves from the whole compiled
+test container regardless of what the module exports, so the assertion proves the provider is
+constructible, not that it is reachable from outside. No impact today: nothing outside the module
+injects `DecisionsService`.
+
+**Do:** `moduleRef.get(DecisionsService, { strict: true })` in the wiring test of whichever module
+first injects it. **Trigger:** the first sibling module that injects `DecisionsService` —
+`p4.wire-decisions` or its successor.
+
+### No test distinguishes last-processed-wins from last-observed-wins for `observedAt`
+
+**Source:** Phase 4 wave 5 gate Validator, edge-case probe.
+
+Every existing attestation test uses a monotonically **increasing** `observedAt`. A throwaway
+probe with a _decreasing_ `observedAt` on the second call confirmed the repository does
+last-**processed**-wins unconditionally, never last-**observed**-wins. That is consistent with
+§14's "last write wins", but it is currently provable only by reading the code — no test would go
+red if the behaviour changed.
+
+**Do:** one test attesting out of order. **Trigger:** `p4.wire-decisions` — out-of-order telemetry
+delivery is exactly the shape that exercises it, and is moot until the event is routed.
+
+### `Mark`'s `tone` is a bare `string` where `Tag`'s is a union
+
+**Source:** Phase 4 wave 5 gate Reviewer, finding S4 (style).
+
+In `platform/dashboard/src/app/runs/[id]/telemetry-parts.tsx`, `Tag` types `tone` as `TagTone`
+while `Mark` types it as `string`. A typo renders an unstyled chip with no compile error.
+
+**Do:** narrow `Mark`'s `tone` to the same union. **Trigger:** the next edit to
+`telemetry-parts.tsx` — a one-line change, not worth its own dispatch.
+
+### Builder handoffs cite evidence paths that exist only inside the lane worktrees
+
+**Source:** Phase 4 wave 5 gate Validator, finding 3 (LOW, process hygiene).
+
+Both wave 5 handoffs cite `.artifacts/evidence/4/p4.attestation/mutation-and-commands.md` and
+`.artifacts/evidence/4/p4.run-explorer/builder-run.md`. `.artifacts/` is gitignored, so those
+files never travel with the merge — they exist only in `C:/CODE/lengentic-lane-p4-attestation`
+and `C:/CODE/lengentic-lane-p4-run-explorer`. The underlying evidence is real and was read from
+the worktrees during this gate, so this is not a green that lies; it becomes a dangling citation
+the moment the worktrees are removed.
+
+**Do:** copy a lane's evidence artifacts into the integrating tree as part of integration, the way
+the handoff JSON itself already is. **Trigger:** whoever owns lane-worktree lifecycle — the same
+dispatch that answers the standing request to clean up the 19 stale P2/P3/P4 worktrees.
+
+### Clock-anomaly detection in the Run Explorer serves no Definition-of-Done line — kept deliberately
+
+**Source:** Phase 4 wave 5 gate Reviewer, finding SC3 (scope).
+
+`ToolCallClock` / `toolCallsWithClockAnomaly` and their two marks are unrequested work: a
+contradictory clock is neither a lost event nor a truncated payload, so no Phase 4
+Definition-of-Done line asks for them. Recorded rather than removed — the addition is small, it
+mirrors the anomaly marks the Timeline card already carries, and it invents no measurement.
+
+**Do:** nothing. This entry exists so the next scope pass finds the decision instead of
+rediscovering the question. **Trigger:** none; delete this entry if the Timeline card's anomaly
+marks are ever removed.
