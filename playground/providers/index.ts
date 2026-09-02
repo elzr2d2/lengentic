@@ -10,8 +10,15 @@
  * (`prng.ts`'s own doc) — reusing it rather than writing a second hash implementation
  * (`playground/index.ts:11-13`'s "no second opinion" warning).
  */
-export { MockProvider, MockProviderConfigError, MockProviderFailure } from './mock-provider';
+export {
+  MockProvider,
+  MockProviderConfigError,
+  MockProviderFailure,
+  MOCK_PROVIDER_MODEL,
+  MOCK_PROVIDER_NAME,
+} from './mock-provider';
 export type {
+  MockProviderCallStats,
   MockProviderConfig,
   MockProviderContextVariation,
   MockProviderRequest,

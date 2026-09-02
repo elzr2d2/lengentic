@@ -456,10 +456,24 @@ export class MockAgent {
     };
   }
 
-  /** One `MockProvider.invoke()` call, completing `step` with the outcome — success or a
-   *  `MockProviderFailure` (the simulated-failure shape every non-`MockProviderFailure`
-   *  rejection is not: a config error there is this class's own bug, not a scenario
-   *  outcome, and is left to propagate rather than being reported as a step failure). */
+  /**
+   * One `MockProvider.invoke()` call, completing `step` with the outcome — success or a
+   * `MockProviderFailure` (the simulated-failure shape every non-`MockProviderFailure`
+   * rejection is not: a config error there is this class's own bug, not a scenario
+   * outcome, and is left to propagate rather than being reported as a step failure).
+   *
+   * This is the one place the Playground calls a provider, so it is the one place
+   * `model_call.recorded` is emitted — every phase step (Plan, each Execute task, Validate)
+   * funnels through here, and so does every simulated failure. Both events carry the
+   * measurements `MockProvider` reports for the call that actually ran
+   * (`MockProviderCallStats`), never a constant restated at this layer: the DoD preamble
+   * asks a Run to show "which models ... were called, where failures occurred"
+   * (`MVP_PLAN_V3.md:1802`), and a hardcoded latency would answer it falsely.
+   *
+   * Determinism (§17) survives because none of it reads a clock: `latencyMs` is the seeded
+   * delay `MockProvider` derived from the request, and the token counts are functions of the
+   * request and generated text. Same seed → same events, byte for byte.
+   */
   private async invokeAndComplete(
     provider: MockProvider,
     step: StepHandle,
@@ -467,6 +481,14 @@ export class MockAgent {
   ): Promise<ProviderStepOutcome> {
     try {
       const response = await provider.invoke(request);
+      step.recordModelCall({
+        provider: response.provider,
+        model: response.model,
+        latencyMs: response.latencyMs,
+        inputTokens: response.inputTokens,
+        outputTokens: response.outputTokens,
+        status: 'success',
+      });
       step.complete({
         status: 'COMPLETED',
         metadata: { detail: response.detail, contextVariation: response.contextVariation },
@@ -474,6 +496,21 @@ export class MockAgent {
       return { ok: true, detail: response.detail };
     } catch (error) {
       if (!(error instanceof MockProviderFailure)) throw error;
+      // The call still happened, so it is still a ModelCall — with the status that says how
+      // it ended. `outputTokens` is omitted rather than sent as 0: a failed call produced no
+      // output, which is not the same statement as producing an empty one.
+      step.recordModelCall({
+        provider: error.stats.provider,
+        model: error.stats.model,
+        latencyMs: error.stats.latencyMs,
+        inputTokens: error.stats.inputTokens,
+        status: 'failure',
+      });
+      step.recordError({
+        type: error.name,
+        message: error.message,
+        metadata: { step: error.step, callIndex: error.callIndex },
+      });
       step.complete({ status: 'FAILED', metadata: { error: error.message } });
       return { ok: false, error: error.message };
     }

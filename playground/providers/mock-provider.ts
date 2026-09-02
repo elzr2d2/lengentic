@@ -38,29 +38,62 @@ export interface MockProviderRequest {
  */
 export type MockProviderContextVariation = Readonly<Record<string, string | number | boolean>>;
 
-export interface MockProviderResponse {
+/** This provider's identity on the wire (`model_call.recorded`'s `provider` and `model`).
+ *  Fixed values, because a mock has exactly one identity — `DESIGN-1`: an abstraction needs
+ *  a second real variation, and there is no second provider here to vary against. They are
+ *  reported on the call result rather than read from here by consumers, so a caller records
+ *  what the invocation actually used instead of restating a constant of its own. */
+export const MOCK_PROVIDER_NAME = 'mock';
+export const MOCK_PROVIDER_MODEL = 'mock-model-v1';
+
+/**
+ * The measurements a call produces regardless of whether it resolved or rejected — the
+ * facts `model_call.recorded` (§13) needs, carried on both outcomes so a failed call is
+ * still reportable as a model call that happened. A failed call has no output, so
+ * `outputTokens` belongs only to the success shape.
+ */
+export interface MockProviderCallStats {
+  readonly provider: string;
+  readonly model: string;
+  /** The simulated latency this call actually waited — `resolveDelay`'s result, played
+   *  through the injected `Scheduler`. A pure function of the seed and the request, so it
+   *  is reproducible under replay; never a wall clock. */
+  readonly latencyMs: number;
+  readonly inputTokens: number;
+}
+
+export interface MockProviderResponse extends MockProviderCallStats {
   readonly step: string;
   readonly callIndex: number;
   /** Deterministic filler standing in for a real provider's generated content. */
   readonly detail: string;
   readonly contextVariation: MockProviderContextVariation;
+  readonly outputTokens: number;
 }
 
 /**
  * Raised when the configured failure behaviour selects failure for a call — mirrors a real
  * provider call rejecting, so `MockAgent` exercises the same failure shape it would see
  * from a network provider, without a network.
+ *
+ * Carries the same `MockProviderCallStats` the success path does: a call that failed after
+ * 40ms against a named model is exactly the thing "which models were called, where failures
+ * occurred" (`MVP_PLAN_V3.md:1802`) asks a Run to show, and a rejection that dropped its own
+ * measurements would leave the caller inventing them.
  */
 export class MockProviderFailure extends Error {
   readonly step: string;
 
   readonly callIndex: number;
 
-  constructor(step: string, callIndex: number) {
+  readonly stats: MockProviderCallStats;
+
+  constructor(step: string, callIndex: number, stats: MockProviderCallStats) {
     super(`MockProvider: simulated failure at step "${step}" (call ${callIndex})`);
     this.name = 'MockProviderFailure';
     this.step = step;
     this.callIndex = callIndex;
+    this.stats = stats;
   }
 }
 
@@ -162,6 +195,25 @@ function resolveDelay(
   return Math.round(delayMs.min + random() * (delayMs.max - delayMs.min));
 }
 
+/**
+ * The crude 4-characters-per-token rule of thumb real tokenizers land near. Deliberately not
+ * a real tokenizer: `playground/providers` has no dependency budget for one, and this is a
+ * mock. What matters for `model_call.recorded` is that the count is a real function of the
+ * text this call actually handled — so it moves when the request or the generated content
+ * moves, which a constant would not.
+ */
+const CHARS_PER_TOKEN = 4;
+
+function countTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+/** The request as the provider "saw" it — the same string `deriveSeed` folds, so the input
+ *  measurement describes the input the call was actually made with. */
+function requestText(step: string, callIndex: number): string {
+  return `${step}|${callIndex}`;
+}
+
 function buildDetail(step: string, callIndex: number, random: () => number): string {
   return `MockProvider response for step "${step}" (call ${callIndex}): ${random().toFixed(6)}`;
 }
@@ -226,11 +278,21 @@ export class MockProvider {
     const failed = this.alwaysFailSteps.has(step) || failureRoll < this.failureRate;
     const delay = resolveDelay(this.delayMs, delayRandom);
 
+    const detail = buildDetail(step, callIndex, outcomeRandom);
+    const stats: MockProviderCallStats = {
+      provider: MOCK_PROVIDER_NAME,
+      model: MOCK_PROVIDER_MODEL,
+      latencyMs: delay,
+      inputTokens: countTokens(requestText(step, callIndex)),
+    };
+
     const response: MockProviderResponse = {
+      ...stats,
       step,
       callIndex,
-      detail: buildDetail(step, callIndex, outcomeRandom),
+      detail,
       contextVariation: buildContextVariation(step, callIndex, contextRandom),
+      outputTokens: countTokens(detail),
     };
 
     return new Promise<MockProviderResponse>((resolve, reject) => {
@@ -244,7 +306,7 @@ export class MockProvider {
       // never hang a caller that awaits `invoke()`.
       this.scheduler.schedule(
         () => {
-          if (failed) reject(new MockProviderFailure(step, callIndex));
+          if (failed) reject(new MockProviderFailure(step, callIndex, stats));
           else resolve(response);
         },
         delay,

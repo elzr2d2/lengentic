@@ -15,6 +15,8 @@ export type {
   CrossProcessAttestOutcomeInput,
   DecisionHandle,
   RecordDecisionInput,
+  RecordErrorInput,
+  RecordModelCallInput,
   RecordToolCallInput,
   RunHandle,
   StartRunInput,

@@ -95,6 +95,21 @@ export interface PayloadSafety {
   readonly captureToolIO: boolean;
   /** Sanitize → redact → cap one arbitrary-JSON metadata field. */
   metadata(value: Metadata | null | undefined, path: string): Metadata | undefined;
+  /**
+   * Sanitize → redact → cap one caller-supplied FREE-TEXT field. Today that is exactly
+   * `Error.message`, whose wire schema is a bare unbounded `z.string()`.
+   *
+   * §15 enumerates the arbitrary-JSON fields and `Error.message` is not among them — it is
+   * not JSON, it is prose. It still passes through here for two reasons. The cap: §12's
+   * 64KB per-event limit refuses the whole event, `type` and `stepId` included, long
+   * before an unbounded message becomes a "4MB blob" — so capping is what KEEPS the
+   * failure rather than what loses it, and `truncateString`'s own suffix carries the
+   * marker in band because `error.recorded` has no `*Truncated` field to carry it. And the
+   * hook: §15's `redact?: (value, path) => unknown` is the only mechanism that can reach a
+   * secret embedded in prose, since the shipped defaults match on KEYS. Routing the field
+   * through here is what puts it in front of that hook.
+   */
+  text(value: string, path: string): string;
   /** Sanitize → redact → cap ToolCall input and output, honouring `captureToolIO`. */
   toolIO(input: unknown, output: unknown): SafeToolIO;
   /**
@@ -153,6 +168,16 @@ export function createPayloadSafety(options: PayloadSafetyOptions = {}): Payload
       // than dropped — losing the caller's redaction decision would be worse than one
       // reserved key.
       return { [REPLACED_KEY]: capped.value };
+    },
+
+    text(value, path) {
+      const redacted = sanitizeValue(value, path, redact).value;
+      // A caller-supplied redactor may return anything at all. The wire contract requires a
+      // string here, so a non-string replacement is carried as its JSON rather than
+      // dropped — the same choice `metadata` makes above, for the same reason: losing the
+      // caller's redaction decision would be worse than an odd-looking value.
+      const asText = typeof redacted === 'string' ? redacted : safeStringify(redacted);
+      return String(capField(asText, maxFieldBytes).value);
     },
 
     toolIO(input, output) {
