@@ -22,6 +22,57 @@ ledger.
 
 ---
 
+## Discovered during Phase 4 (2026-09-02)
+
+### `tool_call.recorded`'s `error` ships uncapped and unredacted
+
+**Source:** Reviewer re-review of `p4.sdk-entity-emitters` at `d59576d`,
+`.artifacts/evidence/4/p4.sdk-entity-emitters/reviewer-rereview/review.md`.
+**Trigger:** `p4.sdk-drop-reporting`.
+
+`platform/telemetry-sdk/src/handles.ts:283` passes `tool_call.recorded`'s `error` free text
+straight through, while its new sibling `error.recorded` routes the same class of text through
+`PayloadSafety.text`. The JSDoc `p4.sdk-entity-emitters` wrote argues for capping and
+redacting exactly this; the argument is unmet one function away.
+
+Pre-existing — outside that node's blast radius, so it was not fixed there (`REFAC-3`). It is
+one line to route, and the sibling is the precedent, so this stays cheap until someone adds a
+third caller and copies the wrong one.
+
+### The SDK screens neither `U+0000` nor lone surrogates
+
+**Source:** same re-review, cross-checking the lane against `main` @ `69eefd1`.
+**Trigger:** `p4.sdk-drop-reporting`.
+
+`main`'s `containsUnsafeUnicode` now rejects `U+0000` and lone surrogates event-level at the
+API (`platform/api/src/telemetry/wire-sanitize.ts`), because Postgres cannot store them. The
+SDK screens neither before emitting.
+
+Not currently exploitable from inside the SDK: `prefixOf` was verified surrogate-safe, so the
+SDK cannot _create_ a lone surrogate by truncation. But `error.message` on `error.recorded` is
+**the first caller-controlled free-text field on this wire**, so a caller can now hand the SDK
+a string the API will reject. Today that is a rejected event and a drop; the reason it matters
+is that the SDK's own contract is to never throw and to drop _knowingly_, and this drop is
+invisible to it.
+
+### `pnpm kb show §21` returns a degenerate one-line section
+
+**Source:** Phase 5b recon, 2026-09-02, `.artifacts/framing/phase-5b-recon.md`.
+**Trigger:** next `check:kb` change, or the first 5b packet that needs §21.
+
+`pnpm kb show §21` returns only the heading, with range `MVP_PLAN_V3.md:1099-1099`. The real
+body is `MVP_PLAN_V3.md:1099-1145` — the whole Recommendation entity contract. `pnpm oracle
+packet` slices it correctly, so the contract itself is intact and no packet has been briefed
+from a truncated §21.
+
+The retriever's index for that anchor is simply wrong, and `pnpm check:kb` runs in CI
+(`.github/workflows/ci.yml:91`) without catching it. Worth knowing _why_ before fixing: a
+section-boundary bug that produces a one-line section silently is the retrieval equivalent of
+a green that lies — it answers, and the answer is empty. Whatever the cause, the scenario that
+catches it belongs in `check:kb`.
+
+---
+
 ## Discovered during Phase 0 plan review (2026-08-14)
 
 ### Context-conditional defaults
