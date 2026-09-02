@@ -47,6 +47,44 @@ export interface RecordToolCallInput {
 }
 
 /**
+ * §13's ModelCall, as the caller sees it. Reported as one event after the call finished —
+ * there is no start/completion pair, which is why this takes a measured `latencyMs` rather
+ * than the `startedAt`/`completedAt` pair `RecordToolCallInput` takes: the wire has no
+ * timestamps to carry them to (`platform/shared/schema/model-call-events.ts`), and a
+ * duration the SDK derived from two Dates the caller supplied would be the same number by a
+ * longer route.
+ *
+ * Token usage lives here and nowhere else. §13: "Do not copy it onto the Decision — a
+ * second denominator for the same tokens is how a run's cost gets double-counted."
+ */
+export interface RecordModelCallInput {
+  readonly provider: string;
+  readonly model: string;
+  /** Client clock (§13). Never combined with a server clock in one duration (§12). */
+  readonly latencyMs: number;
+  /** §13 marks exactly these two optional. Absent is not zero: a call that reported no
+   *  count and a call that consumed none are different facts about a run's cost. */
+  readonly inputTokens?: number | undefined;
+  readonly outputTokens?: number | undefined;
+  /** §13 leaves the vocabulary unenumerated and the wire stores a free string; an enum
+   *  invented at this layer would reject values the wire never forbade. */
+  readonly status: string;
+  readonly metadata?: Metadata | undefined;
+}
+
+/**
+ * §13's Error, as the caller sees it — an error the *instrumented system* reports as
+ * telemetry, not an ingestion rejection.
+ */
+export interface RecordErrorInput {
+  readonly type: string;
+  /** Free text. Sanitized, redacted and capped before transmission (§15) — see
+   *  `PayloadSafety.text` for why a field §15 does not enumerate goes through it anyway. */
+  readonly message: string;
+  readonly metadata?: Metadata | undefined;
+}
+
+/**
  * §13's Decision, as the caller sees it. `outcome`, `outcomeAttestedBy` and
  * `outcomeObservedAt` are deliberately absent: §14 makes attestation an "independent,
  * idempotent telemetry event" because outcomes are usually known later. A decision that
@@ -115,6 +153,18 @@ export interface StepHandle {
    * the buffer, so it cannot leave the process even if the buffer is later flushed.
    */
   recordToolCall(input: RecordToolCallInput): string;
+  /**
+   * Records one finished model call and returns its `modelCallId` (§12: the envelope's
+   * `entityId`). On this handle rather than the run's because `stepId` is required by the
+   * wire — §13 hangs a ModelCall off the Step that made it.
+   */
+  recordModelCall(input: RecordModelCallInput): string;
+  /**
+   * Records one error the instrumented system observed and returns its `errorId`. On the
+   * step handle for the same reason `recordModelCall` is: the wire requires `stepId`, and
+   * "where failures occurred" is a question about a place in the Run tree.
+   */
+  recordError(input: RecordErrorInput): string;
   /**
    * Records one decision point and returns its handle. The §15 pipeline runs over
    * `rawContext` here, before enqueue, for the same reason it does for tool IO.
@@ -203,6 +253,8 @@ function createStep(
     runId,
     startStep: (child) => createStep(recorder, runId, stepId, child),
     recordToolCall: (call) => recordToolCall(recorder, runId, stepId, call),
+    recordModelCall: (call) => recordModelCall(recorder, runId, stepId, call),
+    recordError: (failure) => recordError(recorder, runId, stepId, failure),
     recordDecision: (decision) => recordDecision(recorder, runId, stepId, decision),
     complete: createCompleter(recorder, 'step.completed', stepId, runId),
   };
@@ -232,6 +284,58 @@ function recordToolCall(
   });
 
   return toolCallId;
+}
+
+function recordModelCall(
+  recorder: EventRecorder,
+  runId: string,
+  stepId: string,
+  call: RecordModelCallInput,
+): string {
+  const modelCallId = recorder.nextId();
+
+  recorder.record('model_call.recorded', modelCallId, runId, {
+    stepId,
+    provider: call.provider,
+    model: call.model,
+    // `latencyMs: z.number().int().nonnegative()`, and the caller supplies it directly — a
+    // duration read off `performance.now()` arrives fractional and would cost the whole
+    // model call at `checkEnvelope` for a sub-millisecond difference. Same clamp
+    // `recordToolCall` applies to `durationMs` one layer down. A non-finite latency is left
+    // alone: it is not a measurement, and dropping-with-a-diagnostic is the honest answer.
+    latencyMs: Number.isFinite(call.latencyMs) ? Math.max(0, Math.round(call.latencyMs)) : NaN,
+    // exactOptionalPropertyTypes (TS-8), and §13's meaning: an absent count is "not
+    // reported", which is not the same statement as zero.
+    ...(call.inputTokens === undefined ? {} : { inputTokens: call.inputTokens }),
+    ...(call.outputTokens === undefined ? {} : { outputTokens: call.outputTokens }),
+    status: call.status,
+    ...metadataOf(recorder, call),
+  });
+
+  return modelCallId;
+}
+
+function recordError(
+  recorder: EventRecorder,
+  runId: string,
+  stepId: string,
+  failure: RecordErrorInput,
+): string {
+  const errorId = recorder.nextId();
+  // §15's order, in order: safe serialization → redaction → size cap → enqueue. `message`
+  // is free text the caller controls, so it goes through the one shared sanitizer rather
+  // than straight onto the wire — `PayloadSafety.text` records why a field §15 does not
+  // enumerate is still routed through it.
+  const message = recorder.safety.text(failure.message, 'message');
+
+  recorder.record('error.recorded', errorId, runId, {
+    stepId,
+    type: failure.type,
+    message,
+    ...metadataOf(recorder, failure),
+  });
+
+  return errorId;
 }
 
 function recordDecision(
