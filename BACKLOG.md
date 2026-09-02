@@ -3319,3 +3319,148 @@ mirrors the anomaly marks the Timeline card already carries, and it invents no m
 **Do:** nothing. This entry exists so the next scope pass finds the decision instead of
 rediscovering the question. **Trigger:** none; delete this entry if the Timeline card's anomaly
 marks are ever removed.
+
+## Discovered at the `p4.entity-ingest` per-node contract cadence (2026-09-02)
+
+Validator, Reviewer and Watchdog over commit `d9c0450`, plus the Coordinator's own adversarial
+reproduction of Reviewer S1. The three `this-node` blocking findings (unscreened payload
+timestamps, the stale `DROP_COUNT_NOTE`, the overclaiming test title) were repaired in the lane
+and are not listed here. Everything below was judged out of scope for that packet's Definition
+of Done. `BACKLOG.md` is outside `p4.entity-ingest`'s `allowed_paths`, so the lane could not file
+these itself.
+
+### A replayed `decision.recorded` silently rebinds a surviving attestation to a different option
+
+**Source:** Phase 4 `p4.entity-ingest` Validator, finding V2, proven against real Postgres
+(probe P3, `.artifacts/evidence/4/p4.entity-ingest/validator/probe-observations.txt`). Declared
+in advance by the Builder as a bounded assumption in
+`.artifacts/handoffs/4-p4.entity-ingest-builder.json`.
+
+`DecisionsRepository.record()`'s update branch overwrites the whole recording-side column bag —
+`decisionType`, `contextKey` and `selectedOption` included — and the response is `ACCEPTED`. The
+attestation columns survive (V2 confirmed `outcome`, `outcomeAttestedBy` and `outcomeObservedAt`
+all intact after a replay with a wholly different payload), so this is **not** attestation data
+loss. What it is: an attested outcome can end up attached to a `selectedOption` the caller never
+attested about, and a decision can silently move to a different group key.
+
+**Do:** decide whether a replayed `decision.recorded` with a differing payload should reject,
+version, or continue to overwrite. **Trigger:** Phase 5 — `contextKey` is the analyzers' group
+key, so an aggregate built before the rebind cannot detect that its rows moved. `Decision` has
+`createdAt` but no `updatedAt`, so there is currently no way to notice after the fact.
+
+### Entity writes bypass the `IngestedEvent` ledger, so replay reports ACCEPTED and never DUPLICATE
+
+**Source:** Phase 4 `p4.entity-ingest` Validator, finding V3, probe P4 —
+`P4 IngestedEvent rows for p4-dec: []`. Also the Builder's own third `follow_up_required` entry.
+
+The four new entity-write types never enter the dedup ledger at all. A replayed `eventId` reports
+`ACCEPTED` a second time where a Run/Step replay reports `DUPLICATE`; even the same `eventId`
+under a different `entityId` is accepted. Row-level idempotency holds — all four writers are
+`upsert` keyed on the wire's own entity id — so nothing is corrupted. The cost is that
+`IngestResponse.accepted` means "writes applied" for these types and "events newly stored" for
+Run/Step: one field with two meanings in a single response.
+
+**Do:** ledger-back the four entity types for replay parity, or document the split meaning in the
+wire contract. **Trigger:** whoever first reasons about `accepted` as a count rather than as a
+per-event status — a client-side retry metric, or an ingestion dashboard.
+
+### A drop count reported for a run with no row yet is lost permanently
+
+**Source:** Phase 4 `p4.entity-ingest` Validator, finding V4, probe P5c — `99` reported, run row
+`null` before and still `null` after a later `run.started`.
+
+`incrementDroppedCount` is `updateMany`-shaped: zero matched rows is a silent no-op. The
+docstring justifies this by parity with `touchRunLiveness`, but the parity does not hold — a lost
+liveness timestamp is re-established by the very next event, a lost counter is never
+re-derivable. Reachable whenever a batch of only entity events precedes that run's own
+`run.started`. Same-batch is safe (probe P5d): the fold runs after the group writes.
+
+**Do:** buffer the count until the Run row exists, or accept and document the loss. **Trigger:**
+the first out-of-order drop report seen in a real deployment.
+
+### The drop counter has no idempotency key, so a retried batch double-counts
+
+**Source:** Phase 4 `p4.entity-ingest` Validator finding V5 and Reviewer finding S3
+(`ASYNC-5 [MUST]` — a retryable operation must be idempotent), reached independently.
+
+`incrementDroppedCount` is a non-idempotent `+=` on a request the SDK is built to retry
+(`platform/telemetry-sdk/src/transport.ts:81` classifies transport errors as `retryable`). Events
+de-dupe through the `IngestedEvent` ledger; the counter does not. A `200` lost in transit
+double-credits the drops. Not wrong today only because nothing populates the field.
+
+**Do:** key the increment on something replay-stable — a batch id, or the ledger. **Trigger:**
+`p4.sdk-drop-reporting`, the node that lands the producer. This becomes live the moment it does.
+
+### `droppedSinceLastBatch` credits its full count to every run a batch names
+
+**Source:** Phase 4 `p4.entity-ingest` Validator finding V6 (quantified: probe P6 returned
+`{ p6a: 10, p6b: 10, actualDropsReported: 10 }`) and Reviewer finding S4. Declared by the Builder
+as a bounded assumption and as `risks[0]` in its handoff.
+
+`referencedRunIds` collects every distinct run the batch names and credits each the whole amount
+— a 100% over-count at two runs, `(N x 100 - 100)%` at N. Probe P6 also showed `p6b` was named
+**only** by an event the server rejected after parsing, and was still credited in full. Reachable
+rather than hypothetical: one `TelemetryClient` owns one `BoundedQueue` and `queue.take()` is FIFO
+across runs, so any process calling `startRun` twice mixes runs in one batch
+(`playground/determinism/test/telemetry.spec.ts:24` and `:89` already do), and
+`client.attestOutcome(decisionId, outcome, { runId })` takes an arbitrary `runId`.
+
+The comment at `telemetry.service.ts:513` says each run "is still owed its **share**"; the code
+gives each the whole amount. Neither full-credit nor division is true, so the cheapest honest fix
+is presentational — the Dashboard label "Dropped telemetry events" currently carries no
+qualification.
+
+**Do:** get an explicit product decision on multi-run attribution. **Trigger:** the first batch
+observed spanning two runs, or any change to the Dashboard's drop-count label.
+
+### Entity events do not advance `Run.lastEventAt`
+
+**Source:** Phase 4 `p4.entity-ingest` Validator, finding V8, probe P8.
+
+Only the Run/Step group path calls `touchRunLiveness`. A run emitting nothing but Phase 4 entity
+telemetry — decisions, model calls, tool calls, errors — looks stale to the liveness read even
+while it is actively reporting.
+
+**Do:** touch liveness from the entity-write path too. **Trigger:** the first liveness-driven
+feature that matters (run-is-alive indicators, stale-run reaping).
+
+### The entity-write path is one round trip per event, where the Run/Step path is one per group
+
+**Source:** Phase 4 `p4.entity-ingest` Reviewer, finding S5 (`PERF-2`).
+
+`persistEntityWrites` loops sequentially, up to `INGEST_LIMITS.maxEventsPerBatch: 500` round
+trips. The Run/Step path was deliberately built the other way — "a 10-event batch for one Step is
+one upsert, not ten" (`telemetry.service.ts:456`). Sequential ordering is genuinely required for
+two events on the _same_ entity, but that does not require serializing across _different_
+entities. Also here: `platform/dashboard/src/app/runs/[id]/page.tsx` now makes a second
+sequential `await` fetch on every run-detail render.
+
+**Do:** batch by entity, keeping same-entity ordering. **Trigger:** measured ingest latency, or
+the first batch near the 500 cap. Not worth doing on speculation (`PERF-1`).
+
+### ADR 0014's Detection clause asks for a run-summary assertion; the test asserts the column
+
+**Source:** Phase 4 `p4.entity-ingest` Reviewer, finding SC2.
+
+ADR 0014 Detection for decision 2 asks for "a test that posts a batch carrying
+`droppedSinceLastBatch` and asserts **the run summary** reports the total". The integration test
+asserts `prisma.client.run.findUnique(...).droppedTelemetryEventCount` — the column. The
+column-to-summary-to-card links are each unit-tested (`runs.service.spec.ts`,
+`runs-pages.spec.ts`) but never composed in one run.
+
+**Do:** compose the chain in one end-to-end assertion. **Trigger:** `p7.e2e`, or the Phase 4
+end-to-end proof if one is built first.
+
+### Optional: per-reason drop breakdown
+
+**Source:** `p4.entity-ingest` Builder `follow_up_required` #2; ADR 0014 decision 2 rejected it
+explicitly.
+
+§16 counts five distinct drop reasons — `droppedOverflow`, `droppedInvalid`, `droppedTooLarge`,
+`droppedAfterShutdown`, `droppedUndeliverable`. The wire carries only their sum. The platform
+therefore learns _how many_ events a client dropped, never _why_; anything reasoning about drop
+causes must read SDK-side `stats()`.
+
+**Do:** nothing unless product asks. ADR 0014 rejected the sixth entity and table as more
+machinery than one DoD line is worth, and that reasoning still holds. **Trigger:** a product ask
+for drop-cause reporting. Do not re-litigate ADR 0014 without one.

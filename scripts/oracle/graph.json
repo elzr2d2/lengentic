@@ -1143,6 +1143,74 @@
       "changeClass": "contract"
     },
     {
+      "id": "p4.sdk-entity-emitters",
+      "phase": 4,
+      "lane": "sdk",
+      "owner": "builder",
+      "title": "SDK emitters for model_call.recorded and error.recorded, plus playground wiring",
+      "needs": ["p2.sdk-core", "p4.wire-decisions", "p4.payload-safety"],
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/telemetry-sdk/src",
+          "pattern": "recordModelCall"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/telemetry-sdk/src",
+          "pattern": "recordError"
+        }
+      ],
+      "note": "CUT 2026-09-02 at the p4.entity-ingest contract cadence, on Reviewer finding SC1, confirmed by the Coordinator: the SDK emits SEVEN of the nine wire types. grep over platform/telemetry-sdk/src returns run.started, run.completed, step.started, step.completed, tool_call.recorded, decision.recorded and decision.outcome_attested -- and nothing for model_call.recorded or error.recorded. There is no recordModelCall or recordError on the public surface at all, and playground/ never references either type. THE MIRROR IMAGE OF ADR 0014: that ADR closed the seam on the SERVER side and rejected a decisions-only fix precisely because it would leave the DoD preamble (which models and tools were called, where failures occurred) false and Run Explorer views rendering permanent absence. p4.entity-ingest built all five write paths; two of them have no producer, so the preamble stays false for the same reason, one layer up. MVP_PLAN_V3.md never mentions model_call emission and no node owned it -- the same between-nodes gap check:probes cannot see. NOT BLOCKED ON p4.entity-ingest: ModelCallRecordedPayloadSchema and ErrorRecordedPayloadSchema are already on main via p4.wire-decisions, so this node needs only the wire types, not the ingest routing. Human approved the scope at trigger 2 on 2026-09-02. PROBES: both names this node alone introduces, inside the surface it owns.",
+      "own": {
+        "allowed": ["platform/telemetry-sdk/**", "playground/**"],
+        "forbidden": [
+          "platform/api/**",
+          "platform/dashboard/**",
+          "platform/analysis-engine/**",
+          "platform/database/**",
+          "platform/shared/**"
+        ]
+      },
+      "validate": ["pnpm --filter @lengentic/telemetry-sdk test", "pnpm gates"],
+      "risk": "high",
+      "changeClass": "contract"
+    },
+    {
+      "id": "p4.sdk-drop-reporting",
+      "phase": 4,
+      "lane": "sdk",
+      "owner": "builder",
+      "title": "SDK reports its drop counters through the batch-level droppedSinceLastBatch field",
+      "needs": ["p2.sdk-core", "p4.entity-ingest", "p4.sdk-entity-emitters"],
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/telemetry-sdk/src",
+          "pattern": "droppedSinceLastBatch"
+        }
+      ],
+      "note": "CUT 2026-09-02 at the Phase 4 gate repair. ADR 0014 decision 2 added an optional batch-level droppedSinceLastBatch to IngestRequestSchema and folded it into Run.droppedTelemetryEventCount, but platform/telemetry-sdk/** was a forbidden path for p4.entity-ingest, so NOTHING SENDS THE FIELD. DoD line 6 (dropped-event count is visible in the Dashboard) is satisfiable today only by a hand-built request, which is not evidence that the product works. This node makes the SDK's existing section 16 drop counters reach the existing field. It must NOT redesign the server contract. SEMANTICS, fixed before dispatch: TelemetryTransport.send gains an OPTIONAL droppedSinceLastBatch on its options object (additive, never a breaking transport redesign); the HTTP transport serializes it beside events; the value is drops NOT YET ACKNOWLEDGED by a successfully delivered batch; the new SDK sends 0 as a genuine zero report while older SDKs keep omitting the field so the Dashboard keeps rendering null / not reported; the pending count is snapshotted ONCE per batch and that exact snapshot is reused across retries; the acknowledged baseline advances ONLY after successful delivery; a failed attempt never clears the count; drops occurring while a delivery is in flight are preserved for a later batch; consecutive successful batches never double-count. NO empty sdk.health batch and no new entity. Multi-run attribution and per-reason reporting stay OUT (BACKLOG.md, 2026-09-02 section). SEQUENCED AFTER p4.sdk-entity-emitters, not parallel with it: both nodes own platform/telemetry-sdk/src/client.ts. Human approved the scope at trigger 2 on 2026-09-02.",
+      "own": {
+        "allowed": ["platform/telemetry-sdk/**"],
+        "forbidden": [
+          "platform/api/**",
+          "platform/dashboard/**",
+          "platform/analysis-engine/**",
+          "platform/database/**",
+          "platform/shared/**",
+          "playground/**"
+        ]
+      },
+      "validate": [
+        "pnpm --filter @lengentic/telemetry-sdk test",
+        "pnpm gates",
+        "pnpm test:integration"
+      ],
+      "risk": "high",
+      "changeClass": "contract"
+    },
+    {
       "id": "p5.engine-pkg",
       "phase": 5,
       "lane": "engine",
