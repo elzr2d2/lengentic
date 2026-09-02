@@ -1128,7 +1128,7 @@ describe('POST /v1/telemetry/events — the five Phase 4 entity types persist fo
     expect(await prisma.client.run.findUnique({ where: { id: 'e2e-err-1' } })).toBeNull();
   });
 
-  it('ADR 0014 decision 2: droppedSinceLastBatch folds into the named run’s droppedTelemetryEventCount, a real zero included', async () => {
+  it('ADR 0014 decision 2: droppedSinceLastBatch folds into the named run’s droppedTelemetryEventCount', async () => {
     const runId = 'e2e-run-dropped';
 
     await post([
@@ -1165,5 +1165,214 @@ describe('POST /v1/telemetry/events — the five Phase 4 entity types persist fo
 
     run = await prisma.client.run.findUnique({ where: { id: runId } });
     expect(run?.droppedTelemetryEventCount).toBe(3);
+  });
+
+  /**
+   * R3 (Reviewer finding, 2026-09-02, repair attempt 1). The test above claims "a real zero
+   * included" in its title but only ever posted `droppedSinceLastBatch: 3`; the zero case is
+   * the one ADR 0014's Detection section actually asks for at the store level, because zero
+   * is the value the column has to be able to tell apart from "never reported" — and NULL vs
+   * 0 is exactly the distinction `Run.droppedTelemetryEventCount` refuses `@default(0)` to
+   * preserve. Given its own run, so the two claims fail independently.
+   */
+  it('ADR 0014 decision 2: a reported droppedSinceLastBatch of 0 stores 0, distinguishable from a never-reported null', async () => {
+    const runId = 'e2e-run-dropped-zero';
+
+    await post([
+      {
+        eventId: 'evt-e2e-run-dropped-zero-start',
+        schemaVersion: '1',
+        type: 'run.started',
+        entityId: runId,
+        runId,
+        occurredAt: '2026-09-02T10:00:09.000Z',
+        payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+      },
+    ]);
+
+    // Never reported: NULL, not 0. This is the value the zero below has to be distinguishable
+    // from — asserted here so the two are compared against each other, not merely each
+    // against a literal.
+    const beforeReport = await prisma.client.run.findUnique({ where: { id: runId } });
+    expect(beforeReport?.droppedTelemetryEventCount).toBeNull();
+
+    await request(httpServer(app))
+      .post('/v1/telemetry/events')
+      .send({
+        events: [
+          {
+            eventId: 'evt-e2e-run-dropped-zero-complete',
+            schemaVersion: '1',
+            type: 'run.completed',
+            entityId: runId,
+            runId,
+            occurredAt: '2026-09-02T10:00:10.000Z',
+            payload: { status: 'COMPLETED' },
+          },
+        ],
+        droppedSinceLastBatch: 0,
+      });
+
+    const afterReport = await prisma.client.run.findUnique({ where: { id: runId } });
+    expect(afterReport?.droppedTelemetryEventCount).toBe(0);
+    expect(afterReport?.droppedTelemetryEventCount).not.toBeNull();
+    expect(afterReport?.droppedTelemetryEventCount).not.toBe(
+      beforeReport?.droppedTelemetryEventCount,
+    );
+  });
+
+  /**
+   * R1 (Reviewer finding, 2026-09-02, repair attempt 1). Confirmed against this same image
+   * before the fix — `.artifacts/evidence/4/p4.entity-ingest/coordinator/s1-confirmation.md`,
+   * raw error `22008 date/time field value out of range: "0000-01-01 00:00:00"` thrown from
+   * `ToolCallRepository.record` out through `TelemetryService.ingest`, HTTP 500, zero
+   * per-event results, and the identical batch throwing again on every retry because the Run
+   * event beside it had already committed.
+   *
+   * These fixtures are the confirmation probe's, adapted to this suite's HTTP boundary: the
+   * tool-call payload is the same one the passing test above uses, with ONE field varied at a
+   * time and `occurredAt` left valid throughout — so the only thing that can produce a
+   * rejection is the new payload screen, not the pre-existing `occurredAt` one.
+   */
+  describe('R1: a payload value Postgres cannot store rejects only its own event', () => {
+    const toolCall = (
+      id: string,
+      payload: Record<string, unknown> = {},
+    ): Record<string, unknown> => ({
+      eventId: `${id}-evt`,
+      schemaVersion: '2',
+      type: 'tool_call.recorded',
+      entityId: id,
+      runId: 'e2e-r1-run',
+      occurredAt: '2026-09-02T10:00:05.000Z',
+      payload: {
+        stepId: 'e2e-step-1',
+        toolName: 'search',
+        input: { query: 'weather' },
+        output: { rows: 3 },
+        inputTruncated: false,
+        outputTruncated: false,
+        inputBytes: 42,
+        outputBytes: 100,
+        startedAt: '2026-09-02T10:00:05.000Z',
+        completedAt: '2026-09-02T10:00:05.250Z',
+        durationMs: 250,
+        success: true,
+        ...payload,
+      },
+    });
+
+    it('a year-0000 startedAt is a per-event REJECTED, not a thrown 500', async () => {
+      const response = await post([
+        toolCall('r1-tc-started', { startedAt: '0000-01-01T00:00:00.000Z' }),
+      ]);
+
+      expect(response.status).toBe(200);
+      expect(response.body.results[0]).toMatchObject({ status: 'REJECTED' });
+      expect(response.body.results[0]?.error?.code).toBe('INVALID_PAYLOAD');
+      expect(response.body.results[0]?.error?.message).toContain('startedAt');
+      expect(response.body.rejected).toBe(1);
+      // The row Postgres would have refused was never attempted.
+      expect(
+        await prisma.client.toolCall.findUnique({ where: { id: 'r1-tc-started' } }),
+      ).toBeNull();
+    });
+
+    it('a year-0000 observedAt on decision.outcome_attested is a per-event REJECTED too', async () => {
+      const response = await post([
+        {
+          eventId: 'r1-att-evt',
+          schemaVersion: '2',
+          type: 'decision.outcome_attested',
+          entityId: 'r1-dec',
+          runId: 'e2e-r1-run',
+          occurredAt: '2026-09-02T10:00:05.000Z',
+          payload: { outcome: 'SUCCESS', observedAt: '0000-01-01T00:00:00.000Z' },
+        },
+      ]);
+
+      expect(response.status).toBe(200);
+      expect(response.body.results[0]).toMatchObject({ status: 'REJECTED' });
+      expect(response.body.results[0]?.error?.message).toContain('observedAt');
+      // §14 accepts an attestation for an unknown decision id by INSERTING a row — so the
+      // absence of one here is the evidence the rejection happened before persistence.
+      expect(await prisma.client.decision.findUnique({ where: { id: 'r1-dec' } })).toBeNull();
+    });
+
+    it('an int4-overflowing durationMs is a per-event REJECTED (SQLSTATE 22003, same seam)', async () => {
+      const response = await post([toolCall('r1-tc-duration', { durationMs: 2_147_483_648 })]);
+
+      expect(response.status).toBe(200);
+      expect(response.body.results[0]).toMatchObject({ status: 'REJECTED' });
+      expect(response.body.results[0]?.error?.message).toContain('durationMs');
+      expect(
+        await prisma.client.toolCall.findUnique({ where: { id: 'r1-tc-duration' } }),
+      ).toBeNull();
+    });
+
+    /**
+     * The assertion the whole repair exists for. Before the fix this exact batch produced
+     * HTTP 500 with no `results` array at all, the `run.started` row committed anyway, and
+     * every retry of the identical batch threw again — the batch could never succeed. The
+     * retry below is the part that proves the poison is gone rather than merely deferred.
+     */
+    it('well-formed siblings in the SAME batch still land, and the batch is retryable', async () => {
+      const batch = [
+        {
+          eventId: 'r1-run-start',
+          schemaVersion: '1',
+          type: 'run.started',
+          entityId: 'e2e-r1-run',
+          runId: 'e2e-r1-run',
+          occurredAt: '2026-09-02T10:00:04.000Z',
+          payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+        },
+        toolCall('r1-tc-poison', { startedAt: '0000-01-01T00:00:00.000Z' }),
+        toolCall('r1-tc-good'),
+      ];
+
+      const response = await post(batch);
+
+      expect(response.status).toBe(200);
+      expect(response.body.results.map((r) => r.status)).toStrictEqual([
+        'ACCEPTED',
+        'REJECTED',
+        'ACCEPTED',
+      ]);
+      expect(await prisma.client.run.findUnique({ where: { id: 'e2e-r1-run' } })).not.toBeNull();
+      expect(
+        await prisma.client.toolCall.findUnique({ where: { id: 'r1-tc-good' } }),
+      ).not.toBeNull();
+      expect(await prisma.client.toolCall.findUnique({ where: { id: 'r1-tc-poison' } })).toBeNull();
+
+      // Retrying the identical batch now produces an honest per-event answer instead of a
+      // second 500. Previously this threw, twice, and could never do anything else.
+      //
+      // The Run event comes back DUPLICATE off the `IngestedEvent` ledger; the tool call
+      // deliberately is NOT asserted to, because the entity-write path does not consult that
+      // ledger at all — a separate, non-blocking finding filed to `BACKLOG.md`, and one this
+      // test must not quietly pin as correct. What it does assert is the property this repair
+      // owns: neither good event is REJECTED, and the poison event still rejects only itself.
+      const retry = await post(batch);
+      expect(retry.status).toBe(200);
+      expect(retry.body.results[0]?.status).toBe('DUPLICATE');
+      expect(retry.body.results[1]).toMatchObject({ status: 'REJECTED' });
+      expect(retry.body.results[2]?.status).not.toBe('REJECTED');
+    });
+
+    it('CONTROL: representable values at the very edge of both bounds still persist', async () => {
+      const response = await post([
+        toolCall('r1-tc-edge', {
+          startedAt: '0001-01-01T00:00:00.000Z',
+          durationMs: 2_147_483_647,
+          inputBytes: 2_147_483_647,
+        }),
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+      const stored = await prisma.client.toolCall.findUnique({ where: { id: 'r1-tc-edge' } });
+      expect(stored).toMatchObject({ durationMs: 2_147_483_647, inputBytes: 2_147_483_647 });
+      expect(stored?.startedAt.toISOString()).toBe('0001-01-01T00:00:00.000Z');
+    });
   });
 });

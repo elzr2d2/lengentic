@@ -1334,12 +1334,16 @@ describe('GET /runs/[id] — the Phase 4 collections, and the difference between
   });
 
   it('says the dropped-event count is unreported, and why, rather than printing a zero', async () => {
-    // "Ingestion Health (dropped events, if any)" — MVP_PLAN_V3.md:1789. §16's drop counters
-    // are client-side SDK state; no envelope field, no ingest-response field and no column
-    // carries them to the platform, so `GET /v1/runs/:id` has nothing to report and
-    // `run-summary.ts` answers `null` on the one endpoint that names the field at all.
-    // A `0` here would be the green that lies: "no events were dropped", asserted from the
-    // absence of a signal the platform never receives.
+    // "Ingestion Health (dropped events, if any)" — MVP_PLAN_V3.md:1789. §16's five
+    // per-reason drop counters are client-side SDK state; ADR 0014 decision 2 carries only
+    // their SUM (`droppedSinceLastBatch` -> `Run.droppedTelemetryEventCount`), and no SDK
+    // produces it yet, so `GET /v1/runs/:id` has nothing to report and `run-summary.ts`
+    // answers `null` on the one endpoint that names the field at all. A `0` here would be the
+    // green that lies: "no events were dropped", asserted from a signal nobody sent.
+    //
+    // R2 (Reviewer, 2026-09-02): the expected string below is pinned in substance, not
+    // deleted — the note's claim about what the wire carries had gone stale against the same
+    // commit that added the field, and this test is what makes the next such drift fail.
     stubApi({ '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY } });
 
     const markup = await renderPage(
@@ -1348,7 +1352,7 @@ describe('GET /runs/[id] — the Phase 4 collections, and the difference between
 
     expect(labelledRow(markup, 'Dropped telemetry events')).toBe('not reported');
     expect(telemetryCard(markup, 'Ingestion health').notes).toContain(
-      '§16’s drop counters are client-side SDK state. No envelope field, no ingest response and no column carries them to the platform, so no drop count has been reported for this run. That is not a claim that none were dropped.',
+      '§16’s five per-reason drop counters stay client-side SDK state; only their sum crosses the wire, and none has been reported for this run — either no batch has sent one, or the run summary could not be fetched. That is not a claim that none were dropped.',
     );
   });
 
@@ -1371,7 +1375,7 @@ describe('GET /runs/[id] — the Phase 4 collections, and the difference between
     // The "not reported" note only makes sense over an absence — it must not sit next to a
     // real number telling the reader the opposite.
     expect(telemetryCard(markup, 'Ingestion health').notes).not.toContain(
-      '§16’s drop counters are client-side SDK state. No envelope field, no ingest response and no column carries them to the platform, so no drop count has been reported for this run. That is not a claim that none were dropped.',
+      '§16’s five per-reason drop counters stay client-side SDK state; only their sum crosses the wire, and none has been reported for this run — either no batch has sent one, or the run summary could not be fetched. That is not a claim that none were dropped.',
     );
   });
 

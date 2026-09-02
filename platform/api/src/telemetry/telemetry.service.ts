@@ -35,6 +35,7 @@ import {
   exceedsMaxStructuralDepth,
   isPostgresUnrepresentableTimestamp,
   MAX_STRUCTURAL_DEPTH,
+  unrepresentablePayloadReason,
 } from './wire-sanitize';
 
 interface BatchItem {
@@ -66,7 +67,7 @@ interface EntityWriteItem {
  * One raw event's §12 verdict, before anything is grouped or persisted. Extracted out of
  * `TelemetryService.ingest`'s loop body — DESIGN's cyclomatic-complexity bound (15) does not
  * survive the two extra branches ADR 0014 added (the merge/write split, and the `entityKindOf
- * === null` fallback) on top of the five pre-existing rejection checks — and kept a pure,
+ * === null` fallback) on top of the rejection checks — and kept a pure,
  * unexported function rather than a private method, since it needs nothing from `this`.
  *
  * `runId` on the `rejected` outcome is present only when the event got far enough to have
@@ -172,6 +173,33 @@ function classifyEvent(raw: unknown): EventClassification {
           code: INGEST_ERROR_CODES.INVALID_PAYLOAD,
           message: 'event occurredAt names a date Postgres cannot store (year 0000 does not exist)',
         },
+      },
+    };
+  }
+
+  // R1 (Reviewer finding, 2026-09-02, repair attempt 1 on `p4.entity-ingest` — the FOURTH
+  // attempt at this defect class, so it screens the class rather than the reported shape).
+  // The check above screens `occurredAt` and nothing else, but `TimestampSchema` is ONE
+  // shared schema and Phase 4 gave three more payload fields the same type — plus six
+  // unbounded integers that land in Postgres `int4`. Unscreened, each of them threw out of
+  // `persistEntityWrites` as an HTTP 500 with ZERO per-event results, AFTER the Run/Step
+  // groups in the same batch had already committed, which made the batch permanently
+  // unretryable (reproduced live, SQLSTATE 22008:
+  // `.artifacts/evidence/4/p4.entity-ingest/coordinator/s1-confirmation.md`). Rejecting
+  // here, event-level and before the merge/write split, puts every one of them back under
+  // §12's "a malformed event rejects only itself" — the same contract, and the same reason,
+  // as the `occurredAt` screen it sits beside. `wire-sanitize.ts` holds the field tables and
+  // the reason string; its spec pins both against the real Zod schemas so a payload field
+  // added later cannot silently escape this line.
+  const unrepresentablePayload = unrepresentablePayloadReason(event);
+  if (unrepresentablePayload !== null) {
+    return {
+      outcome: 'rejected',
+      runId: event.runId,
+      result: {
+        eventId: event.eventId,
+        status: 'REJECTED',
+        error: { code: INGEST_ERROR_CODES.INVALID_PAYLOAD, message: unrepresentablePayload },
       },
     };
   }
@@ -429,7 +457,8 @@ export class TelemetryService {
    * POST /v1/telemetry/events. §12's whole per-event contract in one pass:
    *
    * 1. Event-level rejection (size, then schema, then structural depth, then wire-safety,
-   *    then timestamp representability) never fails the batch — every raw event gets
+   *    then `occurredAt` representability, then the payload's own persisted columns — R1,
+   *    2026-09-02) never fails the batch — every raw event gets
    *    exactly one `IngestResult`, regardless of what happens to its neighbours. The whole
    *    per-event stage runs inside a per-event `try`/`catch` as a backstop, but the
    *    structural-depth check (tester findings F-1/F-3/F-6, 2026-08-20, repair attempt 3;

@@ -45,8 +45,23 @@ import {
  * agent's errors as ingestion faults would report the platform's health from the agent's, which
  * `run-view.ts` names as the mistake this vocabulary exists to prevent.
  */
+/**
+ * R2 (Reviewer finding, 2026-09-02): the previous wording — "no envelope field, no ingest
+ * response and no column carries them to the platform" — was made false by the very commit
+ * that shipped this card. ADR 0014 decision 2 added `IngestRequestSchema.droppedSinceLastBatch`
+ * and the `Run.droppedTelemetryEventCount` column, so a wire field and a column now both
+ * exist. Because no SDK produces the field yet, this is also the only branch a reader
+ * currently sees, which made it the single most-read false sentence on the page.
+ *
+ * What is still true is the part that matters, and it is what this now says: §16's five
+ * per-reason counters remain client-side SDK state (only their SUM crosses the wire), no drop
+ * count has been reported for THIS run, and absence is not a claim that nothing was dropped.
+ * The two reasons are named together deliberately — `ingestion-health-data.ts` collapses a
+ * failed `/summary` fetch into the same `null`, so a note that claimed only "never reported"
+ * would be false after a transport error.
+ */
 const DROP_COUNT_NOTE =
-  '§16’s drop counters are client-side SDK state. No envelope field, no ingest response and no column carries them to the platform, so no drop count has been reported for this run. That is not a claim that none were dropped.';
+  '§16’s five per-reason drop counters stay client-side SDK state; only their sum crosses the wire, and none has been reported for this run — either no batch has sent one, or the run summary could not be fetched. That is not a claim that none were dropped.';
 
 export function IngestionHealthCard({
   run,

@@ -1025,3 +1025,180 @@ describe('TelemetryService.ingest — deep-metadata recursion is contained per-e
     expect(runs.has('deep-bad')).toBe(false);
   });
 });
+
+// R1 (Reviewer finding, 2026-09-02, repair attempt 1 on `p4.entity-ingest`). The suite above
+// pins the `occurredAt` screen; this one pins the same contract for every OTHER value the
+// five Phase 4 types carry into a column narrower than the wire contract. Before the fix each
+// of these threw out of `persistEntityWrites` as an HTTP 500 with zero per-event results —
+// after the Run/Step groups in the same batch had already committed, so the caller could not
+// retry the batch to success either (reproduced against real Postgres, SQLSTATE 22008:
+// `.artifacts/evidence/4/p4.entity-ingest/coordinator/s1-confirmation.md`).
+describe('TelemetryService.ingest — an unstorable PAYLOAD value is an event-level rejection too (R1)', () => {
+  const toolCallEvent = (payload: Record<string, unknown>): Record<string, unknown> => ({
+    eventId: 'evt-tool-1',
+    schemaVersion: '2',
+    type: 'tool_call.recorded',
+    entityId: 'tc-1',
+    runId: 'run-1',
+    occurredAt: '2026-09-02T10:00:05.000Z',
+    payload: {
+      stepId: 'step-1',
+      toolName: 'search',
+      input: { query: 'weather' },
+      output: { rows: 3 },
+      inputTruncated: false,
+      outputTruncated: false,
+      inputBytes: 42,
+      outputBytes: 100,
+      startedAt: '2026-09-02T10:00:05.000Z',
+      completedAt: '2026-09-02T10:00:05.250Z',
+      durationMs: 250,
+      success: true,
+      ...payload,
+    },
+  });
+
+  const attestationEvent = (payload: Record<string, unknown>): Record<string, unknown> => ({
+    eventId: 'evt-attest-r1',
+    schemaVersion: '2',
+    type: 'decision.outcome_attested',
+    entityId: 'dec-r1',
+    runId: 'run-1',
+    occurredAt: '2026-09-02T10:00:06.000Z',
+    payload: { outcome: 'SUCCESS', ...payload },
+  });
+
+  it('rejects a year-0000 startedAt as a per-event REJECTED and never calls the ToolCall writer at all', async () => {
+    const { repository } = fakeRepository();
+    const entities = fakeEntityWriters();
+    const service = createTelemetryService(repository, entities);
+
+    const response = await service.ingest([
+      toolCallEvent({ startedAt: '0000-01-01T00:00:00.000Z' }),
+    ]);
+
+    expect(response.rejected).toBe(1);
+    expect(response.accepted).toBe(0);
+    expect(response.results[0]).toMatchObject({ status: 'REJECTED' });
+    expect(response.results[0]?.error?.code).toBe('INVALID_PAYLOAD');
+    expect(response.results[0]?.error?.message).toContain('startedAt');
+    // The whole point: the event is stopped BEFORE the entity-write path, so no writer ever
+    // sees the value Postgres would have thrown on.
+    expect(entities.calls).toStrictEqual([]);
+  });
+
+  it('rejects a year-0000 completedAt — the sibling field, not only the one that was reported', async () => {
+    const { repository } = fakeRepository();
+    const service = createTelemetryService(repository);
+
+    const response = await service.ingest([
+      toolCallEvent({ completedAt: '0000-01-01T00:00:00.000Z' }),
+    ]);
+
+    expect(response.results[0]?.error?.message).toContain('completedAt');
+  });
+
+  it("rejects decision.outcome_attested's year-0000 observedAt", async () => {
+    const { repository } = fakeRepository();
+    const service = createTelemetryService(repository);
+
+    const response = await service.ingest([
+      attestationEvent({ observedAt: '0000-01-01T00:00:00.000Z' }),
+    ]);
+
+    expect(response.results[0]).toMatchObject({ status: 'REJECTED' });
+    expect(response.results[0]?.error?.message).toContain('observedAt');
+  });
+
+  it('rejects an int4-overflowing durationMs — same seam, same permanent-poison failure (SQLSTATE 22003)', async () => {
+    const { repository } = fakeRepository();
+    const entities = fakeEntityWriters();
+    const service = createTelemetryService(repository, entities);
+
+    const response = await service.ingest([toolCallEvent({ durationMs: 2_147_483_648 })]);
+
+    expect(response.results[0]).toMatchObject({ status: 'REJECTED' });
+    expect(response.results[0]?.error?.code).toBe('INVALID_PAYLOAD');
+    expect(response.results[0]?.error?.message).toContain('durationMs');
+    expect(entities.calls).toStrictEqual([]);
+  });
+
+  it('rejects an int4-overflowing latencyMs on model_call.recorded', async () => {
+    const { repository } = fakeRepository();
+    const service = createTelemetryService(repository);
+
+    const response = await service.ingest([
+      {
+        eventId: 'evt-model-r1',
+        schemaVersion: '2',
+        type: 'model_call.recorded',
+        entityId: 'mc-r1',
+        runId: 'run-1',
+        occurredAt: '2026-09-02T10:00:07.000Z',
+        payload: {
+          stepId: 'step-1',
+          provider: 'anthropic',
+          model: 'claude',
+          latencyMs: 2_147_483_648,
+          status: 'ok',
+        },
+      },
+    ]);
+
+    expect(response.results[0]?.error?.message).toContain('latencyMs');
+  });
+
+  // This is the assertion the whole fix exists for. Before it, the poison event threw out of
+  // `ingest` entirely: the Run group had already committed but the caller received NO
+  // per-event results for anything, and the identical batch threw again on every retry.
+  it('a well-formed sibling in the SAME batch still lands, and ingest does not throw', async () => {
+    const { repository, runs } = fakeRepository();
+    const entities = fakeEntityWriters();
+    const service = createTelemetryService(repository, entities);
+
+    const response = await service.ingest([
+      runStartedEvent({ entityId: 'run-1', runId: 'run-1' }),
+      toolCallEvent({ startedAt: '0000-01-01T00:00:00.000Z' }),
+      { ...toolCallEvent({}), eventId: 'evt-tool-good', entityId: 'tc-good' },
+    ]);
+
+    expect(response.results.map((r) => r.status)).toStrictEqual([
+      'ACCEPTED',
+      'REJECTED',
+      'ACCEPTED',
+    ]);
+    expect(response.accepted).toBe(2);
+    expect(response.rejected).toBe(1);
+    expect(runs.get('run-1')?.startedAt).not.toBeNull();
+    expect(entities.calls).toStrictEqual([{ method: 'toolCalls.record', entityId: 'tc-good' }]);
+  });
+
+  it('a representable payload is untouched — the control that keeps this screen from rejecting good events', async () => {
+    const { repository } = fakeRepository();
+    const entities = fakeEntityWriters();
+    const service = createTelemetryService(repository, entities);
+
+    const response = await service.ingest([
+      toolCallEvent({ durationMs: 2_147_483_647, startedAt: '0001-01-01T00:00:00.000Z' }),
+      attestationEvent({ observedAt: '2026-09-02T10:00:06.000Z' }),
+    ]);
+
+    expect(response.results.map((r) => r.status)).toStrictEqual(['ACCEPTED', 'ACCEPTED']);
+    expect(entities.calls).toStrictEqual([
+      { method: 'toolCalls.record', entityId: 'tc-1' },
+      { method: 'decisions.attestOutcome', entityId: 'dec-r1' },
+    ]);
+  });
+
+  // ADR 0014 decision 2: a rejected event still named a run, so that run is still owed its
+  // share of the batch's drop count — the same treatment every other post-parse rejection
+  // gets.
+  it("credits droppedSinceLastBatch to the rejected event's run, like every other post-parse rejection", async () => {
+    const { repository, droppedCounts } = fakeRepository();
+    const service = createTelemetryService(repository);
+
+    await service.ingest([toolCallEvent({ startedAt: '0000-01-01T00:00:00.000Z' })], 5);
+
+    expect(droppedCounts.get('run-1')).toBe(5);
+  });
+});

@@ -1,3 +1,5 @@
+import type { TelemetryEvent, TelemetryEventOf, TelemetryEventType } from '@lengentic/shared';
+
 // F2 fix (tester regression, 2026-08-19): a value that is otherwise perfectly valid JSON can
 // still contain a U+0000 code point or an unpaired ("lone") UTF-16 surrogate — the realistic
 // outcome §12's client-side capping rule warns about: truncating a string mid-emoji splits a
@@ -167,4 +169,146 @@ export function exceedsMaxStructuralDepth(
     frontier = next;
   }
   return false;
+}
+
+// ADR 0014 / Reviewer finding R1 (2026-09-02, repair attempt 1 on `p4.entity-ingest`) — the
+// FOURTH attempt at the defect class the two block comments above exist for, so, again, this
+// fixes the CLASS rather than the input shape that was reported.
+//
+// The class: `isPostgresUnrepresentableTimestamp` above had exactly ONE call site
+// (`telemetry.service.ts`'s `classifyEvent`) and it screened exactly ONE field,
+// `event.occurredAt`. But `TimestampSchema` is one shared schema
+// (`platform/shared/schema/primitives.ts`), and Phase 4 widened the wire contract with three
+// more fields typed by it — `tool_call.recorded`'s `startedAt` and `completedAt`, and
+// `decision.outcome_attested`'s `observedAt` — each landing in a `@db.Timestamptz(3)` column
+// that enforces the same "Postgres has no year zero" rule `occurredAt`'s column does. All
+// three went unscreened.
+//
+// Reproduced live against `postgres:17.6-alpine`
+// (`.artifacts/evidence/4/p4.entity-ingest/coordinator/s1-confirmation.md`): a year-0000
+// `startedAt` made `TelemetryService.ingest()` THROW with HTTP 500 and zero per-event
+// results, from `ToolCallRepository.record` — SQLSTATE `22008`, `date/time field value out of
+// range: "0000-01-01 00:00:00"`. Strictly worse than the original T2/T3 defect, because the
+// entity-write path runs AFTER the Run/Step group loop: the sibling Run event in the same
+// batch had ALREADY COMMITTED, so the caller could not even retry the batch to success — the
+// identical payload threw again, every time, forever.
+//
+// The same seam carries the same hazard in a second currency. `latencyMs`, `inputTokens`,
+// `outputTokens`, `inputBytes`, `outputBytes` and `durationMs` are all
+// `z.number().int().nonnegative()` on the wire — unbounded above — and all six land in a
+// Prisma `Int`, i.e. Postgres `int4` (verified column by column against
+// `platform/database/prisma/schema.prisma`; not one of them is `BigInt`). A value past
+// `POSTGRES_INT4_MAX` raises SQLSTATE `22003` from the identical code path with the identical
+// permanent-poison result. Screening only the timestamps would have left a fifth repair
+// attempt waiting at the same call site.
+//
+// The fix is the same shape as its two predecessors: reject event-level, in `classifyEvent`,
+// BEFORE the event is grouped or queued for an entity write, so a malformed event rejects
+// only itself (§12) and well-formed siblings in the same batch still land. It reuses
+// `isPostgresUnrepresentableTimestamp` rather than introducing a second predicate that could
+// drift from it — F-3's whole lesson was that a second, subtly different timestamp check is
+// how the bypass got in.
+//
+// The screen is FIELD-TARGETED, not a recursive walk of the payload, and that is deliberate:
+// `metadata`, `rawContext` and a tool call's `input`/`output` land in `jsonb`, which has
+// neither of these bounds. A blind walk would reject a number or an ISO-looking string that
+// Postgres stores perfectly well — a false positive on the ingest path, which is the failure
+// mode `CLAUDE.md` ## Product claims warns about in the analyzer and which is no better here.
+//
+// The tables below are `satisfies`-checked against each payload's own `keyof`, so a RENAMED
+// field is a compile error. A field ADDED to a payload schema cannot be caught at the type
+// level — `TimestampSchema` erases to `string` and every int4 column erases to `number` — so
+// `wire-sanitize.spec.ts` reads the real Zod schemas at runtime and fails if either table
+// stops matching them. That guard is the part that makes this a fix to the class.
+
+/**
+ * The largest value a Postgres `int4` column can hold (2^31 - 1). Every numeric column the
+ * Phase 4 entity types write is `Int` in `platform/database/prisma/schema.prisma`; the wire
+ * contract bounds none of them, so this is the only place the two are reconciled.
+ */
+export const POSTGRES_INT4_MAX = 2_147_483_647;
+
+/** True if `value` is outside what a Postgres `int4` column can store. */
+export function exceedsPostgresInt4(value: number): boolean {
+  return value > POSTGRES_INT4_MAX || value < -POSTGRES_INT4_MAX - 1;
+}
+
+/**
+ * Payload field names for one wire type, constrained to that type's own payload keys — a
+ * renamed or misspelled field is a compile error rather than a silently-unscreened column.
+ */
+type PayloadFieldsOf<K extends TelemetryEventType> =
+  readonly (keyof TelemetryEventOf<K>['payload'] & string)[];
+
+type PersistedPayloadFieldMap = { readonly [K in TelemetryEventType]: PayloadFieldsOf<K> };
+
+/**
+ * Every `TimestampSchema`-typed payload field that reaches a `@db.Timestamptz(3)` column,
+ * per wire type. Enumerated from the schemas themselves, never guessed — and pinned against
+ * them at runtime by `wire-sanitize.spec.ts`'s drift guard.
+ *
+ * The four mergeable types are listed with empty tuples rather than omitted: the map is
+ * exhaustive over `TelemetryEventType`, so a tenth wire type is a compile error here, which
+ * is what forces whoever adds it to answer this question instead of inheriting a default.
+ */
+export const PERSISTED_PAYLOAD_TIMESTAMP_FIELDS: Readonly<
+  Record<TelemetryEventType, readonly string[]>
+> = {
+  'run.started': [],
+  'run.completed': [],
+  'step.started': [],
+  'step.completed': [],
+  'decision.recorded': [],
+  'decision.outcome_attested': ['observedAt'],
+  'model_call.recorded': [],
+  'tool_call.recorded': ['startedAt', 'completedAt'],
+  'error.recorded': [],
+} as const satisfies PersistedPayloadFieldMap;
+
+/**
+ * Every numeric payload field that reaches a Postgres `int4` column, per wire type. Same
+ * exhaustiveness and the same runtime drift guard as the timestamp table above.
+ */
+export const PERSISTED_PAYLOAD_INT4_FIELDS: Readonly<
+  Record<TelemetryEventType, readonly string[]>
+> = {
+  'run.started': [],
+  'run.completed': [],
+  'step.started': [],
+  'step.completed': [],
+  'decision.recorded': [],
+  'decision.outcome_attested': [],
+  'model_call.recorded': ['latencyMs', 'inputTokens', 'outputTokens'],
+  'tool_call.recorded': ['inputBytes', 'outputBytes', 'durationMs'],
+  'error.recorded': [],
+} as const satisfies PersistedPayloadFieldMap;
+
+/**
+ * Why this event's payload cannot be stored, or `null` if it can. The returned string is the
+ * `IngestResult.error.message` for a per-event `REJECTED` — the reason lives here, beside the
+ * tables and the two predicates it is derived from, rather than at the call site.
+ *
+ * A `.nullish()` field that is absent or `null` is not unrepresentable: only a value actually
+ * present, of the right primitive type, is screened.
+ */
+export function unrepresentablePayloadReason(event: TelemetryEvent): string | null {
+  const payload: unknown = event.payload;
+  if (payload === null || typeof payload !== 'object') return null;
+  const fields = payload as Record<string, unknown>;
+
+  for (const field of PERSISTED_PAYLOAD_TIMESTAMP_FIELDS[event.type]) {
+    const value = fields[field];
+    if (typeof value === 'string' && isPostgresUnrepresentableTimestamp(value)) {
+      return `event payload field '${field}' names a date Postgres cannot store (year 0000 does not exist)`;
+    }
+  }
+
+  for (const field of PERSISTED_PAYLOAD_INT4_FIELDS[event.type]) {
+    const value = fields[field];
+    if (typeof value === 'number' && exceedsPostgresInt4(value)) {
+      return `event payload field '${field}' exceeds the largest value Postgres can store in its column (${POSTGRES_INT4_MAX})`;
+    }
+  }
+
+  return null;
 }
