@@ -511,7 +511,11 @@ export class MockAgent {
         message: error.message,
         metadata: { step: error.step, callIndex: error.callIndex },
       });
-      step.complete({ status: 'FAILED', metadata: { error: error.message } });
+      // `error.recorded` above is now the one place this failure's free text ships — a
+      // second copy at `metadata.error` here would offer the SAME text to the `redact`
+      // hook at a DIFFERENT path (`'metadata.error'` vs. `'message'`), so a hook written
+      // for one would silently miss the other (S4).
+      step.complete({ status: 'FAILED' });
       return { ok: false, error: error.message };
     }
   }

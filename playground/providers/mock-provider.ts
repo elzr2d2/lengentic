@@ -208,8 +208,9 @@ function countTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
-/** The request as the provider "saw" it — the same string `deriveSeed` folds, so the input
- *  measurement describes the input the call was actually made with. */
+/** The request as the provider "saw" it — the same `step`/`callIndex` pair `deriveSeed`
+ *  folds (with its own internal salt appended), so the input measurement describes the
+ *  input the call was actually made with. */
 function requestText(step: string, callIndex: number): string {
   return `${step}|${callIndex}`;
 }

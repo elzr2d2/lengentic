@@ -35,6 +35,17 @@ const ADVANCE = DELAY.max + 1;
  *  is sourced independently of the code that produced it (TEST-4). */
 const CHARS_PER_TOKEN = 4;
 
+/** `MockProviderFailure`'s own message template, restated (TEST-4) — NOT read off a
+ *  `MockProviderFailure` instance, real or synthesized. `probeProvider` below constructs a
+ *  genuine rejection from the same production `MockProviderFailure` class production also
+ *  raises, so comparing against `failure.message` would make the assertion travel with a
+ *  mutation to the template in `mock-provider.ts` instead of catching it — both sides would
+ *  still agree, having both changed the same way. This literal is the one thing in this
+ *  file that does not move if that template changes. */
+function expectedFailureMessage(step: string, callIndex: number): string {
+  return `MockProvider: simulated failure at step "${step}" (call ${callIndex})`;
+}
+
 type ModelCallPayload = {
   stepId: string;
   provider: string;
@@ -88,13 +99,21 @@ async function runAgent(
  * observed at the provider's own return value rather than through the agent. `MockAgent`
  * hands the raw `seed` to the provider domain unchanged (its module doc), so the same seed
  * here reproduces the same call.
+ *
+ * `alwaysFailSteps` must mirror whatever the scenario under test passed to `MockAgent` —
+ * the probe has to select the SAME outcome (success or rejection) the agent's own provider
+ * selected, or it is not observing the same call. Passing `[]` when the scenario really
+ * fails `step` makes the probe agree with itself instead of with the agent: it would never
+ * enter `MockProvider.invoke()`'s reject branch, so `.catch` below and the failure caller
+ * gets back would both be reachable in name only.
  */
 async function probeProvider(
   seed: number,
   step: string,
+  alwaysFailSteps: readonly string[] = [],
 ): Promise<MockProviderResponse | MockProviderFailure> {
   const scheduler = new FakeScheduler();
-  const provider = new MockProvider({ seed, delayMs: DELAY, scheduler, alwaysFailSteps: [] });
+  const provider = new MockProvider({ seed, delayMs: DELAY, scheduler, alwaysFailSteps });
   const pending = provider.invoke({ step }).catch((error: unknown) => {
     if (error instanceof MockProviderFailure) return error;
     throw error;
@@ -213,19 +232,21 @@ void describe('MockAgent — where failures occurred', () => {
     assert.equal(errors.length, 1);
     const payload = errors[0]?.payload as ErrorPayload;
     assert.equal(names.get(payload.stepId), 'beta');
-    // The type and message come from the real rejection, not from a label invented here.
-    const failure = await probeProvider(seed, 'beta').then((outcome) =>
-      outcome instanceof MockProviderFailure
-        ? outcome
-        : new MockProviderFailure('beta', 0, {
-            provider: outcome.provider,
-            model: outcome.model,
-            latencyMs: outcome.latencyMs,
-            inputTokens: outcome.inputTokens,
-          }),
+    // The type and message come from the real rejection, not from a label invented here:
+    // the probe is given the SAME `alwaysFailSteps` the scenario above used, so it walks
+    // `MockProvider.invoke()`'s actual reject branch instead of only its success branch —
+    // this line is what makes the assertion below fail if `MockAgent` ever stops raising a
+    // real failure for step "beta".
+    const outcome = await probeProvider(seed, 'beta', ['beta']);
+    assert.ok(
+      outcome instanceof MockProviderFailure,
+      'beta should fail at seed 11 with alwaysFailSteps: ["beta"]',
     );
     assert.equal(payload.type, 'MockProviderFailure');
-    assert.equal(payload.message, failure.message);
+    // `expectedFailureMessage`, not `outcome.message`: the message must be checked against a
+    // value independent of `MockProviderFailure`'s own template (TEST-4), or a mutation to
+    // that template would move both sides of the comparison together and never be caught.
+    assert.equal(payload.message, expectedFailureMessage('beta', 0));
     assert.deepEqual(payload.metadata, { step: 'beta', callIndex: 0 });
     // The run itself failed, and the successful sibling produced no Error of its own.
     assert.equal(eventsOf(transport, 'run.completed').length, 1);

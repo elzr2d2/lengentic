@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { createTelemetryClient, REDACTED, type TelemetryConfig } from '../src/index';
+import {
+  createTelemetryClient,
+  REDACTED,
+  type TelemetryConfig,
+  type TelemetryDiagnostic,
+} from '../src/index';
 import { FakeScheduler } from './support/fake-scheduler';
 import { RecordingTransport } from './support/test-transports';
 import { wireContractViolations } from './support/wire-contract';
@@ -183,6 +188,35 @@ describe('DoD preamble: which models were called', () => {
     );
     expect(latencies).toStrictEqual([42, 0]);
     expect(client.stats().droppedInvalid).toBe(0);
+  });
+
+  it('drops a non-finite latencyMs with a diagnostic instead of shipping NaN or Infinity', async () => {
+    // handles.ts's `Number.isFinite(call.latencyMs) ? Math.max(0, Math.round(...)) : NaN`
+    // guard: none of NaN, Infinity or -Infinity is "a measurement", so the honest answer is
+    // drop-with-diagnostic, never a clamped substitute. Pinned per value, not as one bulk
+    // case, because `Math.max(0, Math.round(x))` ALONE already lands on a schema-refusing
+    // value for NaN (`NaN`) and Infinity (`Infinity`, which fails `.int()`) — this guard is
+    // the ONLY thing that changes the outcome for -Infinity, from a clamped `0` (which the
+    // schema accepts and would ship) to a drop. Without this case the guard could be
+    // deleted and every other test here would stay green.
+    for (const latencyMs of [NaN, Infinity, -Infinity]) {
+      const diagnostics: TelemetryDiagnostic[] = [];
+      const { transport, client } = harness({ onDiagnostic: (d) => diagnostics.push(d) });
+
+      expect(() =>
+        stepOf(client).recordModelCall({
+          provider: 'mock',
+          model: 'mock-model-v1',
+          latencyMs,
+          status: 'success',
+        }),
+      ).not.toThrow();
+      await client.shutdown();
+
+      expect(eventsOf(transport, 'model_call.recorded')).toStrictEqual([]);
+      expect(client.stats().droppedInvalid).toBe(1);
+      expect(diagnostics.some((diagnostic) => diagnostic.code === 'event_invalid')).toBe(true);
+    }
   });
 });
 
