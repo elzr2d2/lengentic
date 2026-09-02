@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { DecisionOutcome, TelemetryEventOf } from '@lengentic/shared';
 import { DecisionsService } from './decisions.service';
 import type { DecisionAttestation } from './decision-attestation';
+import type { DecisionRecordWrite } from './decision-record';
 import type { DecisionsRepository } from './decisions.repository';
 
 /**
@@ -43,12 +44,62 @@ function attestationEvent(
 function fakeRepository(): {
   repository: DecisionsRepository;
   attestOutcome: ReturnType<typeof vi.fn<(input: DecisionAttestation) => Promise<void>>>;
+  record: ReturnType<typeof vi.fn<(input: DecisionRecordWrite) => Promise<void>>>;
 } {
   const attestOutcome = vi.fn<(input: DecisionAttestation) => Promise<void>>(() =>
     Promise.resolve(),
   );
-  return { repository: { attestOutcome } as unknown as DecisionsRepository, attestOutcome };
+  const record = vi.fn<(input: DecisionRecordWrite) => Promise<void>>(() => Promise.resolve());
+  return {
+    repository: { attestOutcome, record } as unknown as DecisionsRepository,
+    attestOutcome,
+    record,
+  };
 }
+
+function decisionRecordedEvent(
+  options: { decisionId?: string; runId?: string } = {},
+): TelemetryEventOf<'decision.recorded'> {
+  return {
+    eventId: 'evt-1',
+    schemaVersion: '2',
+    type: 'decision.recorded',
+    entityId: options.decisionId ?? 'dec-1',
+    runId: options.runId ?? 'run-9',
+    occurredAt: '2026-09-02T10:00:00.000Z',
+    payload: {
+      stepId: 'step-1',
+      decisionType: 'execution_strategy',
+      availableOptions: ['sequential', 'parallel'],
+      selectedOption: 'sequential',
+    },
+  };
+}
+
+describe('DecisionsService.record', () => {
+  it('hands the mapped write straight to the repository', async () => {
+    const { repository, record } = fakeRepository();
+
+    await new DecisionsService(repository).record(
+      decisionRecordedEvent({ decisionId: 'dec-42', runId: 'run-from-elsewhere' }),
+    );
+
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record.mock.calls[0]?.[0]).toMatchObject({
+      decisionId: 'dec-42',
+      runId: 'run-from-elsewhere',
+    });
+  });
+
+  it('propagates a persistence failure rather than reporting a recording it did not store', async () => {
+    const { repository, record } = fakeRepository();
+    record.mockRejectedValueOnce(new Error('connection terminated'));
+
+    await expect(new DecisionsService(repository).record(decisionRecordedEvent())).rejects.toThrow(
+      'connection terminated',
+    );
+  });
+});
 
 describe('DecisionsService.attestOutcome', () => {
   it('persists an attestation for a decision the platform has never seen', async () => {

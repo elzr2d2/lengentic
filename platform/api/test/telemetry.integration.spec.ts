@@ -12,6 +12,14 @@ import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { TelemetryRepository } from '../src/telemetry/telemetry.repository';
 import { TelemetryService } from '../src/telemetry/telemetry.service';
+import { DecisionsRepository } from '../src/decisions/decisions.repository';
+import { DecisionsService } from '../src/decisions/decisions.service';
+import { ModelCallRepository } from '../src/model-call/model-call.repository';
+import { ModelCallService } from '../src/model-call/model-call.service';
+import { ToolCallRepository } from '../src/tool-call/tool-call.repository';
+import { ToolCallService } from '../src/tool-call/tool-call.service';
+import { ErrorRepository } from '../src/error/error.repository';
+import { ErrorService } from '../src/error/error.service';
 import { AllExceptionsFilter } from '../src/common/all-exceptions.filter';
 import type { Env } from '../src/config/env.schema';
 import type { IngestResponse } from '@lengentic/shared';
@@ -74,7 +82,17 @@ async function newTrio(connectionString: string): Promise<{
   const prisma = serviceAgainst(connectionString);
   await prisma.onModuleInit();
   const repository = new TelemetryRepository(prisma);
-  const service = new TelemetryService(repository);
+  // ADR 0014: the real modules, against the same live Postgres connection, so a batch that
+  // mixes Run/Step events with the four Phase 4 entity types exercises the actual seam —
+  // group-locked Run/Step writes AND independent entity upserts sharing one transaction-less
+  // request the way `TelemetryService.ingest` really composes them.
+  const service = new TelemetryService(
+    repository,
+    new DecisionsService(new DecisionsRepository(prisma)),
+    new ModelCallService(new ModelCallRepository(prisma)),
+    new ToolCallService(new ToolCallRepository(prisma)),
+    new ErrorService(new ErrorRepository(prisma)),
+  );
   return { prisma, repository, service };
 }
 
@@ -825,4 +843,682 @@ describe('POST /v1/telemetry/events — ADR 0010 at the real HTTP boundary', () 
       await prisma.client.$executeRawUnsafe('ALTER TABLE "Run_hidden_by_test" RENAME TO "Run";');
     }
   }, 30_000);
+});
+
+/**
+ * ADR 0014 / `p4.entity-ingest`. Detection block, verbatim: "integration tests that post
+ * each of the five events through the real ingest endpoint and read the row back from
+ * Postgres. Response-code assertions alone are not enough: the regression this replaces
+ * (`type.startsWith('run.') ? 'run' : 'step'`) returned ACCEPTED with every gate green
+ * while writing a Decision id into the Step table. Assert on the store."
+ *
+ * Real HTTP boundary, same shape as the ADR 0010 suite above: real Nest routing, the real
+ * `TelemetryModule` (which now imports `DecisionsModule`/`ModelCallModule`/`ToolCallModule`/
+ * `ErrorModule` — ADR 0014's "ONE NODE, NOT TWO"), the real `PrismaService`, real rows.
+ */
+describe('POST /v1/telemetry/events — the five Phase 4 entity types persist for real (ADR 0014)', () => {
+  let container: StartedPostgreSqlContainer;
+  let app: NestExpressApplication;
+  let moduleRef: TestingModule;
+  let prisma: PrismaService;
+
+  const httpServer = (a: INestApplication): Server => a.getHttpServer() as Server;
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer(POSTGRES_IMAGE).start();
+    const connectionString = container.getConnectionUri();
+
+    execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
+      cwd: DATABASE_DIR,
+      env: { ...process.env, DATABASE_URL: connectionString },
+      stdio: 'pipe',
+      shell: process.platform === 'win32',
+    });
+
+    process.env.DATABASE_URL = connectionString;
+    process.env.NODE_ENV = 'test';
+    process.env.LOG_LEVEL = 'fatal';
+
+    const [{ ConfigModule }, { PrismaModule }, { TelemetryModule }, { validateEnv }] =
+      await Promise.all([
+        import('@nestjs/config'),
+        import('../src/prisma/prisma.module'),
+        import('../src/telemetry/telemetry.module'),
+        import('../src/config/env.schema'),
+      ]);
+
+    moduleRef = await Test.createTestingModule({
+      imports: [
+        ConfigModule.forRoot({ isGlobal: true, cache: true, validate: validateEnv }),
+        PrismaModule,
+        TelemetryModule,
+      ],
+    }).compile();
+
+    app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
+    const { configureBodyParser } = await import('../src/common/configure-body-parser');
+    configureBodyParser(app);
+    app.useGlobalFilters(new AllExceptionsFilter(app.get(HttpAdapterHost).httpAdapter));
+    app.setGlobalPrefix('v1', { exclude: ['health'] });
+    await app.init();
+
+    prisma = app.get(PrismaService);
+  }, 180_000);
+
+  afterAll(async () => {
+    await app?.close();
+    await container?.stop();
+  });
+
+  async function post(
+    events: readonly unknown[],
+  ): Promise<{ status: number; body: IngestResponse }> {
+    const response = await request(httpServer(app)).post('/v1/telemetry/events').send({ events });
+    return { status: response.status, body: response.body as IngestResponse };
+  }
+
+  it('decision.recorded writes a Decision row, and no Step or Run row', async () => {
+    const response = await post([
+      {
+        eventId: 'evt-e2e-decision-1',
+        schemaVersion: '2',
+        type: 'decision.recorded',
+        entityId: 'e2e-dec-1',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:00.000Z',
+        payload: {
+          stepId: 'e2e-step-1',
+          decisionType: 'execution_strategy',
+          contextKey: 'risk=low',
+          availableOptions: ['sequential', 'parallel'],
+          selectedOption: 'parallel',
+        },
+      },
+    ]);
+
+    expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const decision = await prisma.client.decision.findUnique({ where: { id: 'e2e-dec-1' } });
+    expect(decision).not.toBeNull();
+    expect(decision).toMatchObject({
+      runId: 'e2e-run-1',
+      stepId: 'e2e-step-1',
+      decisionType: 'execution_strategy',
+      selectedOption: 'parallel',
+      outcome: 'UNKNOWN',
+    });
+
+    // The regression this test replaces: a Decision id written into the Step table.
+    const step = await prisma.client.step.findUnique({ where: { id: 'e2e-dec-1' } });
+    expect(step).toBeNull();
+    const run = await prisma.client.run.findUnique({ where: { id: 'e2e-dec-1' } });
+    expect(run).toBeNull();
+  });
+
+  it('decision.outcome_attested updates the original Decision row, never inserting a second one', async () => {
+    await post([
+      {
+        eventId: 'evt-e2e-decision-2',
+        schemaVersion: '2',
+        type: 'decision.recorded',
+        entityId: 'e2e-dec-2',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:01.000Z',
+        payload: {
+          stepId: 'e2e-step-1',
+          decisionType: 'execution_strategy',
+          availableOptions: ['a', 'b'],
+          selectedOption: 'a',
+        },
+      },
+    ]);
+
+    // DoD line 4: "An attestation posted from a second process updates the original
+    // Decision." Modelled as a second, independent ingest call.
+    const attestResponse = await post([
+      {
+        eventId: 'evt-e2e-attest-2',
+        schemaVersion: '2',
+        type: 'decision.outcome_attested',
+        entityId: 'e2e-dec-2',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:02.000Z',
+        payload: { outcome: 'SUCCESS' },
+      },
+    ]);
+
+    expect(attestResponse.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const rows = await prisma.client.decision.findMany({ where: { id: 'e2e-dec-2' } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      selectedOption: 'a', // the recording side survives the later attestation
+      outcome: 'SUCCESS',
+      outcomeAttestedBy: 'CALLER',
+    });
+  });
+
+  it('DoD line 5: an attestation for a decisionId the platform has never recorded is accepted and stored', async () => {
+    const response = await post([
+      {
+        eventId: 'evt-e2e-attest-cold',
+        schemaVersion: '2',
+        type: 'decision.outcome_attested',
+        entityId: 'e2e-dec-never-recorded',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:03.000Z',
+        payload: { outcome: 'FAILURE' },
+      },
+    ]);
+
+    expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const decision = await prisma.client.decision.findUnique({
+      where: { id: 'e2e-dec-never-recorded' },
+    });
+    expect(decision).toMatchObject({
+      runId: 'e2e-run-1',
+      stepId: null,
+      decisionType: null,
+      outcome: 'FAILURE',
+      outcomeAttestedBy: 'CALLER',
+    });
+  });
+
+  it('model_call.recorded writes a ModelCall row, and no Step or Run row', async () => {
+    const response = await post([
+      {
+        eventId: 'evt-e2e-model-1',
+        schemaVersion: '2',
+        type: 'model_call.recorded',
+        entityId: 'e2e-mc-1',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:04.000Z',
+        payload: {
+          stepId: 'e2e-step-1',
+          provider: 'anthropic',
+          model: 'claude-opus-5',
+          latencyMs: 812,
+          inputTokens: 1200,
+          outputTokens: 340,
+          status: 'ok',
+        },
+      },
+    ]);
+
+    expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const modelCall = await prisma.client.modelCall.findUnique({ where: { id: 'e2e-mc-1' } });
+    expect(modelCall).toMatchObject({
+      runId: 'e2e-run-1',
+      stepId: 'e2e-step-1',
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      inputTokens: 1200,
+      outputTokens: 340,
+    });
+    expect(await prisma.client.step.findUnique({ where: { id: 'e2e-mc-1' } })).toBeNull();
+    expect(await prisma.client.run.findUnique({ where: { id: 'e2e-mc-1' } })).toBeNull();
+  });
+
+  it('tool_call.recorded writes a ToolCall row, and no Step or Run row', async () => {
+    const response = await post([
+      {
+        eventId: 'evt-e2e-tool-1',
+        schemaVersion: '2',
+        type: 'tool_call.recorded',
+        entityId: 'e2e-tc-1',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:05.000Z',
+        payload: {
+          stepId: 'e2e-step-1',
+          toolName: 'search',
+          input: { query: 'weather' },
+          output: { rows: 3 },
+          inputTruncated: false,
+          outputTruncated: false,
+          inputBytes: 42,
+          outputBytes: 100,
+          startedAt: '2026-09-02T10:00:05.000Z',
+          completedAt: '2026-09-02T10:00:05.250Z',
+          durationMs: 250,
+          success: true,
+        },
+      },
+    ]);
+
+    expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const toolCall = await prisma.client.toolCall.findUnique({ where: { id: 'e2e-tc-1' } });
+    expect(toolCall).toMatchObject({
+      runId: 'e2e-run-1',
+      stepId: 'e2e-step-1',
+      toolName: 'search',
+      input: { query: 'weather' },
+      output: { rows: 3 },
+      success: true,
+    });
+    expect(await prisma.client.step.findUnique({ where: { id: 'e2e-tc-1' } })).toBeNull();
+    expect(await prisma.client.run.findUnique({ where: { id: 'e2e-tc-1' } })).toBeNull();
+  });
+
+  it('error.recorded writes an Error row, and no Step or Run row', async () => {
+    const response = await post([
+      {
+        eventId: 'evt-e2e-error-1',
+        schemaVersion: '2',
+        type: 'error.recorded',
+        entityId: 'e2e-err-1',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:06.000Z',
+        payload: { stepId: 'e2e-step-1', type: 'TimeoutError', message: 'timed out after 30s' },
+      },
+    ]);
+
+    expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const error = await prisma.client.error.findUnique({ where: { id: 'e2e-err-1' } });
+    expect(error).toMatchObject({
+      runId: 'e2e-run-1',
+      stepId: 'e2e-step-1',
+      type: 'TimeoutError',
+      message: 'timed out after 30s',
+    });
+    expect(await prisma.client.step.findUnique({ where: { id: 'e2e-err-1' } })).toBeNull();
+    expect(await prisma.client.run.findUnique({ where: { id: 'e2e-err-1' } })).toBeNull();
+  });
+
+  it('ADR 0014 decision 2: droppedSinceLastBatch folds into the named run’s droppedTelemetryEventCount', async () => {
+    const runId = 'e2e-run-dropped';
+
+    await post([
+      {
+        eventId: 'evt-e2e-run-dropped-start',
+        schemaVersion: '1',
+        type: 'run.started',
+        entityId: runId,
+        runId,
+        occurredAt: '2026-09-02T10:00:07.000Z',
+        payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+      },
+    ]);
+
+    let run = await prisma.client.run.findUnique({ where: { id: runId } });
+    expect(run?.droppedTelemetryEventCount).toBeNull();
+
+    await request(httpServer(app))
+      .post('/v1/telemetry/events')
+      .send({
+        events: [
+          {
+            eventId: 'evt-e2e-run-dropped-complete',
+            schemaVersion: '1',
+            type: 'run.completed',
+            entityId: runId,
+            runId,
+            occurredAt: '2026-09-02T10:00:08.000Z',
+            payload: { status: 'COMPLETED' },
+          },
+        ],
+        droppedSinceLastBatch: 3,
+      });
+
+    run = await prisma.client.run.findUnique({ where: { id: runId } });
+    expect(run?.droppedTelemetryEventCount).toBe(3);
+  });
+
+  /**
+   * R3 (Reviewer finding, 2026-09-02, repair attempt 1). The test above claims "a real zero
+   * included" in its title but only ever posted `droppedSinceLastBatch: 3`; the zero case is
+   * the one ADR 0014's Detection section actually asks for at the store level, because zero
+   * is the value the column has to be able to tell apart from "never reported" — and NULL vs
+   * 0 is exactly the distinction `Run.droppedTelemetryEventCount` refuses `@default(0)` to
+   * preserve. Given its own run, so the two claims fail independently.
+   */
+  it('ADR 0014 decision 2: a reported droppedSinceLastBatch of 0 stores 0, distinguishable from a never-reported null', async () => {
+    const runId = 'e2e-run-dropped-zero';
+
+    await post([
+      {
+        eventId: 'evt-e2e-run-dropped-zero-start',
+        schemaVersion: '1',
+        type: 'run.started',
+        entityId: runId,
+        runId,
+        occurredAt: '2026-09-02T10:00:09.000Z',
+        payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+      },
+    ]);
+
+    // Never reported: NULL, not 0. This is the value the zero below has to be distinguishable
+    // from — asserted here so the two are compared against each other, not merely each
+    // against a literal.
+    const beforeReport = await prisma.client.run.findUnique({ where: { id: runId } });
+    expect(beforeReport?.droppedTelemetryEventCount).toBeNull();
+
+    await request(httpServer(app))
+      .post('/v1/telemetry/events')
+      .send({
+        events: [
+          {
+            eventId: 'evt-e2e-run-dropped-zero-complete',
+            schemaVersion: '1',
+            type: 'run.completed',
+            entityId: runId,
+            runId,
+            occurredAt: '2026-09-02T10:00:10.000Z',
+            payload: { status: 'COMPLETED' },
+          },
+        ],
+        droppedSinceLastBatch: 0,
+      });
+
+    const afterReport = await prisma.client.run.findUnique({ where: { id: runId } });
+    expect(afterReport?.droppedTelemetryEventCount).toBe(0);
+    expect(afterReport?.droppedTelemetryEventCount).not.toBeNull();
+    expect(afterReport?.droppedTelemetryEventCount).not.toBe(
+      beforeReport?.droppedTelemetryEventCount,
+    );
+  });
+
+  /**
+   * R4 (Builder finding raised in repair attempt 1's handoff; decision settled by the
+   * Coordinator for repair attempt 2). Two halves of one guarantee — `Run.
+   * droppedTelemetryEventCount` can never raise SQLSTATE 22003 — proved here against the
+   * same real Postgres, because neither half is provable against a fake.
+   *
+   * Half one is the request-level bound in `IngestRequestSchema`, which stops one BATCH from
+   * carrying an unstorable value. Half two is `incrementDroppedCount`'s saturating add,
+   * which is the only thing standing between the RUNNING TOTAL and the same overflow: the
+   * statement is `COALESCE(col, 0) + amount` across every batch for the life of a run, so
+   * bounding each batch bounds each addend and nothing else. A bound alone would have moved
+   * the failure from one batch to two.
+   *
+   * `POSTGRES_INT4_MAX + 1` and the ceiling itself are Postgres's own numbers, not constants
+   * read back out of the code under test.
+   */
+  describe('R4: the drop counter cannot overflow its int4 column, per batch or in total', () => {
+    const POSTGRES_INT4_MAX = 2_147_483_647;
+
+    const runEvent = (
+      runId: string,
+      eventId: string,
+      occurredAt: string,
+    ): Record<string, unknown> => ({
+      eventId,
+      schemaVersion: '1',
+      type: 'run.started',
+      entityId: runId,
+      runId,
+      occurredAt,
+      payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+    });
+
+    it('refuses a batch reporting more drops than int4 can hold, with HTTP 400 and no write at all', async () => {
+      const runId = 'e2e-run-dropped-overflow';
+
+      await post([runEvent(runId, 'evt-e2e-dropped-overflow-start', '2026-09-02T10:00:11.000Z')]);
+
+      const response = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runEvent(runId, 'evt-e2e-dropped-overflow-2', '2026-09-02T10:00:12.000Z')],
+          droppedSinceLastBatch: POSTGRES_INT4_MAX + 1,
+        });
+
+      expect(response.status).toBe(400);
+      // The failure this replaces was a 500 raised AFTER the batch's events had committed.
+      expect(response.status).not.toBe(500);
+
+      // Request-level means the whole batch is refused: the counter is still "never
+      // reported", and the second event never landed either.
+      const run = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(run?.droppedTelemetryEventCount).toBeNull();
+      expect(
+        await prisma.client.ingestedEvent.findUnique({
+          where: { runId_eventId: { runId, eventId: 'evt-e2e-dropped-overflow-2' } },
+        }),
+      ).toBeNull();
+    });
+
+    it('stores a batch reporting exactly the int4 ceiling', async () => {
+      const runId = 'e2e-run-dropped-ceiling';
+
+      await post([runEvent(runId, 'evt-e2e-dropped-ceiling-start', '2026-09-02T10:00:13.000Z')]);
+
+      const response = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runEvent(runId, 'evt-e2e-dropped-ceiling-2', '2026-09-02T10:00:14.000Z')],
+          droppedSinceLastBatch: POSTGRES_INT4_MAX,
+        });
+
+      expect(response.status).toBe(200);
+      const run = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(run?.droppedTelemetryEventCount).toBe(POSTGRES_INT4_MAX);
+    });
+
+    it('saturates the RUNNING TOTAL at the ceiling instead of overflowing it on the next batch', async () => {
+      const runId = 'e2e-run-dropped-saturate';
+
+      await post([runEvent(runId, 'evt-e2e-dropped-saturate-start', '2026-09-02T10:00:15.000Z')]);
+
+      // Batch one takes the column to its exact ceiling — every value here is individually
+      // legal, so the bound in `IngestRequestSchema` has nothing to say about batch two.
+      const first = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runEvent(runId, 'evt-e2e-dropped-saturate-2', '2026-09-02T10:00:16.000Z')],
+          droppedSinceLastBatch: POSTGRES_INT4_MAX,
+        });
+      expect(first.status).toBe(200);
+
+      // Batch two adds one more. `COALESCE(col, 0) + 1` is 2^31, which int4 cannot hold: this
+      // is the request that used to raise 22003 out of `incrementDroppedCount` — after its
+      // own event had already committed, so the run was poisoned for every batch that
+      // followed it.
+      const second = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runEvent(runId, 'evt-e2e-dropped-saturate-3', '2026-09-02T10:00:17.000Z')],
+          droppedSinceLastBatch: 1,
+        });
+
+      expect(second.status).toBe(200);
+      expect(second.status).not.toBe(500);
+
+      const run = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(run?.droppedTelemetryEventCount).toBe(POSTGRES_INT4_MAX);
+
+      // And the run is not poisoned: a third batch still succeeds and still ingests events.
+      const third = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runEvent(runId, 'evt-e2e-dropped-saturate-4', '2026-09-02T10:00:18.000Z')],
+          droppedSinceLastBatch: 7,
+        });
+      expect(third.status).toBe(200);
+      expect(
+        await prisma.client.ingestedEvent.findUnique({
+          where: { runId_eventId: { runId, eventId: 'evt-e2e-dropped-saturate-4' } },
+        }),
+      ).not.toBeNull();
+    });
+
+    // The control. Saturation must not round ordinary arithmetic — a normal two-batch total
+    // is still the exact sum, not a clamped one.
+    it('still adds normal batches exactly, with no clamping anywhere near the ceiling', async () => {
+      const runId = 'e2e-run-dropped-exact-sum';
+
+      await post([runEvent(runId, 'evt-e2e-dropped-sum-start', '2026-09-02T10:00:19.000Z')]);
+
+      for (const [i, amount] of [3, 4].entries()) {
+        const response = await request(httpServer(app))
+          .post('/v1/telemetry/events')
+          .send({
+            events: [runEvent(runId, `evt-e2e-dropped-sum-${i}`, '2026-09-02T10:00:20.000Z')],
+            droppedSinceLastBatch: amount,
+          });
+        expect(response.status).toBe(200);
+      }
+
+      const run = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(run?.droppedTelemetryEventCount).toBe(7);
+    });
+  });
+
+  /**
+   * R1 (Reviewer finding, 2026-09-02, repair attempt 1). Confirmed against this same image
+   * before the fix — `.artifacts/evidence/4/p4.entity-ingest/coordinator/s1-confirmation.md`,
+   * raw error `22008 date/time field value out of range: "0000-01-01 00:00:00"` thrown from
+   * `ToolCallRepository.record` out through `TelemetryService.ingest`, HTTP 500, zero
+   * per-event results, and the identical batch throwing again on every retry because the Run
+   * event beside it had already committed.
+   *
+   * These fixtures are the confirmation probe's, adapted to this suite's HTTP boundary: the
+   * tool-call payload is the same one the passing test above uses, with ONE field varied at a
+   * time and `occurredAt` left valid throughout — so the only thing that can produce a
+   * rejection is the new payload screen, not the pre-existing `occurredAt` one.
+   */
+  describe('R1: a payload value Postgres cannot store rejects only its own event', () => {
+    const toolCall = (
+      id: string,
+      payload: Record<string, unknown> = {},
+    ): Record<string, unknown> => ({
+      eventId: `${id}-evt`,
+      schemaVersion: '2',
+      type: 'tool_call.recorded',
+      entityId: id,
+      runId: 'e2e-r1-run',
+      occurredAt: '2026-09-02T10:00:05.000Z',
+      payload: {
+        stepId: 'e2e-step-1',
+        toolName: 'search',
+        input: { query: 'weather' },
+        output: { rows: 3 },
+        inputTruncated: false,
+        outputTruncated: false,
+        inputBytes: 42,
+        outputBytes: 100,
+        startedAt: '2026-09-02T10:00:05.000Z',
+        completedAt: '2026-09-02T10:00:05.250Z',
+        durationMs: 250,
+        success: true,
+        ...payload,
+      },
+    });
+
+    it('a year-0000 startedAt is a per-event REJECTED, not a thrown 500', async () => {
+      const response = await post([
+        toolCall('r1-tc-started', { startedAt: '0000-01-01T00:00:00.000Z' }),
+      ]);
+
+      expect(response.status).toBe(200);
+      expect(response.body.results[0]).toMatchObject({ status: 'REJECTED' });
+      expect(response.body.results[0]?.error?.code).toBe('INVALID_PAYLOAD');
+      expect(response.body.results[0]?.error?.message).toContain('startedAt');
+      expect(response.body.rejected).toBe(1);
+      // The row Postgres would have refused was never attempted.
+      expect(
+        await prisma.client.toolCall.findUnique({ where: { id: 'r1-tc-started' } }),
+      ).toBeNull();
+    });
+
+    it('a year-0000 observedAt on decision.outcome_attested is a per-event REJECTED too', async () => {
+      const response = await post([
+        {
+          eventId: 'r1-att-evt',
+          schemaVersion: '2',
+          type: 'decision.outcome_attested',
+          entityId: 'r1-dec',
+          runId: 'e2e-r1-run',
+          occurredAt: '2026-09-02T10:00:05.000Z',
+          payload: { outcome: 'SUCCESS', observedAt: '0000-01-01T00:00:00.000Z' },
+        },
+      ]);
+
+      expect(response.status).toBe(200);
+      expect(response.body.results[0]).toMatchObject({ status: 'REJECTED' });
+      expect(response.body.results[0]?.error?.message).toContain('observedAt');
+      // §14 accepts an attestation for an unknown decision id by INSERTING a row — so the
+      // absence of one here is the evidence the rejection happened before persistence.
+      expect(await prisma.client.decision.findUnique({ where: { id: 'r1-dec' } })).toBeNull();
+    });
+
+    it('an int4-overflowing durationMs is a per-event REJECTED (SQLSTATE 22003, same seam)', async () => {
+      const response = await post([toolCall('r1-tc-duration', { durationMs: 2_147_483_648 })]);
+
+      expect(response.status).toBe(200);
+      expect(response.body.results[0]).toMatchObject({ status: 'REJECTED' });
+      expect(response.body.results[0]?.error?.message).toContain('durationMs');
+      expect(
+        await prisma.client.toolCall.findUnique({ where: { id: 'r1-tc-duration' } }),
+      ).toBeNull();
+    });
+
+    /**
+     * The assertion the whole repair exists for. Before the fix this exact batch produced
+     * HTTP 500 with no `results` array at all, the `run.started` row committed anyway, and
+     * every retry of the identical batch threw again — the batch could never succeed. The
+     * retry below is the part that proves the poison is gone rather than merely deferred.
+     */
+    it('well-formed siblings in the SAME batch still land, and the batch is retryable', async () => {
+      const batch = [
+        {
+          eventId: 'r1-run-start',
+          schemaVersion: '1',
+          type: 'run.started',
+          entityId: 'e2e-r1-run',
+          runId: 'e2e-r1-run',
+          occurredAt: '2026-09-02T10:00:04.000Z',
+          payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+        },
+        toolCall('r1-tc-poison', { startedAt: '0000-01-01T00:00:00.000Z' }),
+        toolCall('r1-tc-good'),
+      ];
+
+      const response = await post(batch);
+
+      expect(response.status).toBe(200);
+      expect(response.body.results.map((r) => r.status)).toStrictEqual([
+        'ACCEPTED',
+        'REJECTED',
+        'ACCEPTED',
+      ]);
+      expect(await prisma.client.run.findUnique({ where: { id: 'e2e-r1-run' } })).not.toBeNull();
+      expect(
+        await prisma.client.toolCall.findUnique({ where: { id: 'r1-tc-good' } }),
+      ).not.toBeNull();
+      expect(await prisma.client.toolCall.findUnique({ where: { id: 'r1-tc-poison' } })).toBeNull();
+
+      // Retrying the identical batch now produces an honest per-event answer instead of a
+      // second 500. Previously this threw, twice, and could never do anything else.
+      //
+      // The Run event comes back DUPLICATE off the `IngestedEvent` ledger; the tool call
+      // deliberately is NOT asserted to, because the entity-write path does not consult that
+      // ledger at all — a separate, non-blocking finding filed to `BACKLOG.md`, and one this
+      // test must not quietly pin as correct. What it does assert is the property this repair
+      // owns: neither good event is REJECTED, and the poison event still rejects only itself.
+      const retry = await post(batch);
+      expect(retry.status).toBe(200);
+      expect(retry.body.results[0]?.status).toBe('DUPLICATE');
+      expect(retry.body.results[1]).toMatchObject({ status: 'REJECTED' });
+      expect(retry.body.results[2]?.status).not.toBe('REJECTED');
+    });
+
+    it('CONTROL: representable values at the very edge of both bounds still persist', async () => {
+      const response = await post([
+        toolCall('r1-tc-edge', {
+          startedAt: '0001-01-01T00:00:00.000Z',
+          durationMs: 2_147_483_647,
+          inputBytes: 2_147_483_647,
+        }),
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+      const stored = await prisma.client.toolCall.findUnique({ where: { id: 'r1-tc-edge' } });
+      expect(stored).toMatchObject({ durationMs: 2_147_483_647, inputBytes: 2_147_483_647 });
+      expect(stored?.startedAt.toISOString()).toBe('0001-01-01T00:00:00.000Z');
+    });
+  });
 });

@@ -21,6 +21,13 @@ export interface RunRecord {
   readonly receivedAt: Date;
   readonly lastEventAt: Date;
   readonly metadata: Metadata | null;
+
+  /**
+   * ADR 0014 decision 2 / §16. `null` means no batch for this run has ever reported a drop
+   * count — never coerced to `0` (`run-summary.ts`'s `RunSummary.droppedTelemetryEventCount`
+   * is the reader that refuses to make that substitution).
+   */
+  readonly droppedTelemetryEventCount: number | null;
 }
 
 /**

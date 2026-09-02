@@ -16,6 +16,7 @@ import { ModelCallsCard } from './model-calls-card';
 import { ToolCallsCard } from './tool-calls-card';
 import { ErrorsCard } from './errors-card';
 import { IngestionHealthCard } from './ingestion-health-card';
+import { fetchDroppedTelemetryEventCount } from './ingestion-health-data';
 
 // Same reason as the list: `status` is derived per request from the server's clock.
 export const dynamic = 'force-dynamic';
@@ -27,6 +28,13 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
   // A 404 from the controller is "no such run", which is Next's own not-found page — not a
   // failure card claiming the API is unwell.
   if (result.kind === 'not-found') notFound();
+
+  // ADR 0014 decision 2. A second, independent fetch — never throws, never blocks the rest
+  // of the page — because `GET /v1/runs/:id` carries no drop count at all; `#23`'s roll-up
+  // is a sibling resource (`runs.controller.ts`'s own reason: "the detail response is read
+  // on every run page ... folding it in would make every detail read pay for it").
+  const droppedTelemetryEventCount =
+    result.kind === 'ok' ? await fetchDroppedTelemetryEventCount(id) : null;
 
   return (
     <>
@@ -56,7 +64,10 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
           <ModelCallsCard run={result.run} />
           <ToolCallsCard run={result.run} />
           <ErrorsCard run={result.run} />
-          <IngestionHealthCard run={result.run} />
+          <IngestionHealthCard
+            run={result.run}
+            droppedTelemetryEventCount={droppedTelemetryEventCount}
+          />
         </>
       ) : (
         <FetchFailureCard failure={result} />

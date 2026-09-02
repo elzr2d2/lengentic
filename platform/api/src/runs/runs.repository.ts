@@ -112,6 +112,7 @@ export function toRunRecord(row: RunRow): RunRecord {
     receivedAt: row.receivedAt,
     lastEventAt: row.lastEventAt,
     metadata: toMetadata(row.metadata),
+    droppedTelemetryEventCount: row.droppedTelemetryEventCount,
   };
 }
 

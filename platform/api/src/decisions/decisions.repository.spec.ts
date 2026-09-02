@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DecisionsRepository } from './decisions.repository';
 import type { DecisionAttestation } from './decision-attestation';
+import type { DecisionRecordWrite } from './decision-record';
 import type { PrismaService } from '../prisma/prisma.service';
 
 /**
@@ -52,6 +53,86 @@ function fakePrismaService(): {
 }
 
 const OBSERVED_AT = new Date('2026-08-31T09:15:30.000Z');
+
+function recordWrite(overrides: Partial<DecisionRecordWrite> = {}): DecisionRecordWrite {
+  return {
+    decisionId: 'dec-1',
+    runId: 'run-9',
+    stepId: 'step-1',
+    decisionType: 'execution_strategy',
+    contextKey: null,
+    contextKeyVersion: null,
+    rawContext: null,
+    availableOptions: ['sequential', 'parallel'],
+    selectedOption: 'sequential',
+    ...overrides,
+  };
+}
+
+describe('DecisionsRepository.record', () => {
+  it('keys the write on the decision id and on nothing else', async () => {
+    const { prisma, decision } = fakePrismaService();
+
+    await new DecisionsRepository(prisma).record(recordWrite({ decisionId: 'dec-42' }));
+
+    expect(decision.upsert.mock.calls[0]?.[0].where).toStrictEqual({ id: 'dec-42' });
+  });
+
+  it('creates a full recording-side row, with the outcome columns left for their own default', async () => {
+    const { prisma, decision } = fakePrismaService();
+
+    await new DecisionsRepository(prisma).record(recordWrite());
+
+    expect(decision.upsert.mock.calls[0]?.[0].create).toStrictEqual({
+      id: 'dec-1',
+      runId: 'run-9',
+      stepId: 'step-1',
+      decisionType: 'execution_strategy',
+      contextKey: null,
+      contextKeyVersion: null,
+      rawContext: null,
+      availableOptions: ['sequential', 'parallel'],
+      selectedOption: 'sequential',
+    });
+    expect(decision.upsert.mock.calls[0]?.[0].create).not.toHaveProperty('outcome');
+    expect(decision.upsert.mock.calls[0]?.[0].create).not.toHaveProperty('outcomeAttestedBy');
+    expect(decision.upsert.mock.calls[0]?.[0].create).not.toHaveProperty('outcomeObservedAt');
+  });
+
+  it('updates the same recording-side columns, and never the three attestation columns', async () => {
+    // An attestation-first row (outcome already set) must not be blanked by a later
+    // decision.recorded event — the update branch never names outcome/outcomeAttestedBy/
+    // outcomeObservedAt at all, so Prisma cannot touch them.
+    const { prisma, decision } = fakePrismaService();
+
+    await new DecisionsRepository(prisma).record(
+      recordWrite({ contextKey: 'risk=low', contextKeyVersion: 'v1' }),
+    );
+
+    expect(decision.upsert.mock.calls[0]?.[0].update).toStrictEqual({
+      runId: 'run-9',
+      stepId: 'step-1',
+      decisionType: 'execution_strategy',
+      contextKey: 'risk=low',
+      contextKeyVersion: 'v1',
+      rawContext: null,
+      availableOptions: ['sequential', 'parallel'],
+      selectedOption: 'sequential',
+    });
+  });
+
+  it('writes in one statement, with no read of the decision first', async () => {
+    const { prisma, decision } = fakePrismaService();
+
+    await new DecisionsRepository(prisma).record(recordWrite());
+
+    expect(decision.upsert).toHaveBeenCalledTimes(1);
+    expect(decision.findUnique).not.toHaveBeenCalled();
+    expect(decision.findFirst).not.toHaveBeenCalled();
+    expect(decision.create).not.toHaveBeenCalled();
+    expect(decision.update).not.toHaveBeenCalled();
+  });
+});
 
 function attestation(overrides: Partial<DecisionAttestation> = {}): DecisionAttestation {
   return {

@@ -109,6 +109,18 @@ model Run {
   /// is comparable with `lastEventAt`. §13 lists both.
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 
+  /// ADR 0014 decision 2 / §16. Folded in from the batch-level `droppedSinceLastBatch`
+  /// field (`platform/shared/schema/ingest.ts`) at the persistence edge
+  /// (`TelemetryRepository.incrementDroppedCount`) — a running total across every batch
+  /// that ever reported one for this run, never a per-batch snapshot.
+  ///
+  /// NULL, not `@default(0)`, and no NOT NULL: NULL means "no batch for this run has ever
+  /// reported a drop count" — an SDK built before this field existed, or one that has simply
+  /// not flushed one yet. `run-summary.ts`'s `RunSummary.droppedTelemetryEventCount` refuses
+  /// to manufacture that absence into a false "nothing was dropped" `0`, and a `@default(0)`
+  /// here would erase the distinction one column layer before that guard could ever see it.
+  droppedTelemetryEventCount Int?
+
   /// The default aggregation scope: all historical analysis groups by
   /// (workflowName, workflowVersion). Phase 2 framing note; group key, CONTEXT.md.
   @@index([workflowName, workflowVersion])

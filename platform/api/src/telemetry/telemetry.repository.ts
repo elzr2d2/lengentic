@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { PrismaClient } from '@lengentic/database';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CompletionFieldOrigin, EntityMergeState, MergeEntityStatus } from './merge-rules';
-import type { EntityKind } from './event-mapping';
+import type { MergeableEntityKind } from './event-mapping';
 
 // Prisma types never cross this file's boundary outward (CLAUDE.md ## Types) — every public
 // method here takes or returns `EntityMergeState` (merge-rules.ts's domain type), never a
@@ -146,7 +146,7 @@ export class TelemetryRepository {
    * commits (releasing the lock) or the caller sees the transaction's rejection.
    */
   async withEntityLock<T>(
-    kind: EntityKind,
+    kind: MergeableEntityKind,
     entityId: string,
     runId: string,
     eventIds: readonly string[],
@@ -194,13 +194,59 @@ export class TelemetryRepository {
       return value;
     });
   }
+
+  /**
+   * ADR 0014 decision 2. Folds one batch's `droppedSinceLastBatch` into `Run.
+   * droppedTelemetryEventCount` — a running total across every batch that ever reported one,
+   * not a per-batch snapshot (a client flushes many times over a run's life, and each flush
+   * with drops adds to the same run's count).
+   *
+   * Raw SQL, not `update({ data: { droppedTelemetryEventCount: { increment: amount } } })`:
+   * the column starts `NULL` ("no batch for this run has ever reported one" —
+   * `schema.prisma`), and Postgres's arithmetic on `NULL` — which is what Prisma's
+   * `increment` compiles to — is `NULL`, so the FIRST report would stay `NULL` forever
+   * instead of becoming `amount`. `COALESCE(..., 0) + amount` is the one expression that
+   * treats "never reported" and "reported zero" as the two different states they are.
+   *
+   * `updateMany`, matching `touchRunLiveness`: zero rows is a silent no-op rather than an
+   * error. A batch may report drops for a run this request's own events have not created yet
+   * (out-of-order arrival is normal here, same as everywhere else in this file) — nothing
+   * conjures a stub Run row for it, for the same reason `touchRunLiveness` does not.
+   *
+   * R4 (repair attempt 2, 2026-09-02) — the saturating half. `IngestRequestSchema` now bounds
+   * one batch's `droppedSinceLastBatch` to what `int4` holds, but this statement is a RUNNING
+   * TOTAL across every batch for the life of a run, so bounding each addend bounds nothing
+   * about the sum: a run at the ceiling plus a batch reporting `1` still overflowed, and
+   * `incrementDroppedCount` runs after every event in that batch has committed — an HTTP 500
+   * for work that landed, thrown again on every retry. Both halves are needed.
+   *
+   * The `::bigint` casts are load-bearing, not decoration: `int4 + int4` raises `22003` in
+   * Postgres BEFORE `LEAST` ever sees the result, so the addition has to happen in a type
+   * wide enough to hold the overflow that `LEAST` then discards.
+   *
+   * Saturation, where the request-level answer was rejection, because here there is no other
+   * answer: the column cannot hold more, and a run that has genuinely lost 2^31 - 1 events is
+   * long past any decision this number informs. `RunSummary.droppedTelemetryEventCount`
+   * reading `2147483647` is a count pinned at its ceiling; the alternative was that run
+   * refusing every batch it is ever sent again.
+   */
+  async incrementDroppedCount(runId: string, amount: number): Promise<void> {
+    await this.prisma.client.$executeRaw`
+      UPDATE "Run"
+      SET "droppedTelemetryEventCount" = LEAST(
+        COALESCE("droppedTelemetryEventCount", 0)::bigint + ${amount}::bigint,
+        2147483647::bigint
+      )::int
+      WHERE id = ${runId}
+    `;
+  }
 }
 
 // Advisory-lock namespace: keeps the Run id space and the Step id space from colliding
 // inside one 32-bit hash (a Run and a Step could otherwise share a client-generated id and
 // serialize against each other for no reason). Values are arbitrary; they only need to stay
 // stable and distinct.
-const LOCK_NAMESPACE: Record<EntityKind, number> = { run: 1, step: 2 };
+const LOCK_NAMESPACE: Record<MergeableEntityKind, number> = { run: 1, step: 2 };
 
 /**
  * `pg_advisory_xact_lock(key1, key2)` — transaction-scoped, released automatically on commit
@@ -213,7 +259,7 @@ const LOCK_NAMESPACE: Record<EntityKind, number> = { run: 1, step: 2 };
  */
 async function lockEntity(
   tx: TransactionClient,
-  kind: EntityKind,
+  kind: MergeableEntityKind,
   entityId: string,
 ): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LOCK_NAMESPACE[kind]}::int, hashtext(${entityId}))`;

@@ -59,4 +59,36 @@ describe('DecisionsModule', () => {
 
     await moduleRef.close();
   });
+
+  // p4.entity-ingest: `record` is the second capability this module now provides, added
+  // alongside the pre-existing attestation path. Same graph, same reason to test it here —
+  // `decisions.service.spec.ts` constructs `DecisionsService` with `new`, which cannot catch
+  // a provider or export missing from the module's own wiring.
+  it('resolves DecisionsService.record too, through the same graph', async () => {
+    const upsert = vi.fn(() => Promise.resolve());
+    const moduleRef = await Test.createTestingModule({
+      imports: [fakePrismaModule({ decision: { upsert } }), DecisionsModule],
+    }).compile();
+
+    const service = moduleRef.get(DecisionsService);
+
+    await service.record({
+      eventId: 'evt-2',
+      schemaVersion: '2',
+      type: 'decision.recorded',
+      entityId: 'dec-2',
+      runId: 'run-9',
+      occurredAt: '2026-09-02T10:00:00.000Z',
+      payload: {
+        stepId: 'step-1',
+        decisionType: 'execution_strategy',
+        availableOptions: ['sequential', 'parallel'],
+        selectedOption: 'sequential',
+      },
+    });
+
+    expect(upsert).toHaveBeenCalledTimes(1);
+
+    await moduleRef.close();
+  });
 });
