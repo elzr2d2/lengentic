@@ -139,10 +139,11 @@ export class RunsService {
     return aggregateRunSummary(record.id, {
       modelCalls,
       toolCalls,
-      // Always `null` today, and passed explicitly rather than defaulted inside the
-      // aggregation so that the one place the platform would learn a drop count is a
-      // grep away. `run-summary.ts` states why no source exists.
-      droppedTelemetryEventCount: null,
+      // ADR 0014 decision 2: the Run row now carries this (folded in from a batch's
+      // `droppedSinceLastBatch`), so it is read off `record` rather than hardcoded — the
+      // whole reason it was passed explicitly here rather than defaulted inside the
+      // aggregation was to keep this the one grep-able site that would need to change.
+      droppedTelemetryEventCount: record.droppedTelemetryEventCount,
     });
   }
 

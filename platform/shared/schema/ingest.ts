@@ -70,6 +70,24 @@ export type RequestErrorCode = (typeof REQUEST_ERROR_CODES)[keyof typeof REQUEST
 // `z.array(TelemetryEventEnvelopeSchema)`.
 export const IngestRequestSchema = z.object({
   events: z.array(z.unknown()).min(1).max(INGEST_LIMITS.maxEventsPerBatch),
+
+  /**
+   * ADR 0014 decision 2. §16's five drop counters (`droppedOverflow`, `droppedInvalid`,
+   * `droppedTooLarge`, `droppedAfterShutdown`, `droppedUndeliverable`) are client-side SDK
+   * state with no wire representation before this field — the platform had no way to learn
+   * "how many events were dropped since the last flush" at all. This carries their SUM, not
+   * the breakdown: a sixth entity and table to preserve the per-reason split was rejected as
+   * more machinery than one DoD line (`droppedTelemetryEventCount`) is worth. Anything that
+   * needs the reason breakdown still reads the SDK's own `stats()`.
+   *
+   * `.optional()`, not required or defaulted: an SDK built before this field existed sends a
+   * batch with no opinion on drops, and that must read as "not reported" — `null` on
+   * `RunSummary.droppedTelemetryEventCount` — never as a silently-manufactured `0`. Folded
+   * into a per-run counter column at the persistence edge (`platform/api/src/telemetry/**`),
+   * not stored as its own row: `runs.service.ts`'s `summaryFor` already passes
+   * `droppedTelemetryEventCount` explicitly rather than defaulting it.
+   */
+  droppedSinceLastBatch: z.number().int().nonnegative().optional(),
 });
 
 export const IngestResultStatusSchema = z.enum(['ACCEPTED', 'DUPLICATE', 'REJECTED'] as const);

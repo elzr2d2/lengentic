@@ -12,6 +12,14 @@ import request from 'supertest';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { TelemetryRepository } from '../src/telemetry/telemetry.repository';
 import { TelemetryService } from '../src/telemetry/telemetry.service';
+import { DecisionsRepository } from '../src/decisions/decisions.repository';
+import { DecisionsService } from '../src/decisions/decisions.service';
+import { ModelCallRepository } from '../src/model-call/model-call.repository';
+import { ModelCallService } from '../src/model-call/model-call.service';
+import { ToolCallRepository } from '../src/tool-call/tool-call.repository';
+import { ToolCallService } from '../src/tool-call/tool-call.service';
+import { ErrorRepository } from '../src/error/error.repository';
+import { ErrorService } from '../src/error/error.service';
 import { AllExceptionsFilter } from '../src/common/all-exceptions.filter';
 import type { Env } from '../src/config/env.schema';
 import type { IngestResponse } from '@lengentic/shared';
@@ -74,7 +82,17 @@ async function newTrio(connectionString: string): Promise<{
   const prisma = serviceAgainst(connectionString);
   await prisma.onModuleInit();
   const repository = new TelemetryRepository(prisma);
-  const service = new TelemetryService(repository);
+  // ADR 0014: the real modules, against the same live Postgres connection, so a batch that
+  // mixes Run/Step events with the four Phase 4 entity types exercises the actual seam —
+  // group-locked Run/Step writes AND independent entity upserts sharing one transaction-less
+  // request the way `TelemetryService.ingest` really composes them.
+  const service = new TelemetryService(
+    repository,
+    new DecisionsService(new DecisionsRepository(prisma)),
+    new ModelCallService(new ModelCallRepository(prisma)),
+    new ToolCallService(new ToolCallRepository(prisma)),
+    new ErrorService(new ErrorRepository(prisma)),
+  );
   return { prisma, repository, service };
 }
 
@@ -825,4 +843,327 @@ describe('POST /v1/telemetry/events — ADR 0010 at the real HTTP boundary', () 
       await prisma.client.$executeRawUnsafe('ALTER TABLE "Run_hidden_by_test" RENAME TO "Run";');
     }
   }, 30_000);
+});
+
+/**
+ * ADR 0014 / `p4.entity-ingest`. Detection block, verbatim: "integration tests that post
+ * each of the five events through the real ingest endpoint and read the row back from
+ * Postgres. Response-code assertions alone are not enough: the regression this replaces
+ * (`type.startsWith('run.') ? 'run' : 'step'`) returned ACCEPTED with every gate green
+ * while writing a Decision id into the Step table. Assert on the store."
+ *
+ * Real HTTP boundary, same shape as the ADR 0010 suite above: real Nest routing, the real
+ * `TelemetryModule` (which now imports `DecisionsModule`/`ModelCallModule`/`ToolCallModule`/
+ * `ErrorModule` — ADR 0014's "ONE NODE, NOT TWO"), the real `PrismaService`, real rows.
+ */
+describe('POST /v1/telemetry/events — the five Phase 4 entity types persist for real (ADR 0014)', () => {
+  let container: StartedPostgreSqlContainer;
+  let app: NestExpressApplication;
+  let moduleRef: TestingModule;
+  let prisma: PrismaService;
+
+  const httpServer = (a: INestApplication): Server => a.getHttpServer() as Server;
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer(POSTGRES_IMAGE).start();
+    const connectionString = container.getConnectionUri();
+
+    execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
+      cwd: DATABASE_DIR,
+      env: { ...process.env, DATABASE_URL: connectionString },
+      stdio: 'pipe',
+      shell: process.platform === 'win32',
+    });
+
+    process.env.DATABASE_URL = connectionString;
+    process.env.NODE_ENV = 'test';
+    process.env.LOG_LEVEL = 'fatal';
+
+    const [{ ConfigModule }, { PrismaModule }, { TelemetryModule }, { validateEnv }] =
+      await Promise.all([
+        import('@nestjs/config'),
+        import('../src/prisma/prisma.module'),
+        import('../src/telemetry/telemetry.module'),
+        import('../src/config/env.schema'),
+      ]);
+
+    moduleRef = await Test.createTestingModule({
+      imports: [
+        ConfigModule.forRoot({ isGlobal: true, cache: true, validate: validateEnv }),
+        PrismaModule,
+        TelemetryModule,
+      ],
+    }).compile();
+
+    app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
+    const { configureBodyParser } = await import('../src/common/configure-body-parser');
+    configureBodyParser(app);
+    app.useGlobalFilters(new AllExceptionsFilter(app.get(HttpAdapterHost).httpAdapter));
+    app.setGlobalPrefix('v1', { exclude: ['health'] });
+    await app.init();
+
+    prisma = app.get(PrismaService);
+  }, 180_000);
+
+  afterAll(async () => {
+    await app?.close();
+    await container?.stop();
+  });
+
+  async function post(
+    events: readonly unknown[],
+  ): Promise<{ status: number; body: IngestResponse }> {
+    const response = await request(httpServer(app)).post('/v1/telemetry/events').send({ events });
+    return { status: response.status, body: response.body as IngestResponse };
+  }
+
+  it('decision.recorded writes a Decision row, and no Step or Run row', async () => {
+    const response = await post([
+      {
+        eventId: 'evt-e2e-decision-1',
+        schemaVersion: '2',
+        type: 'decision.recorded',
+        entityId: 'e2e-dec-1',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:00.000Z',
+        payload: {
+          stepId: 'e2e-step-1',
+          decisionType: 'execution_strategy',
+          contextKey: 'risk=low',
+          availableOptions: ['sequential', 'parallel'],
+          selectedOption: 'parallel',
+        },
+      },
+    ]);
+
+    expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const decision = await prisma.client.decision.findUnique({ where: { id: 'e2e-dec-1' } });
+    expect(decision).not.toBeNull();
+    expect(decision).toMatchObject({
+      runId: 'e2e-run-1',
+      stepId: 'e2e-step-1',
+      decisionType: 'execution_strategy',
+      selectedOption: 'parallel',
+      outcome: 'UNKNOWN',
+    });
+
+    // The regression this test replaces: a Decision id written into the Step table.
+    const step = await prisma.client.step.findUnique({ where: { id: 'e2e-dec-1' } });
+    expect(step).toBeNull();
+    const run = await prisma.client.run.findUnique({ where: { id: 'e2e-dec-1' } });
+    expect(run).toBeNull();
+  });
+
+  it('decision.outcome_attested updates the original Decision row, never inserting a second one', async () => {
+    await post([
+      {
+        eventId: 'evt-e2e-decision-2',
+        schemaVersion: '2',
+        type: 'decision.recorded',
+        entityId: 'e2e-dec-2',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:01.000Z',
+        payload: {
+          stepId: 'e2e-step-1',
+          decisionType: 'execution_strategy',
+          availableOptions: ['a', 'b'],
+          selectedOption: 'a',
+        },
+      },
+    ]);
+
+    // DoD line 4: "An attestation posted from a second process updates the original
+    // Decision." Modelled as a second, independent ingest call.
+    const attestResponse = await post([
+      {
+        eventId: 'evt-e2e-attest-2',
+        schemaVersion: '2',
+        type: 'decision.outcome_attested',
+        entityId: 'e2e-dec-2',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:02.000Z',
+        payload: { outcome: 'SUCCESS' },
+      },
+    ]);
+
+    expect(attestResponse.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const rows = await prisma.client.decision.findMany({ where: { id: 'e2e-dec-2' } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      selectedOption: 'a', // the recording side survives the later attestation
+      outcome: 'SUCCESS',
+      outcomeAttestedBy: 'CALLER',
+    });
+  });
+
+  it('DoD line 5: an attestation for a decisionId the platform has never recorded is accepted and stored', async () => {
+    const response = await post([
+      {
+        eventId: 'evt-e2e-attest-cold',
+        schemaVersion: '2',
+        type: 'decision.outcome_attested',
+        entityId: 'e2e-dec-never-recorded',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:03.000Z',
+        payload: { outcome: 'FAILURE' },
+      },
+    ]);
+
+    expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const decision = await prisma.client.decision.findUnique({
+      where: { id: 'e2e-dec-never-recorded' },
+    });
+    expect(decision).toMatchObject({
+      runId: 'e2e-run-1',
+      stepId: null,
+      decisionType: null,
+      outcome: 'FAILURE',
+      outcomeAttestedBy: 'CALLER',
+    });
+  });
+
+  it('model_call.recorded writes a ModelCall row, and no Step or Run row', async () => {
+    const response = await post([
+      {
+        eventId: 'evt-e2e-model-1',
+        schemaVersion: '2',
+        type: 'model_call.recorded',
+        entityId: 'e2e-mc-1',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:04.000Z',
+        payload: {
+          stepId: 'e2e-step-1',
+          provider: 'anthropic',
+          model: 'claude-opus-5',
+          latencyMs: 812,
+          inputTokens: 1200,
+          outputTokens: 340,
+          status: 'ok',
+        },
+      },
+    ]);
+
+    expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const modelCall = await prisma.client.modelCall.findUnique({ where: { id: 'e2e-mc-1' } });
+    expect(modelCall).toMatchObject({
+      runId: 'e2e-run-1',
+      stepId: 'e2e-step-1',
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      inputTokens: 1200,
+      outputTokens: 340,
+    });
+    expect(await prisma.client.step.findUnique({ where: { id: 'e2e-mc-1' } })).toBeNull();
+    expect(await prisma.client.run.findUnique({ where: { id: 'e2e-mc-1' } })).toBeNull();
+  });
+
+  it('tool_call.recorded writes a ToolCall row, and no Step or Run row', async () => {
+    const response = await post([
+      {
+        eventId: 'evt-e2e-tool-1',
+        schemaVersion: '2',
+        type: 'tool_call.recorded',
+        entityId: 'e2e-tc-1',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:05.000Z',
+        payload: {
+          stepId: 'e2e-step-1',
+          toolName: 'search',
+          input: { query: 'weather' },
+          output: { rows: 3 },
+          inputTruncated: false,
+          outputTruncated: false,
+          inputBytes: 42,
+          outputBytes: 100,
+          startedAt: '2026-09-02T10:00:05.000Z',
+          completedAt: '2026-09-02T10:00:05.250Z',
+          durationMs: 250,
+          success: true,
+        },
+      },
+    ]);
+
+    expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const toolCall = await prisma.client.toolCall.findUnique({ where: { id: 'e2e-tc-1' } });
+    expect(toolCall).toMatchObject({
+      runId: 'e2e-run-1',
+      stepId: 'e2e-step-1',
+      toolName: 'search',
+      input: { query: 'weather' },
+      output: { rows: 3 },
+      success: true,
+    });
+    expect(await prisma.client.step.findUnique({ where: { id: 'e2e-tc-1' } })).toBeNull();
+    expect(await prisma.client.run.findUnique({ where: { id: 'e2e-tc-1' } })).toBeNull();
+  });
+
+  it('error.recorded writes an Error row, and no Step or Run row', async () => {
+    const response = await post([
+      {
+        eventId: 'evt-e2e-error-1',
+        schemaVersion: '2',
+        type: 'error.recorded',
+        entityId: 'e2e-err-1',
+        runId: 'e2e-run-1',
+        occurredAt: '2026-09-02T10:00:06.000Z',
+        payload: { stepId: 'e2e-step-1', type: 'TimeoutError', message: 'timed out after 30s' },
+      },
+    ]);
+
+    expect(response.body.results[0]).toMatchObject({ status: 'ACCEPTED' });
+
+    const error = await prisma.client.error.findUnique({ where: { id: 'e2e-err-1' } });
+    expect(error).toMatchObject({
+      runId: 'e2e-run-1',
+      stepId: 'e2e-step-1',
+      type: 'TimeoutError',
+      message: 'timed out after 30s',
+    });
+    expect(await prisma.client.step.findUnique({ where: { id: 'e2e-err-1' } })).toBeNull();
+    expect(await prisma.client.run.findUnique({ where: { id: 'e2e-err-1' } })).toBeNull();
+  });
+
+  it('ADR 0014 decision 2: droppedSinceLastBatch folds into the named run’s droppedTelemetryEventCount, a real zero included', async () => {
+    const runId = 'e2e-run-dropped';
+
+    await post([
+      {
+        eventId: 'evt-e2e-run-dropped-start',
+        schemaVersion: '1',
+        type: 'run.started',
+        entityId: runId,
+        runId,
+        occurredAt: '2026-09-02T10:00:07.000Z',
+        payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+      },
+    ]);
+
+    let run = await prisma.client.run.findUnique({ where: { id: runId } });
+    expect(run?.droppedTelemetryEventCount).toBeNull();
+
+    await request(httpServer(app))
+      .post('/v1/telemetry/events')
+      .send({
+        events: [
+          {
+            eventId: 'evt-e2e-run-dropped-complete',
+            schemaVersion: '1',
+            type: 'run.completed',
+            entityId: runId,
+            runId,
+            occurredAt: '2026-09-02T10:00:08.000Z',
+            payload: { status: 'COMPLETED' },
+          },
+        ],
+        droppedSinceLastBatch: 3,
+      });
+
+    run = await prisma.client.run.findUnique({ where: { id: runId } });
+    expect(run?.droppedTelemetryEventCount).toBe(3);
+  });
 });

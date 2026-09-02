@@ -19,17 +19,24 @@ import {
  * reasoning `run-summary.ts` uses when it refuses to report `droppedTelemetryEventCount` as
  * anything but `null`.
  *
- * ## The dropped-event count, and why it says nothing
+ * ## The dropped-event count
  *
- * §16's drop counters (`droppedOverflow`, `droppedInvalid`, `droppedTooLarge`,
- * `droppedAfterShutdown`, `droppedUndeliverable`) are **client-side SDK state**. No envelope
- * field, no `IngestResponse` field and no column carries them to the platform, so
- * `GET /v1/runs/:id` — the only endpoint this page reads — has nothing to report, and
- * `GET /v1/runs/:id/summary` answers `null` for the same reason.
+ * §16's five drop counters (`droppedOverflow`, `droppedInvalid`, `droppedTooLarge`,
+ * `droppedAfterShutdown`, `droppedUndeliverable`) are still client-side SDK state — no
+ * envelope field carries the breakdown, and `GET /v1/runs/:id` (`run.tsx`'s own detail
+ * fetch) still has nothing to report. ADR 0014 decision 2 added exactly one number: the
+ * batch-level `droppedSinceLastBatch` SUM, folded into `Run.droppedTelemetryEventCount` and
+ * surfaced at `GET /v1/runs/:id/summary` — a second, independent fetch
+ * (`ingestion-health-data.ts`'s `fetchDroppedTelemetryEventCount`), because the detail
+ * response this page otherwise reads does not carry it.
  *
- * The row is on the card anyway, saying `not reported`, with the reason beside it. A reader
- * who cannot see the row concludes the Dashboard does not track drops; a reader who sees a `0`
- * concludes none were dropped. Only the third rendering is true.
+ * `droppedTelemetryEventCount` is `null` in exactly two cases this card cannot and need not
+ * tell apart: no batch for this run has ever reported one, or the summary request itself
+ * could not be answered. Either way the honest rendering is the same — `not reported`, with
+ * the reason beside it — never a `0` standing in for a question nobody answered. A reader
+ * who cannot see the row concludes the Dashboard does not track drops; a reader who sees a
+ * `0` concludes none were dropped. Only the third rendering is true, and it is now also true
+ * for a real reported zero: `0` prints as `0`, not as `not reported`.
  *
  * ## What this card is NOT
  *
@@ -41,7 +48,18 @@ import {
 const DROP_COUNT_NOTE =
   '§16’s drop counters are client-side SDK state. No envelope field, no ingest response and no column carries them to the platform, so no drop count has been reported for this run. That is not a claim that none were dropped.';
 
-export function IngestionHealthCard({ run }: { run: RunDetailView }) {
+export function IngestionHealthCard({
+  run,
+  droppedTelemetryEventCount,
+}: {
+  run: RunDetailView;
+  /**
+   * `GET /v1/runs/:id/summary`'s `droppedTelemetryEventCount` — `null` when no batch has
+   * ever reported one for this run, OR when that request could not be answered at all. Both
+   * render the same way: `not reported`.
+   */
+  droppedTelemetryEventCount: number | null;
+}) {
   const health = assessIngestionHealth(run);
 
   return (
@@ -76,12 +94,16 @@ export function IngestionHealthCard({ run }: { run: RunDetailView }) {
         label="Model calls missing an output token count"
         value={formatCount(health.modelCallsMissingOutputTokens)}
       />
-      {/* Hardcoded, and deliberately not routed through `assessIngestionHealth`: there is no
-          input for it to read. A function returning an unconditional `null` would look like a
-          computation and would be the first thing a future reader trusted. */}
-      <HealthRow label="Dropped telemetry events" value="not reported" />
+      {/* ADR 0014 decision 2: the one row on this card whose input is NOT `run`
+          (`RunDetailView`) — it comes from the separate `/summary` fetch `page.tsx` makes,
+          because `GET /v1/runs/:id` never carries this field at all. `formatCount` already
+          gives `null` the same `not reported` rendering every other absent measure on this
+          card gets, thousands separators included for a real value. */}
+      <HealthRow label="Dropped telemetry events" value={formatCount(droppedTelemetryEventCount)} />
 
-      <p className="note-inline note-absent">{DROP_COUNT_NOTE}</p>
+      {droppedTelemetryEventCount === null ? (
+        <p className="note-inline note-absent">{DROP_COUNT_NOTE}</p>
+      ) : null}
     </section>
   );
 }

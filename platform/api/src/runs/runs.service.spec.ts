@@ -61,6 +61,7 @@ function runRecord(overrides: Partial<RunRecord> & Pick<RunRecord, 'id'>): RunRe
     receivedAt: new Date('2026-08-21T11:00:00.000Z'),
     lastEventAt: new Date('2026-08-21T11:59:00.000Z'),
     metadata: { region: 'eu-west-1' },
+    droppedTelemetryEventCount: null,
     ...overrides,
   };
 }
@@ -785,6 +786,34 @@ describe('RunsService.summaryFor', () => {
     expect(summary?.modelCallCount).toBe(0);
     expect(summary?.toolCallCount).toBe(0);
     expect(summary?.droppedTelemetryEventCount).toBeNull();
+  });
+
+  // ADR 0014 decision 2: the Run row now carries a real count once a batch has reported
+  // one. `0` itself must read as reported-zero, never conflated with "never reported".
+  it('reports the run row’s dropped-event count once one has been recorded', async () => {
+    const service = serviceOver(
+      [runRecord({ id: 'run-1', droppedTelemetryEventCount: 17 })],
+      [],
+      FIXED_CLOCK,
+      CALLS,
+    );
+
+    const summary = await service.summaryFor('run-1');
+
+    expect(summary?.droppedTelemetryEventCount).toBe(17);
+  });
+
+  it('reports a real zero as 0, not as the "never reported" null', async () => {
+    const service = serviceOver(
+      [runRecord({ id: 'run-1', droppedTelemetryEventCount: 0 })],
+      [],
+      FIXED_CLOCK,
+      CALLS,
+    );
+
+    const summary = await service.summaryFor('run-1');
+
+    expect(summary?.droppedTelemetryEventCount).toBe(0);
   });
 
   it('is not affected by the run being STALE', async () => {

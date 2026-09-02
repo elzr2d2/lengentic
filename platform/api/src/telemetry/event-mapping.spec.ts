@@ -67,21 +67,30 @@ describe('entityKindOf', () => {
   // Decision id would have been locked, loaded and upserted as a Step row with `tsc`,
   // eslint and every existing test green. Asserted per type rather than in a loop so a
   // failure names the type that regressed.
-  it('answers null for the Phase 4 types, which have no Run/Step fold', () => {
-    expect(entityKindOf('decision.recorded')).toBeNull();
-    expect(entityKindOf('decision.outcome_attested')).toBeNull();
-    expect(entityKindOf('model_call.recorded')).toBeNull();
-    expect(entityKindOf('tool_call.recorded')).toBeNull();
-    expect(entityKindOf('error.recorded')).toBeNull();
+  //
+  // ADR 0014 (p4.entity-ingest): all five now answer their own table, not null — the
+  // regression this asserts against today is the OPPOSITE of the one above: a Decision
+  // routed into 'step', not left unrouted.
+  it('routes both Decision event types to "decision", and the other three Phase 4 types to their own table', () => {
+    expect(entityKindOf('decision.recorded')).toBe('decision');
+    expect(entityKindOf('decision.outcome_attested')).toBe('decision');
+    expect(entityKindOf('model_call.recorded')).toBe('model_call');
+    expect(entityKindOf('tool_call.recorded')).toBe('tool_call');
+    expect(entityKindOf('error.recorded')).toBe('error');
   });
 
   // `satisfies Readonly<Record<TelemetryEventType, ...>>` already makes a missing member a
   // compile error; this proves the runtime table is total against the wire contract's own
   // list, so a type added to `TELEMETRY_EVENT_TYPES` cannot reach `entityKindOf` and get
-  // `undefined` — which would be neither a kind nor the explicit null.
-  it('has an answer for every type in the wire contract', () => {
+  // `undefined` — which would be neither a kind nor the explicit null. `null` stays in the
+  // set of legal answers (ADR 0014: a future type may still arrive mapped to `null`, exactly
+  // as these five once were), even though no real type answers it today.
+  it('has a non-null answer for every type in the wire contract', () => {
     for (const type of TELEMETRY_EVENT_TYPES) {
-      expect([...(['run', 'step'] as const), null]).toContain(entityKindOf(type));
+      expect(['run', 'step', 'decision', 'model_call', 'tool_call', 'error', null]).toContain(
+        entityKindOf(type),
+      );
+      expect(entityKindOf(type)).not.toBeNull();
     }
   });
 });
@@ -92,14 +101,17 @@ describe('isMergeableEvent', () => {
     expect(isMergeableEvent(stepCompleted())).toBe(true);
   });
 
-  it('rejects a Phase 4 event', () => {
+  // Not the same claim as "has no persistence" any more (ADR 0014 gave it one) — this is
+  // purely about the merge FOLD, which still understands only Run/Step lifecycle state.
+  it('rejects a Phase 4 event — it is not part of the merge fold, even though it is storable', () => {
     expect(isMergeableEvent(decisionRecorded())).toBe(false);
   });
 
   it('agrees with entityKindOf for every type in the wire contract', () => {
     for (const type of TELEMETRY_EVENT_TYPES) {
       const event = { ...runStarted(), type } as TelemetryEvent;
-      expect(isMergeableEvent(event)).toBe(entityKindOf(type) !== null);
+      const kind = entityKindOf(type);
+      expect(isMergeableEvent(event)).toBe(kind === 'run' || kind === 'step');
     }
   });
 });

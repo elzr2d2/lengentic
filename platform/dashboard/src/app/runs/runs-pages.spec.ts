@@ -808,7 +808,11 @@ describe('GET /runs/[id] — the run detail page', () => {
 
     await renderPage(RunDetailPage({ params: Promise.resolve({ id: 'run/tree' }) }));
 
-    expect(asked).toStrictEqual(['/v1/runs/run%2Ftree']);
+    // ADR 0014 decision 2 added a second fetch (the Ingestion Health card's dropped-event
+    // count, `GET /v1/runs/:id/summary` — not stubbed here, so it fails, harmlessly, the
+    // same way it does whenever this suite does not care about that row) — encoded the same
+    // way as the first.
+    expect(asked).toStrictEqual(['/v1/runs/run%2Ftree', '/v1/runs/run%2Ftree/summary']);
   });
 
   it('turns a 404 into Next’s not-found page rather than a failure card', async () => {
@@ -1346,6 +1350,45 @@ describe('GET /runs/[id] — the Phase 4 collections, and the difference between
     expect(telemetryCard(markup, 'Ingestion health').notes).toContain(
       '§16’s drop counters are client-side SDK state. No envelope field, no ingest response and no column carries them to the platform, so no drop count has been reported for this run. That is not a claim that none were dropped.',
     );
+  });
+
+  // ADR 0014 decision 2: once a batch has reported a drop count, the summary endpoint
+  // answers it and the card must show the real number instead of the blanket "not reported".
+  it('shows the real dropped-event count once the run summary reports one', async () => {
+    stubApi({
+      '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY },
+      '/v1/runs/run-telemetry/summary': {
+        status: 200,
+        body: { runId: 'run-telemetry', droppedTelemetryEventCount: 17 },
+      },
+    });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+
+    expect(labelledRow(markup, 'Dropped telemetry events')).toBe('17');
+    // The "not reported" note only makes sense over an absence — it must not sit next to a
+    // real number telling the reader the opposite.
+    expect(telemetryCard(markup, 'Ingestion health').notes).not.toContain(
+      '§16’s drop counters are client-side SDK state. No envelope field, no ingest response and no column carries them to the platform, so no drop count has been reported for this run. That is not a claim that none were dropped.',
+    );
+  });
+
+  it('shows a real reported zero as 0, never as "not reported"', async () => {
+    stubApi({
+      '/v1/runs/run-telemetry': { status: 200, body: RUN_WITH_TELEMETRY },
+      '/v1/runs/run-telemetry/summary': {
+        status: 200,
+        body: { runId: 'run-telemetry', droppedTelemetryEventCount: 0 },
+      },
+    });
+
+    const markup = await renderPage(
+      RunDetailPage({ params: Promise.resolve({ id: 'run-telemetry' }) }),
+    );
+
+    expect(labelledRow(markup, 'Dropped telemetry events')).toBe('0');
   });
 
   it('reports what the telemetry lost — truncation, token gaps and self-contradicting clocks', async () => {
