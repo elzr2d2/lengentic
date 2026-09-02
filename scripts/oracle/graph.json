@@ -1107,6 +1107,42 @@
       "changeClass": "behavior"
     },
     {
+      "id": "p4.entity-ingest",
+      "phase": 4,
+      "lane": "api",
+      "title": "Entity ingest write path (all five Phase 4 types) + drop-count wire field",
+      "owner": "builder",
+      "needs": ["p4.entities", "p4.attestation", "p4.run-summary", "p4.run-explorer"],
+      "probes": [
+        {
+          "kind": "path",
+          "path": "platform/api/src/tool-call/tool-call.repository.ts"
+        },
+        {
+          "kind": "path",
+          "path": "platform/api/src/error/error.repository.ts"
+        }
+      ],
+      "note": "CUT 2026-09-02 at the Phase 4 phase gate, RED on DoD lines 4, 5, 6 and the preamble. Authorised by docs/decisions/0014. THE SEAM NOBODY OWNED: all five Phase 4 wire types were rejected at ingest — event-mapping.ts:52 maps each to null, telemetry.service.ts:356 turns that into EVENT_TYPE_NOT_INGESTIBLE, and telemetry.service.spec.ts:255 ASSERTS that rejection. The read side was complete (4 Prisma models, 6 read methods, 8 Run Explorer views) over tables ingestion could never fill; no model-call/tool-call/error module existed, and DecisionsRepository had only attestOutcome with nothing calling it. The seam sat BETWEEN nodes, which is why every probe stayed honest and the phase still reported 8/8. ONE NODE, NOT TWO: ADR 0014 decision 2's drop-count field folds droppedSinceLastBatch into a per-run column at the persistence edge, which is platform/api/src/telemetry/** — the same surface as the routing. Splitting it would make two nodes claim telemetry/**, the exact ambiguity the p4.run-summary carve-out exists to prevent, and autopilot §4 requires one coherent repair set per failed gate. PROBES: both name files only this node creates. A grep over platform/shared/schema would be satisfiable by p2.shared-schema's deliverable — the false-green shape check:probes forbids.",
+      "own": {
+        "allowed": [
+          "platform/api/src/**",
+          "platform/api/test/**",
+          "platform/shared/schema/ingest.ts",
+          "platform/database/prisma/**",
+          "platform/dashboard/src/app/runs/**"
+        ],
+        "forbidden": ["platform/telemetry-sdk/**", "platform/analysis-engine/**", "playground/**"]
+      },
+      "validate": [
+        "pnpm gates",
+        "pnpm test:integration",
+        "pnpm --filter @lengentic/telemetry-sdk test"
+      ],
+      "risk": "high",
+      "changeClass": "contract"
+    },
+    {
       "id": "p5.engine-pkg",
       "phase": 5,
       "lane": "engine",
