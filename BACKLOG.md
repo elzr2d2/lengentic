@@ -3464,3 +3464,67 @@ causes must read SDK-side `stats()`.
 **Do:** nothing unless product asks. ADR 0014 rejected the sixth entity and table as more
 machinery than one DoD line is worth, and that reasoning still holds. **Trigger:** a product ask
 for drop-cause reporting. Do not re-litigate ADR 0014 without one.
+
+## Discovered at the `p4.sdk-entity-emitters` per-node contract cadence (2026-09-02)
+
+Validator, Reviewer and Watchdog over `lane/p4.sdk-entity-emitters` @ `9f8358b`. The lane itself
+passed all three. Both entries below are about **pre-existing** `platform/telemetry-sdk` code that
+this diff did not modify (confirmed by `git diff main...HEAD`) — they were found because the new
+`error.recorded` emitter is the first thing to put free-form prose on the wire, which is what made
+the gap observable. `BACKLOG.md` is outside the lane's `allowed_paths`, so the lane could not file
+them itself.
+
+### §15's shipped redaction defaults miss most realistic credential-bearing strings, not just the mid-prose edge case
+
+**Source:** Phase 4 `p4.sdk-entity-emitters` Validator, proven against a real
+`createTelemetryClient` with a fresh transport — 8 cases, full wire payloads preserved at
+`.artifacts/evidence/4/p4.sdk-entity-emitters/validator/redaction-probe-output.log` (lane
+worktree). Sharpens the Builder's own `follow_up_required` entry #1, which framed this as secrets
+"embedded mid-prose".
+
+`defaultRedactor` has two rules: a **key** rule (`Authorization`, `/api[_-]?key/i`) and a **value**
+rule for a string that _is_ a bearer token. The value rule is anchored at string start —
+`/^\s*bearer\s+\S/i`. The framing "a key embedded mid-prose is not caught" undersells the gap,
+because anchoring means the common case leaks too.
+
+Redacted: `'Bearer sk-…'`, `'bearer sk-…'` (lowercase), metadata key `ApI_KeY` (mixed case).
+
+**Ships in the clear:**
+
+| case                                                                  | value on the wire                                          |
+| --------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `'Authorization header was Bearer sk-live-FAKE-6666'`                 | full secret — the keyword is present, just not at index 0  |
+| `'auth failed: apiKey=sk-live-FAKE-3030 is expired'`                  | full secret                                                |
+| `'upstream token sk-live-FAKE-7777 rejected'`                         | full secret, no keyword to match                           |
+| metadata key `'api key'` (space, not `_` or `-`)                      | full secret — the key regex allows `_`/`-` but not a space |
+| `{ endpoint: 'https://api.example.com/v1?apiKey=sk-live-FAKE-3333' }` | full secret in a URL query under an innocuous key          |
+
+A wrapped `Authorization` header in an error message is not an exotic input; it is what most HTTP
+clients produce when they stringify a failed request. Note this does **not** break Phase 4 DoD
+line 1, which is about tool _input_ and is separately proven.
+
+**Do:** decide whether the value rule should scan rather than anchor, and whether the key regex
+should normalise separators. Both directions have a real cost `payload-safety.ts` already argues
+against in its own header — a false positive costs a run a developer can no longer reconstruct —
+so this is a product/security judgement, not a bug to fix reflexively. **Trigger:** any real
+deployment shipping `error.recorded` off a developer machine, or the first security review of the
+SDK. This is the entry to read first at that review.
+
+### The redaction boundary is recorded as a comment, not as an assertion
+
+**Source:** Phase 4 `p4.sdk-entity-emitters` Watchdog, finding `redaction-boundary-partially-asserted`,
+confirmed by the Coordinator by reading `platform/telemetry-sdk/test/entity-emitters.spec.ts:300-329`.
+
+The comment at that test says "Both halves are asserted here so the boundary is recorded rather
+than assumed". Only one half is. The test supplies a **custom** `redact` hook and asserts the hook
+reaches `path === 'message'` and scrubs it. Nothing asserts that the _shipped default_, with no
+hook, leaves `apiKey=sk-live-FAKE-3030` on the wire — that claim lives only in the comment on
+line 306.
+
+The Validator proved the behaviour holds today. The point of recording a boundary as a test is
+that it fails loudly when someone widens `defaultRedactor`, which is exactly the change the entry
+above may eventually authorise. A comment does not do that.
+
+**Do:** add one test — same message, no `redact` hook, assert the secret is present on the wire —
+so the deliberate boundary breaks the build when it moves. **Trigger:** whoever acts on the entry
+above; the two belong together.
