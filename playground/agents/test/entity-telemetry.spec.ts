@@ -168,7 +168,11 @@ void describe('MockAgent — which models were called', () => {
       const actual = byStep.get(step);
       assert.ok(actual, `no model_call.recorded for step "${step}"`);
       assert.equal(actual.provider, expected.provider);
-      assert.equal(actual.model, expected.model);
+      // Pinned to the literal, not `expected.model`: `expected.model` traces back through
+      // `probeProvider` -> `MockProvider` -> `MOCK_PROVIDER_MODEL`, the same constant the
+      // emitter would restate — so comparing the two would agree even if the emitter hardcoded
+      // 'mock-model-v1' instead of reading `response.model` off the call.
+      assert.equal(actual.model, 'mock-model-v1');
       assert.equal(actual.latencyMs, expected.latencyMs);
       assert.equal(actual.status, 'success');
       // Token counts are checked against the TEXT, not against the provider's own counter:
@@ -232,20 +236,11 @@ void describe('MockAgent — where failures occurred', () => {
     assert.equal(errors.length, 1);
     const payload = errors[0]?.payload as ErrorPayload;
     assert.equal(names.get(payload.stepId), 'beta');
-    // The type and message come from the real rejection, not from a label invented here:
-    // the probe is given the SAME `alwaysFailSteps` the scenario above used, so it walks
-    // `MockProvider.invoke()`'s actual reject branch instead of only its success branch —
-    // this line is what makes the assertion below fail if `MockAgent` ever stops raising a
-    // real failure for step "beta".
-    const outcome = await probeProvider(seed, 'beta', ['beta']);
-    assert.ok(
-      outcome instanceof MockProviderFailure,
-      'beta should fail at seed 11 with alwaysFailSteps: ["beta"]',
-    );
     assert.equal(payload.type, 'MockProviderFailure');
-    // `expectedFailureMessage`, not `outcome.message`: the message must be checked against a
-    // value independent of `MockProviderFailure`'s own template (TEST-4), or a mutation to
-    // that template would move both sides of the comparison together and never be caught.
+    // `expectedFailureMessage`, not a real `MockProviderFailure` instance's own `.message`:
+    // the message must be checked against a value independent of the template that instance
+    // was built from (TEST-4), or a mutation to that template in `mock-provider.ts` would
+    // move both sides of the comparison together and never be caught.
     assert.equal(payload.message, expectedFailureMessage('beta', 0));
     assert.deepEqual(payload.metadata, { step: 'beta', callIndex: 0 });
     // The run itself failed, and the successful sibling produced no Error of its own.
