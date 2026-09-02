@@ -212,11 +212,31 @@ export class TelemetryRepository {
    * error. A batch may report drops for a run this request's own events have not created yet
    * (out-of-order arrival is normal here, same as everywhere else in this file) — nothing
    * conjures a stub Run row for it, for the same reason `touchRunLiveness` does not.
+   *
+   * R4 (repair attempt 2, 2026-09-02) — the saturating half. `IngestRequestSchema` now bounds
+   * one batch's `droppedSinceLastBatch` to what `int4` holds, but this statement is a RUNNING
+   * TOTAL across every batch for the life of a run, so bounding each addend bounds nothing
+   * about the sum: a run at the ceiling plus a batch reporting `1` still overflowed, and
+   * `incrementDroppedCount` runs after every event in that batch has committed — an HTTP 500
+   * for work that landed, thrown again on every retry. Both halves are needed.
+   *
+   * The `::bigint` casts are load-bearing, not decoration: `int4 + int4` raises `22003` in
+   * Postgres BEFORE `LEAST` ever sees the result, so the addition has to happen in a type
+   * wide enough to hold the overflow that `LEAST` then discards.
+   *
+   * Saturation, where the request-level answer was rejection, because here there is no other
+   * answer: the column cannot hold more, and a run that has genuinely lost 2^31 - 1 events is
+   * long past any decision this number informs. `RunSummary.droppedTelemetryEventCount`
+   * reading `2147483647` is a count pinned at its ceiling; the alternative was that run
+   * refusing every batch it is ever sent again.
    */
   async incrementDroppedCount(runId: string, amount: number): Promise<void> {
     await this.prisma.client.$executeRaw`
       UPDATE "Run"
-      SET "droppedTelemetryEventCount" = COALESCE("droppedTelemetryEventCount", 0) + ${amount}
+      SET "droppedTelemetryEventCount" = LEAST(
+        COALESCE("droppedTelemetryEventCount", 0)::bigint + ${amount}::bigint,
+        2147483647::bigint
+      )::int
       WHERE id = ${runId}
     `;
   }

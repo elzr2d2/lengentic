@@ -1222,6 +1222,152 @@ describe('POST /v1/telemetry/events — the five Phase 4 entity types persist fo
   });
 
   /**
+   * R4 (Builder finding raised in repair attempt 1's handoff; decision settled by the
+   * Coordinator for repair attempt 2). Two halves of one guarantee — `Run.
+   * droppedTelemetryEventCount` can never raise SQLSTATE 22003 — proved here against the
+   * same real Postgres, because neither half is provable against a fake.
+   *
+   * Half one is the request-level bound in `IngestRequestSchema`, which stops one BATCH from
+   * carrying an unstorable value. Half two is `incrementDroppedCount`'s saturating add,
+   * which is the only thing standing between the RUNNING TOTAL and the same overflow: the
+   * statement is `COALESCE(col, 0) + amount` across every batch for the life of a run, so
+   * bounding each batch bounds each addend and nothing else. A bound alone would have moved
+   * the failure from one batch to two.
+   *
+   * `POSTGRES_INT4_MAX + 1` and the ceiling itself are Postgres's own numbers, not constants
+   * read back out of the code under test.
+   */
+  describe('R4: the drop counter cannot overflow its int4 column, per batch or in total', () => {
+    const POSTGRES_INT4_MAX = 2_147_483_647;
+
+    const runEvent = (
+      runId: string,
+      eventId: string,
+      occurredAt: string,
+    ): Record<string, unknown> => ({
+      eventId,
+      schemaVersion: '1',
+      type: 'run.started',
+      entityId: runId,
+      runId,
+      occurredAt,
+      payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+    });
+
+    it('refuses a batch reporting more drops than int4 can hold, with HTTP 400 and no write at all', async () => {
+      const runId = 'e2e-run-dropped-overflow';
+
+      await post([runEvent(runId, 'evt-e2e-dropped-overflow-start', '2026-09-02T10:00:11.000Z')]);
+
+      const response = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runEvent(runId, 'evt-e2e-dropped-overflow-2', '2026-09-02T10:00:12.000Z')],
+          droppedSinceLastBatch: POSTGRES_INT4_MAX + 1,
+        });
+
+      expect(response.status).toBe(400);
+      // The failure this replaces was a 500 raised AFTER the batch's events had committed.
+      expect(response.status).not.toBe(500);
+
+      // Request-level means the whole batch is refused: the counter is still "never
+      // reported", and the second event never landed either.
+      const run = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(run?.droppedTelemetryEventCount).toBeNull();
+      expect(
+        await prisma.client.ingestedEvent.findUnique({
+          where: { runId_eventId: { runId, eventId: 'evt-e2e-dropped-overflow-2' } },
+        }),
+      ).toBeNull();
+    });
+
+    it('stores a batch reporting exactly the int4 ceiling', async () => {
+      const runId = 'e2e-run-dropped-ceiling';
+
+      await post([runEvent(runId, 'evt-e2e-dropped-ceiling-start', '2026-09-02T10:00:13.000Z')]);
+
+      const response = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runEvent(runId, 'evt-e2e-dropped-ceiling-2', '2026-09-02T10:00:14.000Z')],
+          droppedSinceLastBatch: POSTGRES_INT4_MAX,
+        });
+
+      expect(response.status).toBe(200);
+      const run = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(run?.droppedTelemetryEventCount).toBe(POSTGRES_INT4_MAX);
+    });
+
+    it('saturates the RUNNING TOTAL at the ceiling instead of overflowing it on the next batch', async () => {
+      const runId = 'e2e-run-dropped-saturate';
+
+      await post([runEvent(runId, 'evt-e2e-dropped-saturate-start', '2026-09-02T10:00:15.000Z')]);
+
+      // Batch one takes the column to its exact ceiling — every value here is individually
+      // legal, so the bound in `IngestRequestSchema` has nothing to say about batch two.
+      const first = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runEvent(runId, 'evt-e2e-dropped-saturate-2', '2026-09-02T10:00:16.000Z')],
+          droppedSinceLastBatch: POSTGRES_INT4_MAX,
+        });
+      expect(first.status).toBe(200);
+
+      // Batch two adds one more. `COALESCE(col, 0) + 1` is 2^31, which int4 cannot hold: this
+      // is the request that used to raise 22003 out of `incrementDroppedCount` — after its
+      // own event had already committed, so the run was poisoned for every batch that
+      // followed it.
+      const second = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runEvent(runId, 'evt-e2e-dropped-saturate-3', '2026-09-02T10:00:17.000Z')],
+          droppedSinceLastBatch: 1,
+        });
+
+      expect(second.status).toBe(200);
+      expect(second.status).not.toBe(500);
+
+      const run = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(run?.droppedTelemetryEventCount).toBe(POSTGRES_INT4_MAX);
+
+      // And the run is not poisoned: a third batch still succeeds and still ingests events.
+      const third = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runEvent(runId, 'evt-e2e-dropped-saturate-4', '2026-09-02T10:00:18.000Z')],
+          droppedSinceLastBatch: 7,
+        });
+      expect(third.status).toBe(200);
+      expect(
+        await prisma.client.ingestedEvent.findUnique({
+          where: { runId_eventId: { runId, eventId: 'evt-e2e-dropped-saturate-4' } },
+        }),
+      ).not.toBeNull();
+    });
+
+    // The control. Saturation must not round ordinary arithmetic — a normal two-batch total
+    // is still the exact sum, not a clamped one.
+    it('still adds normal batches exactly, with no clamping anywhere near the ceiling', async () => {
+      const runId = 'e2e-run-dropped-exact-sum';
+
+      await post([runEvent(runId, 'evt-e2e-dropped-sum-start', '2026-09-02T10:00:19.000Z')]);
+
+      for (const [i, amount] of [3, 4].entries()) {
+        const response = await request(httpServer(app))
+          .post('/v1/telemetry/events')
+          .send({
+            events: [runEvent(runId, `evt-e2e-dropped-sum-${i}`, '2026-09-02T10:00:20.000Z')],
+            droppedSinceLastBatch: amount,
+          });
+        expect(response.status).toBe(200);
+      }
+
+      const run = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(run?.droppedTelemetryEventCount).toBe(7);
+    });
+  });
+
+  /**
    * R1 (Reviewer finding, 2026-09-02, repair attempt 1). Confirmed against this same image
    * before the fix — `.artifacts/evidence/4/p4.entity-ingest/coordinator/s1-confirmation.md`,
    * raw error `22008 date/time field value out of range: "0000-01-01 00:00:00"` thrown from

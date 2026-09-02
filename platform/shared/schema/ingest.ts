@@ -62,6 +62,20 @@ export const REQUEST_ERROR_CODES = Object.freeze({
 
 export type RequestErrorCode = (typeof REQUEST_ERROR_CODES)[keyof typeof REQUEST_ERROR_CODES];
 
+/**
+ * The largest `droppedSinceLastBatch` a request may report: 2^31 - 1, which is exactly what
+ * a Postgres `int4` holds and therefore exactly what `Run.droppedTelemetryEventCount`
+ * (Prisma `Int?`) holds. Anything above it is not a policy violation, it is unstorable.
+ *
+ * Deliberately NOT in `INGEST_LIMITS` beside `maxEventsPerBatch`. Those three are tunable
+ * policy — someone could reasonably raise `maxEventsPerBatch` to 1000 tomorrow. This is not
+ * tunable by anyone: it is a fixed property of the column's type, and the only way to change
+ * it is a migration to `BigInt`. The API mirrors the same number as `POSTGRES_INT4_MAX` in
+ * `platform/api/src/telemetry/wire-sanitize.ts`, for the same six event-level payload fields
+ * this covers at the request level; the two cannot drift, because neither is a choice.
+ */
+export const MAX_DROPPED_SINCE_LAST_BATCH = 2_147_483_647;
+
 // Batch shape only. Typing `events` as an array of validated events would make one
 // malformed event fail the whole array parse and reject the batch — the exact failure
 // §12 forbids ("A malformed event never rejects the whole batch") and Phase 2's DoD
@@ -86,8 +100,29 @@ export const IngestRequestSchema = z.object({
    * into a per-run counter column at the persistence edge (`platform/api/src/telemetry/**`),
    * not stored as its own row: `runs.service.ts`'s `summaryFor` already passes
    * `droppedTelemetryEventCount` explicitly rather than defaulting it.
+   *
+   * `.max(MAX_DROPPED_SINCE_LAST_BATCH)` (R4, repair attempt 2): unbounded, this was the
+   * same permanent-poison defect as R1 one layer up. `TelemetryService.ingest` folds this
+   * value in LAST, after every event in the batch has already committed, so an over-int4
+   * value raised SQLSTATE 22003 out of `incrementDroppedCount` as an HTTP 500 with no
+   * per-event results for work that HAD landed — and the identical batch threw again on
+   * every retry. It is request-level, a property of the batch and not of any event, so the
+   * event-level screen in `wire-sanitize.ts` is not in a position to catch it; the bound
+   * belongs here, in the same object and by the same mechanism as its sibling `events`.
+   * Rejection, not a clamp: a clamp would store a number the client never reported, and
+   * reporting drops honestly is this field's entire reason to exist.
+   *
+   * Bounding one batch does NOT bound the running total —
+   * `TelemetryRepository.incrementDroppedCount` adds into the same column across every batch
+   * for a run's whole life, so the addition saturates there. Both halves are needed; neither
+   * is sufficient.
    */
-  droppedSinceLastBatch: z.number().int().nonnegative().optional(),
+  droppedSinceLastBatch: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(MAX_DROPPED_SINCE_LAST_BATCH)
+    .optional(),
 });
 
 export const IngestResultStatusSchema = z.enum(['ACCEPTED', 'DUPLICATE', 'REJECTED'] as const);
