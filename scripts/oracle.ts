@@ -173,8 +173,10 @@ function runProbe(p: ProbeSpec): boolean {
       });
     }
 
+    // `cwd: ROOT` because a probe whose answer depends on where you invoked the oracle from
+    // is a probe that lies half the time. Every other kind already resolves against ROOT.
     case 'cmd': {
-      const r = spawnSync(p.run, { stdio: 'ignore', timeout: 5000, shell: true });
+      const r = spawnSync(p.run, { cwd: ROOT, stdio: 'ignore', timeout: 5000, shell: true });
       return r.status === 0;
     }
 

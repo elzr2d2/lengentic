@@ -3610,6 +3610,14 @@ the only one that needs no new `playground:*` command; it is also the one that s
 fixture rather than a running agent, which may be the wrong thing to put on screen.
 **Trigger:** the Phase 6 frame, before any scenario packet is cut.
 
+**Addressed 2026-09-03.** Folded into `p6.scenario3` as a second cohort, not a fourth scenario:
+same command, same process, a low-diversity group that clears G1 and fails G2 with no
+`Recommendation` row persisted. The third shape — driving the beat from 5a's JSON fixtures — was
+rejected: it puts a fixture on screen where the demo's argument needs a running agent. The beat
+is renderable because §22's response now exposes `evaluatedGroups` — every group the engine
+evaluated, `SUPPRESSED` ones included — so suppression reaches the wire without becoming an
+entity. `MVP_PLAN_V3.md` Phase 6 Scenario 3, §22 response shape, §25 beat 6 and §30.
+
 ### Two of the three advertised `playground:*` commands do not exist
 
 **Source:** same pass. `MVP_PLAN_V3.md:2336-2340` against `package.json:41`.
@@ -3625,6 +3633,15 @@ the same shape as `p5.spike-deleted` leaving `package.json:41`'s `spike` script 
 `pnpm gates` never invokes a `playground:*` script, so gates stay green with a command the
 plan documents and the repository does not have. **Trigger:** the Phase 6 frame, together with
 the entry above — whoever decides the scenario surfaces decides who writes those two lines.
+
+**Addressed 2026-09-03.** Both lines registered in root `package.json` in the framing commit,
+pointing at `playground/scenarios/repeated-failure/main.ts` and
+`playground/scenarios/deterministic-decision/main.ts`. The coordinator wrote them, not the
+scenario packets: root `package.json` is a declared shared write surface, and a scenario packet
+that had to register its own command would serialise the wave against it — which is precisely
+what made the two scenarios parallel-eligible once the lines were already there. The obvious
+hazard, a script pointing at a file that does not exist yet, is why each scenario probe now
+requires **both** the root script and the packet's own directory.
 
 ### `p6.scenario1` and `p7.readme` are the two concrete instances of the probe lie
 
@@ -3650,3 +3667,72 @@ gap already described at `BACKLOG.md:2903`. **Do:** re-probe both against someth
 can produce — a `path` probe on `playground/scenarios/happy-path/` for the first, and for the
 second a grep that fails while the "Status: Phase 1 of 7" banner is still in the file.
 **Trigger:** with the class entry at `BACKLOG.md:2135`, before the Phase 4 gate.
+
+**Addressed 2026-09-03.** `p6.scenario1` was not re-probed, it was retired: `p3.cli` already
+ships the happy-path executable and its script, so the node was a wrapper that existed only to
+satisfy a packet. The claim that had to survive — happy-path data produces no recommendation —
+is an assertion, and `p7.e2e` owns it beside E2E 4. `p7.readme` keeps its node and gains two
+probes only the rewrite can satisfy: a `cmd` probe that fails while `Status: Phase 1 of 7` is
+still in the file, and a grep for `playground:deterministic-decision`, which the Phase 1 README
+does not mention. `p7.docker-smoke`'s dependency on `p6.scenario1` was redirected to
+`p5.recs-ui` and `p6.scenario3`, the packets that actually supply the demo. Phase 6 and Phase 7
+now report `0/3` and `0/5` — the counts the snapshot said were the truth. The general class at
+`BACKLOG.md:2135` is **not** closed by this: `pnpm check:probes` still cannot see a probe
+satisfied by another node's deliverable, and the fix was per-node judgement both times.
+
+---
+
+## Cut from the MVP at the roadmap-parallelism pass (2026-09-03)
+
+Two graph nodes were removed rather than deferred inside the plan. Both are recorded here with
+the reasoning, because a cut whose reasoning is lost gets re-litigated as a gap.
+
+### `p5.spike-deleted` — deleting `spike/` is not MVP work
+
+**Source:** the roadmap-parallelism pass of 2026-09-03; the trigger-1 escalation recorded at
+`.artifacts/framing/demo-readiness.md`.
+**Trigger:** post-MVP cleanup, if ever.
+
+`spike/` is the only on-disk record of the seven `counterexamples` rows where the spike
+disagrees with the corrected grid **by design**
+(`platform/analysis-engine/fixtures/expectations.ts:13-18`). While it exists it is the
+independent cross-check on 5a's numbers, and CLAUDE.md's standing lesson — cross-agent
+agreement is evidence of independence, never of correctness — is exactly what that
+independence is for. Deleting it also dangles every `spike/aggregate.ts:133`-style citation in
+the graph's node notes and in the evidence files.
+
+The packet bought nothing the MVP needs, and it was escalation trigger 1 (hard to reverse)
+classified `risk: low, mechanical`, which is the wrong shape twice over. Dropped from the graph
+and from the Phase 5b Definition of Done. `pnpm spike` stays registered while the directory
+does. If it is ever deleted, transcribe the seven rows first.
+
+### `p6.real-provider` — the MVP requires zero paid API calls
+
+**Source:** same pass. Escalation trigger 4 (credentials and external cost).
+**Trigger:** post-MVP, optional, and only with a human holding the credential.
+
+One optional real provider needed a paid credential, an `.env.example` schema change and
+API-startup env validation. §25 never shows a real provider, so it supplied no demo beat, and
+the node was already `optional: true` and excluded from Phase 6's denominator. Removed from the
+graph, from the Phase 6 work packages and from both the Phase 6 and the §24 Definition of Done,
+so that "zero paid API calls" is a property of the MVP rather than a property of the path
+someone happens to take through it. Listed in `MVP_PLAN_V3.md` §27.
+
+### `p6.scenario3`'s risk rating dropped from `high` to `medium` — watch it
+
+**Source:** same pass.
+**Trigger:** the Phase 6 wave-1 gate.
+
+`R15` in `pnpm lanes decide` vetoes parallel dispatch for any `risk: high` lane, so this
+rating is load-bearing for the Phase 6 fan-out, and lowering a rating to obtain parallelism is
+the exact move `CLAUDE.md` forbids. The rating was lowered because the underlying boundary risk
+was removed, not to clear R15: `high` recorded the packet's need to edit
+`playground/agents/mock-agent.ts` from outside its own surface, and the resolved acceptance
+criterion (one CLI process, ≥30 runs, no child-process spawning, each `MockAgent` still owning
+its own client) is what removed that need. R15 measures boundary and irreversible-operation
+risk; demo criticality is not that, and `p7.docker-smoke` carries it instead.
+
+The judgement is reversible and it is the weakest link in the Phase 6 parallelism claim. If the
+wave-1 gate finds this packet reaching outside
+`playground/scenarios/deterministic-decision/**`, restore `risk: high` and serialise — do not
+widen `allowed_paths`.

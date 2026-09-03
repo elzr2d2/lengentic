@@ -40,6 +40,8 @@
     "gates:full": "pnpm gates && pnpm check:isolation",
     "spike": "tsx spike/main.ts",
     "playground:happy-path": "tsx playground/cli/happy-path.ts",
+    "playground:repeated-failure": "tsx playground/scenarios/repeated-failure/main.ts",
+    "playground:deterministic-decision": "tsx playground/scenarios/deterministic-decision/main.ts",
     "test:integration": "pnpm -r test:integration",
     "db:migrate": "pnpm --filter @lengentic/database db:migrate",
     "db:reset": "pnpm --filter @lengentic/database db:reset",

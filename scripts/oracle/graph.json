@@ -1,11 +1,11 @@
 {
   "$comment": "Ground truth for LenGentic MVP delivery. Nodes are deliverables, not tasks. Status is PROBED from the repository, never hand-maintained — a checkbox lies, a probe does not. Edit this file when the plan changes; never edit it to make status look better.",
   "planRef": "MVP_PLAN_V3.md",
-  "$executionOrderComment": "The amended execution order from the Phase 1 gate (CLAUDE.md ## Current state): phase numbers are identity, not sequence. 5a is Phase 5 waves 1-3 (the pure analysis engine); 5b stays after Phase 4 and owns deleting spike/. `pnpm flow next` walks this order; `pnpm lanes wave` still takes the plain phase number. Every phase-5 node must appear in exactly one segment below — `pnpm check:flow` asserts it.",
+  "$executionOrderComment": "The amended execution order from the Phase 1 gate (CLAUDE.md ## Current state): phase numbers are identity, not sequence. 5a is Phase 5 waves 1-3 (the pure analysis engine); 5b stays after Phase 4 and is the recommendation contract, the analysis endpoint and the recommendations UI. `pnpm flow next` walks this order; `pnpm lanes wave` still takes the plain phase number. Every phase-5 node must appear in exactly one segment below — `pnpm check:flow` asserts it.",
   "executionOrder": ["1", "5a", "2", "3", "4", "5b", "6", "7"],
   "segments": {
     "5a": ["p5.engine-pkg", "p5.negative-fixtures", "p5.det-candidate", "p5.repeated-failed"],
-    "5b": ["p5.rec-persistence", "p5.analysis-endpoint", "p5.recs-ui", "p5.spike-deleted"]
+    "5b": ["p5.rec-persistence", "p5.analysis-endpoint", "p5.recs-ui"]
   },
   "$lanePolicyComment": "Path ownership for parallel dispatch. `pnpm lanes decide` reads this. Annotation is the OPT-IN to parallelism: a node without `own.allowed` and `validate` fails the eligibility gate and falls back to sequential. That is deliberate — an unannotated node has no verified write surface, and dispatching one into a worktree beside another is exactly the collision the gate exists to prevent.",
   "lanePolicy": {
@@ -70,6 +70,12 @@
       "playground": {
         "allowed": ["playground/**"]
       },
+      "playground-decision": {
+        "allowed": ["playground/scenarios/deterministic-decision/**"]
+      },
+      "playground-failure": {
+        "allowed": ["playground/scenarios/repeated-failure/**"]
+      },
       "pure": {
         "allowed": ["platform/api/src/**"]
       },
@@ -119,19 +125,16 @@
     "p5.negative-fixtures": ["19", "PHASE 0", "PHASE 5"],
     "p5.det-candidate": ["18", "19", "21"],
     "p5.repeated-failed": ["20"],
-    "p5.rec-persistence": ["21"],
-    "p5.analysis-endpoint": ["22"],
-    "p5.recs-ui": ["21", "22"],
-    "p5.spike-deleted": ["PHASE 0"],
-    "p6.scenario1": ["PHASE 6"],
+    "p5.rec-persistence": ["19", "21", "22"],
+    "p5.analysis-endpoint": ["19", "21", "22"],
+    "p5.recs-ui": ["19", "21", "22", "25"],
     "p6.scenario2": ["20", "PHASE 6"],
-    "p6.scenario3": ["18", "19", "PHASE 6"],
+    "p6.scenario3": ["18", "19", "25", "PHASE 6"],
     "p6.seed-repro": ["17", "PHASE 6"],
-    "p6.real-provider": ["PHASE 6"],
     "p7.regression": ["PHASE 7"],
-    "p7.e2e": ["PHASE 7"],
+    "p7.e2e": ["25", "PHASE 7"],
     "p7.ci-full": ["7", "PHASE 7"],
-    "p7.docker-smoke": ["PHASE 7"],
+    "p7.docker-smoke": ["25", "PHASE 7"],
     "p7.readme": ["1", "2", "19", "PHASE 7"]
   },
   "decisions": [
@@ -1341,22 +1344,44 @@
       "id": "p5.rec-persistence",
       "phase": 5,
       "lane": "persistence",
-      "title": "Recommendation entity, fingerprint dedupe, OPEN/DISMISSED lifecycle (§21)",
+      "title": "Recommendation contract + persistence — shared wire contract, Prisma model, fingerprint dedupe, OPEN/DISMISSED lifecycle (§21)",
       "owner": "builder",
       "needs": ["p5.det-candidate", "p4.entities"],
       "probes": [
         {
+          "kind": "path",
+          "path": "platform/shared/schema/recommendation.ts"
+        },
+        {
           "kind": "grep",
           "dir": "platform/database/prisma",
           "pattern": "model Recommendation"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/api/src/recommendations",
+          "pattern": "fingerprint"
         }
       ],
       "own": {
-        "allowed": ["platform/database/prisma/**", "platform/database/src/**"]
+        "allowed": [
+          "platform/shared/schema/recommendation.ts",
+          "platform/shared/index.ts",
+          "platform/shared/test/contract/**",
+          "platform/database/prisma/**",
+          "platform/database/src/**",
+          "platform/api/src/recommendations/**"
+        ]
       },
-      "validate": ["pnpm typecheck", "pnpm test:integration"],
+      "validate": [
+        "pnpm --filter @lengentic/shared test",
+        "pnpm --filter @lengentic/api test",
+        "pnpm test:integration",
+        "pnpm gates"
+      ],
       "risk": "high",
-      "changeClass": "contract"
+      "changeClass": "contract",
+      "note": "EXPANDED 2026-09-03 from \"persistence only\" to \"contract + persistence\". It owns the shared recommendation wire contract as well as its storage, because .artifacts/framing/demo-readiness.md found that NO 5b node owned platform/shared/schema/** - the only legal home for a wire contract under CLAUDE.md ## Types - and both downstream packets have to build against it. Owns: platform/shared/schema/recommendation.ts and its public export from platform/shared/index.ts; the analysis request/response wire types; the gate-result and counterexample wire shapes; focused contract tests under platform/shared/test/contract/**; the Prisma Recommendation model and its migration; and the recommendation repository (fingerprint dedupe, OPEN/DISMISSED lifecycle, PATCH /v1/recommendations/:id/status) under platform/api/src/recommendations/**, which is where every other repository in this codebase lives. THE RESPONSE CONTRACT EXPOSES EVERY EVALUATED GROUP, not only the emitted recommendations: { evaluatedGroups: Array<{ verdict: \"CANDIDATE\" | \"SUPPRESSED\"; failedGates: GateId[]; gates: GateResult[]; recommendationId: string | null }> }. Only CANDIDATE groups become persisted Recommendation rows; SUPPRESSED groups are visible in the immediate analysis response and are never persisted as entities. Section 25 beat 6 is rendered from that array. NO Redis, NO BullMQ, NO worker, NO analysis job table, NO in-process queue, NO persisted suppression entity - section 22. It is the ONLY 5b packet that touches platform/shared/schema/**, so lanePolicy.serialiseIfTouches keeps it alone in its wave and the contract is frozen before p5.analysis-endpoint and p5.recs-ui fan out against it. Validation was previously [\"pnpm typecheck\", \"pnpm test:integration\"] over a surface with no test runner - @lengentic/database's test script is an echo - so two DoD lines had nowhere to fail. The commands below run real suites over the surface this node writes."
     },
     {
       "id": "p5.analysis-endpoint",
@@ -1367,88 +1392,62 @@
       "needs": ["p5.rec-persistence", "p5.repeated-failed"],
       "probes": [
         {
+          "kind": "path",
+          "path": "platform/api/src/analysis"
+        },
+        {
           "kind": "grep",
-          "dir": "platform/api/src",
+          "dir": "platform/api/src/analysis",
           "pattern": "v1/analysis/run"
         }
       ],
       "own": {
-        "allowed": ["platform/api/src/**"]
+        "allowed": ["platform/api/src/**"],
+        "forbidden": ["platform/api/src/recommendations/**"]
       },
-      "validate": ["pnpm test", "pnpm test:integration"],
+      "validate": ["pnpm --filter @lengentic/api test", "pnpm test:integration", "pnpm gates"],
       "risk": "medium",
-      "changeClass": "behavior"
+      "changeClass": "behavior",
+      "note": "Implements POST /v1/analysis/run against the contract p5.rec-persistence froze. THIS PACKET OWNS THE ENGINE-OUTPUT-TO-WIRE MAPPER - the explicit mapping from the analysis engine's GateEvaluation output to the shared response type, written out rather than inferred, so a shape change on either side fails a typecheck instead of a demo. The response carries EVERY evaluated group (verdict, failedGates, gates, recommendationId), not only the ones that produced a recommendation; a SUPPRESSED group is a first-class row in the response and is never persisted. Analysis never runs inline with ingestion, and there is no queue, worker or job table - section 22. It may READ platform/api/src/recommendations/** (imports are always legal across lanes) and may not write it; that surface belongs to p5.rec-persistence. Runs in the SAME WAVE as p5.recs-ui: disjoint surfaces, one frozen contract, and the wave gate proves the live connection between them."
     },
     {
       "id": "p5.recs-ui",
       "phase": 5,
       "lane": "ui",
-      "title": "Dashboard: recommendations, gate table, counterexamples, Analyze action",
+      "title": "Dashboard: Decision History, recommendations, gate table, counterexamples, Analyze action",
       "owner": "builder",
-      "needs": ["p5.analysis-endpoint", "p4.run-explorer"],
+      "needs": ["p5.rec-persistence", "p4.run-explorer"],
       "probes": [
         {
+          "kind": "path",
+          "path": "platform/dashboard/src/app/recommendations"
+        },
+        {
           "kind": "grep",
-          "dir": "platform/dashboard/src",
-          "pattern": "recommendation"
+          "dir": "platform/dashboard/src/app/recommendations",
+          "pattern": "counterexample"
         }
       ],
       "own": {
         "allowed": ["platform/dashboard/src/**"]
       },
-      "validate": ["pnpm build", "pnpm gates"],
+      "validate": ["pnpm --filter @lengentic/dashboard test", "pnpm build", "pnpm gates"],
       "risk": "low",
-      "changeClass": "feature"
-    },
-    {
-      "id": "p5.spike-deleted",
-      "phase": 5,
-      "lane": "engine",
-      "title": "spike/ deleted — 5b wave 4, NOT 5a",
-      "note": "MVP_PLAN_V3.md:2236 puts this in the 5b Definition of Done, and .artifacts/plans/remaining-roadmap.md:369-374 assigns it to wave 4: 'here, not earlier. Until this packet it is the independent cross-check on 5a's numbers.' The needs edge below is satisfied after wave 3, which makes the node look available at the 5a gate. It is not. Deleting spike/ destroys the only on-disk record of the seven rows where the spike disagrees with the grid by design.",
-      "owner": "builder",
-      "needs": ["p5.det-candidate"],
-      "probes": [
-        {
-          "kind": "absent",
-          "path": "spike"
-        }
-      ],
-      "own": {
-        "allowed": ["spike/**"]
-      },
-      "validate": ["pnpm gates"],
-      "risk": "low",
-      "changeClass": "mechanical"
-    },
-    {
-      "id": "p6.scenario1",
-      "phase": 6,
-      "lane": "playground",
-      "title": "Scenario 1 — happy path, emits nothing",
-      "owner": "builder",
-      "needs": ["p3.cli", "p5.analysis-endpoint"],
-      "probes": [
-        {
-          "kind": "script",
-          "name": "playground:happy-path"
-        }
-      ],
-      "own": {
-        "allowed": ["playground/scenarios/happy-path/**"]
-      },
-      "validate": ["pnpm playground:happy-path"],
-      "risk": "low",
-      "changeClass": "feature"
+      "changeClass": "feature",
+      "note": "DEPENDS ON THE CONTRACT, NOT ON THE ENDPOINT. The needs edge moved from p5.analysis-endpoint to p5.rec-persistence on 2026-09-03 so this packet and the endpoint can be built in the SAME WAVE against one frozen contract, instead of the UI waiting for an implementation whose TYPES are all it needs. Build against platform/shared/schema/recommendation.ts with mocked typed fetch tests - the mock is typed by the shared schema, so contract drift fails a typecheck rather than surfacing at the demo. Do NOT wait for a live endpoint and do NOT start a server in these tests. The live connection is proven once, over the combined diff, at the 5b wave-2 gate. Renders the Decision History table (section 25 beat 4), the recommendation with its counterexamples (beat 5), minorityContextConcentration, dominantOptionAttestedSuccessRate as N/A rather than 0.0% when nothing is attested, and the SUPPRESSED groups with their failed gates (beat 6). ROUTE NAME IS FIXED BY THE PROBE: platform/dashboard/src/app/recommendations."
     },
     {
       "id": "p6.scenario2",
       "phase": 6,
-      "lane": "playground",
+      "lane": "playground-failure",
       "title": "Scenario 2 — repeated failed action",
       "owner": "builder",
       "needs": ["p3.mock-agent", "p5.repeated-failed", "p4.sdk-decisions"],
       "probes": [
+        {
+          "kind": "path",
+          "path": "playground/scenarios/repeated-failure"
+        },
         {
           "kind": "script",
           "name": "playground:repeated-failure"
@@ -1457,18 +1456,23 @@
       "own": {
         "allowed": ["playground/scenarios/repeated-failure/**"]
       },
-      "validate": ["pnpm playground:repeated-failure"],
+      "validate": ["pnpm playground:repeated-failure", "pnpm gates"],
       "risk": "medium",
-      "changeClass": "behavior"
+      "changeClass": "behavior",
+      "note": "Root package.json is a declared shared write surface, so this packet does NOT register its own command. `playground:repeated-failure` was registered ahead of dispatch in the Phase 6 framing commit of 2026-09-03, pointing at playground/scenarios/repeated-failure/main.ts. The probe requires BOTH the root script AND this packet's own directory: a package script alone must never mark a scenario DONE - that is exactly how the retired p6.scenario1 reported DONE off p3.cli's deliverable. Distinct lane and disjoint directory from p6.scenario3 so the two run in parallel."
     },
     {
       "id": "p6.scenario3",
       "phase": 6,
-      "lane": "playground",
-      "title": "Scenario 3 — repeated decision, >=30 runs / >=8 contexts, one process",
+      "lane": "playground-decision",
+      "title": "Scenario 3 — repeated decision (>=30 runs, >=8 contexts, one process) AND the low-diversity suppression control (§25 beat 6)",
       "owner": "builder",
       "needs": ["p3.mock-agent", "p5.det-candidate", "p4.sdk-decisions", "p4.attestation"],
       "probes": [
+        {
+          "kind": "path",
+          "path": "playground/scenarios/deterministic-decision"
+        },
         {
           "kind": "script",
           "name": "playground:deterministic-decision"
@@ -1477,9 +1481,10 @@
       "own": {
         "allowed": ["playground/scenarios/deterministic-decision/**"]
       },
-      "validate": ["pnpm playground:deterministic-decision"],
-      "risk": "high",
-      "changeClass": "behavior"
+      "validate": ["pnpm playground:deterministic-decision", "pnpm gates"],
+      "risk": "medium",
+      "changeClass": "behavior",
+      "note": "OWNS TWO COHORTS, ONE COMMAND. (1) CANDIDATE cohort: at least 30 runs across at least 8 distinct contextKeys, dominant YES, one or two minority selections with attested SUCCESS, expected DETERMINISTIC_CANDIDATE with a non-empty counterexamples list. (2) LOW-DIVERSITY BATCH-ITERATION CONTROL cohort: enough samples to clear G1, EXACTLY TWO distinct contextKeys, expected SUPPRESSED with G2 among the failed gates, and NO Recommendation row persisted. Cohort 2 is section 25 beat 6 - \"the closing move\" - folded in here on 2026-09-03 rather than given a fourth scenario, because the beat is a second cohort inside the same workload, not a second workload. MOCKAGENT CONTRADICTION RESOLVED: the acceptance criterion is ONE CLI PROCESS, AT LEAST 30 RUNS, AND NO CHILD-PROCESS SPAWNING. Each MockAgent stays the one-run owner of its own telemetry client and performs its own flush and shutdown. Do NOT refactor MockAgent into an externally owned shared-client/session architecture to preserve the obsolete \"single shutdown() drain\" wording - the constraint that matters is avoiding 30 Node startups, and playground/agents/mock-agent.ts is outside this packet's allowed_paths. RISK LOWERED high->medium on 2026-09-03: the high rating recorded the boundary risk of needing to edit mock-agent.ts from outside this surface, and the resolution above is what removed that requirement. R15 measures boundary and irreversible-operation risk; demo criticality is not that, and is carried by p7.docker-smoke instead. Root package.json is a shared write surface: `playground:deterministic-decision` was registered ahead of dispatch in the same framing commit, pointing at playground/scenarios/deterministic-decision/main.ts."
     },
     {
       "id": "p6.seed-repro",
@@ -1502,33 +1507,18 @@
       "changeClass": "behavior"
     },
     {
-      "id": "p6.real-provider",
-      "phase": 6,
-      "lane": "playground",
-      "title": "One optional real provider (must not block MVP)",
-      "owner": "builder",
-      "needs": ["p3.scaffold"],
-      "probes": [
-        {
-          "kind": "manual",
-          "evidence": ".artifacts/oracle/real-provider.ok"
-        }
-      ],
-      "optional": true,
-      "own": {
-        "allowed": ["playground/providers/**"]
-      },
-      "validate": ["pnpm gates"],
-      "risk": "low",
-      "changeClass": "feature"
-    },
-    {
       "id": "p7.regression",
       "phase": 7,
       "lane": "test",
       "title": "Critical unit test list all present and green",
       "owner": "validator",
-      "needs": ["p5.det-candidate", "p5.repeated-failed", "p4.payload-safety", "p2.merge-rules"],
+      "needs": [
+        "p5.det-candidate",
+        "p5.repeated-failed",
+        "p5.rec-persistence",
+        "p4.payload-safety",
+        "p2.merge-rules"
+      ],
       "probes": [
         {
           "kind": "manual",
@@ -1540,15 +1530,16 @@
       },
       "validate": ["pnpm gates", "pnpm test:integration"],
       "risk": "medium",
-      "changeClass": "behavior"
+      "changeClass": "behavior",
+      "note": "p5.rec-persistence added to needs on 2026-09-03: two of the twelve critical unit tests this packet grades - recommendation fingerprinting/dedupe and recommendation status transitions (MVP_PLAN_V3.md ## Critical unit tests) - are its deliverable, so this node probed ready while part of its subject did not exist."
     },
     {
       "id": "p7.e2e",
       "phase": 7,
       "lane": "test",
-      "title": "E2E 1-4 including the silence case (E2E 4)",
+      "title": "E2E 1-4 — including E2E 4, the silence case, and the happy path producing no recommendation",
       "owner": "validator",
-      "needs": ["p6.scenario1", "p6.scenario2", "p6.scenario3", "env.docker"],
+      "needs": ["p3.cli", "p5.analysis-endpoint", "p6.scenario2", "p6.scenario3", "env.docker"],
       "probes": [
         {
           "kind": "manual",
@@ -1560,7 +1551,8 @@
       },
       "validate": ["pnpm test:integration"],
       "risk": "medium",
-      "changeClass": "behavior"
+      "changeClass": "behavior",
+      "note": "THIS PACKET OWNS THE HAPPY-PATH SILENCE ASSERTION. p6.scenario1 was retired on 2026-09-03: p3.cli already ships the happy-path executable and the `playground:happy-path` script, and a duplicate wrapper existed only to satisfy a packet. The assertion that happy-path data produces NO recommendation is a test, not a second scenario, and it lands here - which is also where E2E 4, the batch-iteration silence case, already lived. The needs edge on p6.scenario1 was rewritten to p3.cli (the executable) plus p5.analysis-endpoint (without an analysis run there is nothing to assert silence about)."
     },
     {
       "id": "p7.ci-full",
@@ -1587,13 +1579,17 @@
       "id": "p7.docker-smoke",
       "phase": 7,
       "lane": "infra",
-      "title": "Clean clone → docker compose up → run visible",
+      "title": "Clean-clone rehearsal of the complete §25 demo",
       "owner": "validator",
-      "needs": ["p1.docker-runtime", "p6.scenario1"],
+      "needs": ["p1.docker-runtime", "p5.recs-ui", "p6.scenario3", "env.docker"],
       "probes": [
         {
           "kind": "manual",
           "evidence": ".artifacts/oracle/docker-smoke-clean.ok"
+        },
+        {
+          "kind": "manual",
+          "evidence": ".artifacts/evidence/7/demo-rehearsal.md"
         }
       ],
       "own": {
@@ -1601,7 +1597,8 @@
       },
       "validate": ["pnpm gates:full"],
       "risk": "medium",
-      "changeClass": "behavior"
+      "changeClass": "behavior",
+      "note": "EXPANDED 2026-09-03 from 'clean clone -> docker compose up -> a Run is visible' to the full section 25 rehearsal, because nothing else proved the demo runs on a machine that is not this one, and a separate demo-validation packet would only have duplicated this one's setup cost. Rehearse, in order, from a clean clone and a clean install: (1) docker compose up; (2) the scenario command; (3) the Runs list; (4) Run detail - Timeline, Steps, Decisions, Tool Calls, Model Calls; (5) the explicit analysis trigger; (6) Decision History; (7) the recommendation with its counterexamples; (8) the suppressed low-diversity batch-iteration group showing G2 among its failed gates. Record each beat with the output observed. Evidence under the existing conventions: the marker at .artifacts/oracle/docker-smoke-clean.ok and the report at .artifacts/evidence/7/demo-rehearsal.md. The needs edge on the retired p6.scenario1 was rewritten to the packets that actually supply the demo: p5.recs-ui for beats 3-8 and p6.scenario3 for the command and both cohorts. Validator packet - it runs documented commands and reports; it is not an authoring job."
     },
     {
       "id": "p7.readme",
@@ -1612,30 +1609,23 @@
       "needs": ["p5.det-candidate"],
       "probes": [
         {
-          "kind": "grep",
-          "dir": ".",
-          "file": "README.md",
-          "pattern": "attested success"
+          "kind": "cmd",
+          "run": "node -e \"process.exit(/Status: Phase 1 of 7/.test(require('fs').readFileSync('README.md','utf8'))?1:0)\""
         },
         {
           "kind": "grep",
           "dir": ".",
           "file": "README.md",
-          "pattern": "demotion"
-        },
-        {
-          "kind": "grep",
-          "dir": ".",
-          "file": "README.md",
-          "pattern": "context_diversity|G2"
+          "pattern": "playground:deterministic-decision"
         }
       ],
       "own": {
         "allowed": ["README.md", "docs/**"]
       },
-      "validate": ["pnpm format:check"],
+      "validate": ["pnpm format:check", "pnpm gates"],
       "risk": "low",
-      "changeClass": "mechanical"
+      "changeClass": "mechanical",
+      "note": "PROBE REWRITTEN 2026-09-03. The three greps it had - `attested success`, `demotion`, `context_diversity|G2` - all hit the Phase 1 README at README.md:128,144,159, so the node reported DONE against a file that says \"Status: Phase 1 of 7 ... This README is rewritten as a Phase 7 deliverable (p7.readme)\" at README.md:12-15. It was the whole of Phase 7's reported 1/5. The two probes below can only be satisfied by the rewrite itself: the status banner is gone, and the section 25 demo command is documented. Content requirements are unchanged - lead with G2 and the prior-art comparison, state section 2 verbatim, keep the limits section naming the absent demotion mechanism, and say \"attested success rate\" everywhere."
     }
   ]
 }

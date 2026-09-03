@@ -1230,6 +1230,34 @@ Analysis must not run inline with ingestion — but "not inline with ingestion" 
 by a separate explicit endpoint, which is the simplest thing that satisfies the Definition
 of Done.
 
+## Response shape — every evaluated group, not only the emitted ones
+
+The response exposes what the engine decided about **every** group it looked at:
+
+```ts
+{
+  evaluatedGroups: Array<{
+    verdict: 'CANDIDATE' | 'SUPPRESSED';
+    failedGates: GateId[];
+    gates: GateResult[];
+    recommendationId: string | null;
+  }>;
+}
+```
+
+Only `CANDIDATE` groups become persisted `Recommendation` rows. A `SUPPRESSED` group carries
+`recommendationId: null`, is returned in the immediate response, and is **never** persisted as
+an entity — there is no suppression table and no suppression history in the MVP.
+
+This is not a convenience. §25's closing move shows a low-diversity group at
+`SUPPRESSED / G2 context_diversity (2 < 5)`, and a response that returned only what it emitted
+would have nothing to render. The refusal is the claim the product makes; it has to be on the
+wire.
+
+The contract lives in `platform/shared/schema/recommendation.ts` and is owned by 5b package
+5a. The API owns the explicit mapper from the engine's `GateEvaluation` output to this shape —
+written out, not inferred, so a change on either side fails a typecheck rather than a demo.
+
 ---
 
 # 23. Run Summary
@@ -1426,8 +1454,14 @@ grouping key or the denominators, those two go green for the wrong reason.
 - [x] **A human read all nine verdicts and agreed with each one.**
 
 That last checkbox was the actual gate. `spike/` is disposable; **the fixtures and pure
-functions are not** — they graduate into `platform/analysis-engine` in Phase 5, and
-`spike/` is deleted at the end of Phase 5.
+functions are not** — they graduate into `platform/analysis-engine` in Phase 5.
+
+`spike/` is **not** deleted in the MVP. The 5b packet that deleted it — `p5.spike-deleted` —
+was dropped on 2026-09-03. It is the only on-disk record of the seven `counterexamples` rows
+where the spike disagrees with the corrected grid _by design_, which makes it the independent
+cross-check on 5a's numbers for as long as it exists. Deleting it buys nothing the MVP needs
+and destroys evidence that cannot be rebuilt. `pnpm spike` stays while the directory does.
+Deletion is post-MVP cleanup — §27.
 
 ### Recorded judgment call — do not re-open
 
@@ -1826,16 +1860,39 @@ mode that kills a recommendations product.
 
 ## Work packages
 
-| #   | Package                    | Owner   | Acceptance                                                                   |
-| --- | -------------------------- | ------- | ---------------------------------------------------------------------------- |
-| 1   | Package + types only       | Builder | `platform/analysis-engine` exists; `spike/types.ts` graduates. **No logic.** |
-| 2   | Negative fixture suite     | Builder | Both grids transcribed as data; `D10` fails two gates at once                |
-| 3   | Deterministic candidate    | Builder | §18 aggregation, §19 gates, §21 output; threshold-binding spec that can fail |
-| 4   | Repeated failed action     | Builder | §20.2 conditions only; `R1`–`R5` pass, and `R4` and `R5` both emit           |
-| 5   | Persistence + trigger + UI | Builder | Fingerprint dedupe, `POST /v1/analysis/run`, Dashboard rendering             |
+| #   | Package                               | Owner   | Acceptance                                                                                       |
+| --- | ------------------------------------- | ------- | ------------------------------------------------------------------------------------------------ |
+| 1   | Package + types only                  | Builder | `platform/analysis-engine` exists; `spike/types.ts` graduates. **No logic.**                     |
+| 2   | Negative fixture suite                | Builder | Both grids transcribed as data; `D10` fails two gates at once                                    |
+| 3   | Deterministic candidate               | Builder | §18 aggregation, §19 gates, §21 output; threshold-binding spec that can fail                     |
+| 4   | Repeated failed action                | Builder | §20.2 conditions only; `R1`–`R5` pass, and `R4` and `R5` both emit                               |
+| 5a  | Recommendation contract + persistence | Builder | `platform/shared/schema/recommendation.ts`, Prisma model, fingerprint dedupe, `OPEN`/`DISMISSED` |
+| 5b  | Analysis endpoint                     | Builder | `POST /v1/analysis/run` against the frozen contract, engine-output-to-wire mapper                |
+| 5c  | Recommendations UI                    | Builder | Decision History, recommendation, gate table, counterexamples, `Analyze` action                  |
 
-Packages 1–4 are **5a** and run before Phase 2. Package 5 is **5b** and stays after Phase 4.
-See the execution order amendment in Part III.
+Packages 1–4 are **5a** and run before Phase 2. Packages 5a–5c are **5b** and stay after
+Phase 4. See the execution order amendment in Part III.
+
+**5b is two waves, not three.** Package 5a lands the shared contract and its storage alone —
+it is the only 5b packet that touches `platform/shared/schema/**`, and a contract is not
+frozen while it is being written. Packages 5b and 5c then run **in parallel** against that
+frozen contract:
+
+```text
+recommendation contract + persistence
+                 ↓
+analysis endpoint ──┐
+recommendations UI ─┘  parallel
+```
+
+The UI builds against `platform/shared/schema/recommendation.ts` with **mocked typed fetch
+tests** — the mock is typed by the shared schema, so contract drift fails a typecheck. It does
+not wait for the endpoint implementation, because the types are all it needs from it. Their
+combined wave gate validates the live connection, once, over one diff.
+
+No separate contract-only packet. Splitting the contract out of package 5a would add a fourth
+serial gate without shortening the critical path — the contract and the model that stores it
+are written against each other.
 
 **Package 1 carries no aggregation and no gate code.** Graduating Phase 0's `aggregate.ts`
 and `gates.ts` in package 1 would land the positive path before package 2's fixtures exist,
@@ -1847,8 +1904,9 @@ verbatim; Phase 0 already reconciled it with the tables in this document. Every 
 result is written fresh from the **Gate expectation grid** and the **Threshold boundary rows**
 below — never from what `pnpm spike` printed. A fixture whose expectation was read off the
 implementation cannot fail when the implementation is wrong. `D10`, `D11`, `R1`–`R5` and
-`B1`–`B5` are new here and are built from scratch, inputs included. `spike/` therefore survives 5a as an independent cross-check and is
-deleted in 5b, per `p5.spike-deleted`.
+`B1`–`B5` are new here and are built from scratch, inputs included. `spike/` therefore survives
+5a as an independent cross-check — and survives the MVP. `p5.spike-deleted` was dropped on
+2026-09-03; see Phase 0's Definition of Done for why, and §27 for where deletion went.
 
 ## Negative fixture suite — required
 
@@ -2259,7 +2317,14 @@ Everything above still holds, plus:
 - [ ] `POST /v1/analysis/run` triggers analysis; nothing runs inline with ingestion.
 - [ ] `dominantOptionAttestedSuccessRate` renders `N/A`, never `0.0%`, when no outcomes are
       attested.
-- [ ] `spike/` is deleted.
+- [ ] `platform/shared/schema/recommendation.ts` exists, is exported from the package's public
+      entry, and is the **only** source of the recommendation and analysis wire types — the
+      SDK-and-API rule in `CLAUDE.md` `## Types` applies here too.
+- [ ] The analysis response carries **every evaluated group**, not only the ones that produced
+      a recommendation. A `SUPPRESSED` group with its failed gates is a first-class row in the
+      response.
+- [ ] A `SUPPRESSED` group persists **no** `Recommendation` row. Suppression is visible in the
+      response and is not an entity.
 
 **Validation gate.** GREEN advances — `CLAUDE.md` `## Plan discipline`. The six escalation triggers still stop the session.
 
@@ -2270,8 +2335,8 @@ Everything above still holds, plus:
 ## Objective
 
 Controlled Product Agent behavior that reliably proves the analyzers work. Exactly three
-scenarios. Negative coverage lives in Phase 5 fixtures — a false-positive case needs a JSON
-group, not a full agent run.
+scenarios, of which Phase 6 authors **two**. Negative coverage lives in Phase 5 fixtures — a
+false-positive case needs a JSON group, not a full agent run.
 
 ## Scenario 1 — Happy Path
 
@@ -2280,6 +2345,13 @@ Plan → Execute → Validate → Complete
 
 Expected: no recommendation
 ```
+
+**Scenario 1 is not a Phase 6 packet.** `p3.cli` already ships the executable and the
+`pnpm playground:happy-path` script; `p6.scenario1` was retired on 2026-09-03 because it was a
+wrapper that existed only to satisfy a packet, and its probe reported `DONE` off `p3.cli`'s
+deliverable. The claim that still has to be proven — that happy-path data produces **no**
+recommendation — is an assertion, not a second executable, and `p7.e2e` owns it alongside
+E2E 4.
 
 ## Scenario 2 — Repeated Failed Action
 
@@ -2314,27 +2386,67 @@ so the counterexample path is exercised.
 Expected: DETERMINISTIC_CANDIDATE with a non-empty counterexamples list
 ```
 
-Scenario 3 runs in **one process** emitting ≥30 runs with a single `shutdown()` drain — not
-30 process spawns, which would be dominated by Node startup and flush intervals.
+### The second cohort — §25 beat 6
+
+The same command emits a **low-diversity batch-iteration control cohort** beside the candidate
+cohort:
+
+```text
+Enough samples to clear G1
+Exactly two distinct contextKeys
+
+Expected: SUPPRESSED, with G2 among the failed gates
+          and NO Recommendation row persisted
+```
+
+This is §25's closing move, and it lives here rather than in a fourth scenario: it is a second
+_cohort_ inside the same workload, not a second workload. One command shows the product
+producing a recommendation that admits its limits, and then declining to produce one at all.
+
+### One process — the constraint restated
+
+Scenario 3 runs in **one CLI process**, emits at least 30 runs, and spawns **no child
+processes**. Each `MockAgent` remains the one-run owner of its telemetry client and performs
+its own flush and shutdown.
+
+The earlier wording — "a single `shutdown()` drain" — contradicted `MockAgent`'s documented
+one-run-one-client design and would have required editing `playground/agents/mock-agent.ts`
+from outside the scenario's own surface. It is withdrawn. **Do not** refactor `MockAgent` into
+an externally owned shared-client or session architecture to preserve it. The constraint that
+was ever load-bearing is avoiding 30 Node startups, and one process satisfies it.
 
 This is the demo that shows the product refusing to be fooled by its own test data, then
 producing a recommendation that admits its own limits.
 
 ## Work packages
 
-| #   | Package              | Owner   | Acceptance                                            |
-| --- | -------------------- | ------- | ----------------------------------------------------- |
-| 1   | Scenario 1           | Builder | Emits nothing                                         |
-| 2   | Scenario 2           | Builder | Emits `REPEATED_FAILED_ACTION`                        |
-| 3   | Scenario 3           | Builder | Clears G2; emits candidate with counterexamples       |
-| 4   | Seed reproducibility | Builder | Same seed → identical telemetry across full scenarios |
-| 5   | One real provider    | Builder | Optional; must not block MVP completion               |
+| #   | Package              | Owner     | Acceptance                                                                      |
+| --- | -------------------- | --------- | ------------------------------------------------------------------------------- |
+| 1   | Scenario 2           | Builder   | Emits `REPEATED_FAILED_ACTION`                                                  |
+| 2   | Scenario 3           | Builder   | Clears G2, emits candidate with counterexamples; control cohort is `SUPPRESSED` |
+| 3   | Seed reproducibility | Validator | Same seed → identical telemetry across full scenarios                           |
+
+Packages 1 and 2 are **parallel**: distinct lanes, disjoint directories
+(`playground/scenarios/repeated-failure/**` and
+`playground/scenarios/deterministic-decision/**`), and neither writes root `package.json`.
+Package 3 follows them.
 
 ```bash
-pnpm playground:happy-path
-pnpm playground:repeated-failure
-pnpm playground:deterministic-decision
+pnpm playground:happy-path                 # p3.cli, already shipped
+pnpm playground:repeated-failure           # package 1
+pnpm playground:deterministic-decision     # package 2, and the §25 demo's second line
 ```
+
+**All three scripts are registered in root `package.json` before Phase 6 dispatch.** Root
+`package.json` is a declared shared write surface, so a scenario packet that registered its own
+command would serialise the whole wave against it — and until the line exists, `pnpm gates`
+stays green over a command the plan documents and the repository does not have. The two missing
+lines were added in one serialised framing edit on 2026-09-03. A scenario's probe therefore
+requires **both** the root script and the scenario's own directory: a package script alone must
+never mark a scenario `DONE`.
+
+**One real provider was dropped from the MVP** on 2026-09-03. It needed a paid credential, and
+the MVP requires **zero paid API calls**. It survives as optional post-MVP work — §27.
 
 ## Product agents
 
@@ -2353,12 +2465,17 @@ Multi-provider comparison is Post-MVP.
 
 ## Definition of Done
 
-- [ ] All three scenarios reliably produce their expected Platform behavior.
-- [ ] Scenario 3 passes G2 on context diversity.
-- [ ] Scenario 3 produces at least one counterexample.
-- [ ] Mock execution requires zero paid API calls.
+- [ ] All three scenarios reliably produce their expected Platform behavior. Scenario 1 is
+      `p3.cli`'s executable; its "emits nothing" claim is asserted by `p7.e2e`.
+- [ ] Scenario 3's candidate cohort passes G2 on context diversity.
+- [ ] Scenario 3's candidate cohort produces at least one counterexample.
+- [ ] Scenario 3's control cohort clears G1, has exactly two distinct `contextKey`s, comes back
+      `SUPPRESSED` with `G2` among its failed gates, and persists **no** `Recommendation` row.
+- [ ] Scenario 3 runs in one CLI process, emits at least 30 runs, and spawns no child process.
+- [ ] `pnpm playground:repeated-failure` and `pnpm playground:deterministic-decision` both run
+      from a clean checkout.
+- [ ] The whole of Phase 6 requires **zero paid API calls**.
 - [ ] Scenarios are seed-reproducible.
-- [ ] At least one optional real-provider Run can be inspected.
 
 **Validation gate.** GREEN advances — `CLAUDE.md` `## Plan discipline`. The six escalation triggers still stop the session.
 
@@ -2374,13 +2491,36 @@ earlier behavior.
 
 ## Work packages
 
-| #   | Package          | Owner     | Acceptance                                      |
-| --- | ---------------- | --------- | ----------------------------------------------- |
-| 1   | Regression suite | Validator | §"Critical unit tests" all present and passing  |
-| 2   | E2E suite        | Validator | E2E 1–4, including the silence case             |
-| 3   | CI completion    | Builder   | Every step below green on a clean checkout      |
-| 4   | Docker smoke     | Validator | Clean-clone → `docker compose up` → Run visible |
-| 5   | README + demo    | Builder   | Leads with G2 and the prior-art comparison      |
+| #   | Package           | Owner     | Acceptance                                       |
+| --- | ----------------- | --------- | ------------------------------------------------ |
+| 1   | Regression suite  | Validator | §"Critical unit tests" all present and passing   |
+| 2   | E2E suite         | Validator | E2E 1–4, including the silence case              |
+| 3   | CI completion     | Builder   | Every step below green on a clean checkout       |
+| 4   | Demo rehearsal    | Validator | Clean clone → the **whole** of §25, beat by beat |
+| 5   | README + demo doc | Builder   | Leads with G2 and the prior-art comparison       |
+
+Package 4 was "docker smoke" — clean clone, `docker compose up`, a Run is visible. It now
+rehearses the complete §25 demo, because nothing else proved the demo runs on a machine that is
+not the one it was built on, and a separate demo-validation packet would only have duplicated
+this one's setup cost. Beat by beat, from a clean clone and a clean install:
+
+```text
+1  docker compose up
+2  pnpm playground:deterministic-decision
+3  Runs list
+4  Run detail — Timeline, Steps, Decisions, Tool Calls, Model Calls
+5  explicit analysis trigger
+6  Decision History
+7  the recommendation, counterexamples included
+8  the suppressed batch-iteration group, G2 among its failed gates
+```
+
+Each beat is recorded with the output observed. Evidence under the existing conventions:
+`.artifacts/oracle/docker-smoke-clean.ok` and `.artifacts/evidence/7/demo-rehearsal.md`. It is a
+Validator packet — it runs documented commands and reports what came back. It is not an
+authoring job.
+
+Packages 1, 3 and 5 are not on the demo's build path and run wherever dependencies allow.
 
 ## Critical unit tests
 
@@ -2438,14 +2578,24 @@ A Run appears in the Dashboard.
 - States the epistemic position from §2 verbatim.
 - Contains a **limits** section that names the absent demotion mechanism explicitly.
 - Says "attested success rate" everywhere, never "measured".
+- Documents the §25 demo, `pnpm playground:deterministic-decision` included.
+- **Removes the `Status: Phase 1 of 7` banner.** Until it is gone the file self-declares as
+  unwritten, and a reader handed this repository reads that first.
+
+The last two are also the probe. `p7.readme` previously grepped for `attested success`,
+`demotion` and `context_diversity|G2` — three strings the Phase 1 README already contains, so
+the node reported `DONE` against a file that says it is unwritten. It was the whole of Phase 7's
+reported `1/5`. The probe now checks for the two things only the rewrite can produce.
 
 ## Definition of Done
 
 - [ ] Full regression suite green.
-- [ ] All four E2E tests green.
+- [ ] All four E2E tests green, E2E 4 and the happy-path silence assertion included.
 - [ ] CI green on a clean checkout.
-- [ ] Docker smoke test passes from a clean clone.
-- [ ] README complete, including the limits section.
+- [ ] All eight beats of §25 rehearsed from a clean clone, each recorded with its observed
+      output — the suppressed batch-iteration group included.
+- [ ] README complete, including the limits section, and the `Status: Phase 1 of 7` banner is
+      gone.
 - [ ] Demo runs end to end without manual repair.
 
 **Validation gate.** GREEN advances — `CLAUDE.md` `## Plan discipline`. The six escalation triggers still stop the session. This closes the MVP.
@@ -2481,8 +2631,7 @@ Playground → Telemetry SDK → LenGentic API → PostgreSQL
 - [ ] Run Summary aggregation.
 - [ ] Negative fixture suite passing.
 - [ ] Deterministic Mock scenarios.
-- [ ] Zero-cost local demo.
-- [ ] Optional real-provider integration.
+- [ ] Zero-cost local demo — the MVP requires **zero paid API calls** end to end.
 - [ ] Automated tests.
 - [ ] CI.
 - [ ] Docker setup.
@@ -2514,8 +2663,9 @@ Attested success:   95.7%
 
 5. Show the recommendation, counterexamples included.
 
-6. **The closing move.** Run the batch-iteration workload. Show that LenGentic emits
-   **nothing**. Then show a low-diversity decision group:
+6. **The closing move.** The same command already emitted the batch-iteration workload as a
+   second cohort. Show that LenGentic produced **nothing** for it, then show the low-diversity
+   decision group in the same analysis response:
 
 ```text
 Verdict: SUPPRESSED
@@ -2524,6 +2674,10 @@ Gates:   G2 context_diversity  (2 < 5)
 
 A tool that produces recommendations is unremarkable. A tool that demonstrably declines to
 produce bad ones is the thing worth showing.
+
+No second command and no fourth scenario. `p6.scenario3` owns both cohorts, `p5.recs-ui`
+renders the suppressed group from the `evaluatedGroups` array §22 puts on the wire, and
+`p7.docker-smoke` rehearses the beat from a clean clone.
 
 ---
 
@@ -2577,6 +2731,24 @@ OpenTelemetry Support       Cloud Deployment           Enterprise Integrations
 
 The first two are listed first deliberately. They turn a hypothesis generator into a
 measurement instrument.
+
+## Cut from the MVP on 2026-09-03
+
+Both were work packages with graph nodes. Neither is on the demo path, and each cost more than
+it returned.
+
+```text
+One optional real provider
+  (p6.real-provider — needed a paid credential, an .env.example schema change
+   and API-startup env validation. The MVP requires zero paid API calls, and
+   §25 never shows a real provider. Optional, post-MVP.)
+
+Delete spike/
+  (p5.spike-deleted — deleting it destroys the only on-disk record of the seven
+   counterexamples rows where the spike disagrees with the corrected grid by
+   design, and buys nothing the MVP needs. Post-MVP cleanup, if ever.
+   `pnpm spike` stays while the directory does.)
+```
 
 Items discovered during implementation go in `BACKLOG.md` with their discovery context, not
 here.
@@ -2714,45 +2886,78 @@ It is **structure, not status** — the packet that owns a beat does not change 
 gets built. Counts and dates live in `pnpm oracle status` and in the dated snapshot at
 `.artifacts/framing/demo-readiness.md`. Do not put progress in this section.
 
-| §25 beat                                                                                   | Owning packet                                                       |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| `docker compose up`                                                                        | `p1.docker-runtime`, proven from a clean clone by `p7.docker-smoke` |
-| `pnpm playground:deterministic-decision`                                                   | `p6.scenario3`                                                      |
-| 1–2. Runs list, Run detail — Timeline, Steps, Decisions, Tool Calls, Model Calls           | `p4.run-explorer`                                                   |
-| 3. Trigger analysis                                                                        | `p5.analysis-endpoint` (§22)                                        |
-| 4. Decision History                                                                        | `p5.recs-ui`                                                        |
-| 5. Recommendation with counterexamples                                                     | `p5.rec-persistence` (§21) stores it, `p5.recs-ui` renders it       |
-| 6. The closing move — batch-iteration workload emits nothing, then a `SUPPRESSED` G2 group | **unassigned — see below**                                          |
+| §25 beat                                                                                   | Owning packet                                                                  |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `docker compose up`                                                                        | `p1.docker-runtime`, proven from a clean clone by `p7.docker-smoke`            |
+| `pnpm playground:deterministic-decision`                                                   | root script registered at the Phase 6 frame; workload is `p6.scenario3`        |
+| 1–2. Runs list, Run detail — Timeline, Steps, Decisions, Tool Calls, Model Calls           | `p4.run-explorer`                                                              |
+| 3. Trigger analysis                                                                        | `p5.analysis-endpoint` (§22)                                                   |
+| 4. Decision History                                                                        | `p5.recs-ui`                                                                   |
+| 5. Recommendation with counterexamples                                                     | `p5.rec-persistence` (§21) stores it, `p5.recs-ui` renders it                  |
+| 6. The closing move — batch-iteration workload emits nothing, then a `SUPPRESSED` G2 group | `p6.scenario3`'s control cohort, on the wire via §22, rendered by `p5.recs-ui` |
+| The whole of §25, from a clean clone                                                       | `p7.docker-smoke`                                                              |
 
-The demo path is therefore
-`p5.rec-persistence → p5.analysis-endpoint → p5.recs-ui`, strictly sequential, plus
-`p6.scenario3`. Everything else in §24 is real work with a real owner, and none of it appears
-on screen during §25.
+## The shape the demo is built in
 
-**Three structural gaps this mapping exposed.** These are plan gaps, not judgement calls, and each is due at the frame of the phase that
-owns it. None of them is authority to widen a packet mid-dispatch.
+```text
+Finish required Phase 4 work
+  ↓
+Phase 5b wave 1:   recommendation contract + persistence
+  ↓
+Phase 5b wave 2:   analysis endpoint  ┐ parallel
+                   recommendations UI ┘
+  ↓
+Phase 6 wave 1:    repeated-failure scenario           ┐ parallel
+                   deterministic-decision + control    ┘
+  ↓
+Phase 6 wave 2:    seed reproducibility
+  ↓
+Phase 7:           E2E, regression, and the clean-clone demo rehearsal
+                   where dependencies permit
+                   README polish
+                   final CI gate
+```
 
-**The closing move has no owner.** §25 beat 6 requires a batch-iteration workload — the one
-the section itself calls "the thing worth showing", because declining to recommend is the
-claim the product is making. Phase 6 is exactly three scenarios (happy path, repeated
-failure, repeated decision) and none of them is it. No graph node declares it, so no
-`allowed_paths` contain it and no probe can observe it. Settle at the Phase 6 frame: extend
-Scenario 1, add a fourth scenario, or drive it from the negative fixtures already proven in
-5a. `BACKLOG.md` carries the entry.
+Two parallel pairs, not one seven-packet chain. Each pair is two disjoint surfaces behind one
+frozen thing: in 5b the shared recommendation contract, in Phase 6 the root `package.json`
+scripts. Repository concurrency stays at **two**; more lanes being available is not a reason to
+raise it.
 
-**Two of the three advertised commands do not exist.** The Phase 6 section lists
-`playground:happy-path`, `playground:repeated-failure` and `playground:deterministic-decision`.
-Only the first is a script. Root `package.json` is a shared write surface, so each scenario
-packet must be dispatched knowing it registers its own command — otherwise the demo's second
-line stays unrunnable after the code that implements it lands.
+`pnpm oracle waves` computes this from `scripts/oracle/graph.json` and is the authority.
+`pnpm lanes decide <ids>` is what actually approves a fan-out, against its fifteen
+requirements — this diagram is not a licence to skip it.
 
-**A probe can be satisfied by another node's deliverable.** `p6.scenario1` probes the script
-`p3.cli` delivered; `p7.readme` probes strings the current README already contains. Both report
-DONE against surfaces they have not built. This is the failure `CLAUDE.md` names under
-**The oracle must not lie**, and `pnpm check:probes` cannot see it — each probe does look
-inside its own node's surface, and it is the _deliverable_ that came from elsewhere. Read
-`pnpm oracle status` for Phases 6 and 7 as two counts higher than the truth until both nodes
-are re-probed against something only they can produce.
+## What the mapping found, and what was done about it
+
+Three gaps and two cuts. All five are settled; none is reopened by a packet mid-dispatch.
+
+**The closing move had no owner.** §25 beat 6 requires a batch-iteration workload — the one the
+section itself calls "the thing worth showing", because declining to recommend is the claim the
+product is making. It is now `p6.scenario3`'s second cohort: same command, same process, a
+low-diversity group that clears G1 and fails G2. Not a fourth scenario, because the beat is a
+second cohort inside one workload rather than a second workload. The response shape in §22 is
+what carries it — `evaluatedGroups` exposes every group the engine evaluated, not only the ones
+that emitted, so a `SUPPRESSED` group is renderable without being persisted.
+
+**Two of the three advertised commands did not exist.** `playground:repeated-failure` and
+`playground:deterministic-decision` are now registered in root `package.json`. Root
+`package.json` is a declared shared write surface, so they were added in one serialised framing
+edit **before** Phase 6 dispatch — a scenario packet that had to register its own command would
+serialise the wave against it, which is the whole reason the two scenarios can now run in
+parallel.
+
+**A probe could be satisfied by another node's deliverable.** `p6.scenario1` probed the script
+`p3.cli` delivered; `p7.readme` probed strings the Phase 1 README already contains. Both
+reported `DONE` against surfaces they had not built, and `pnpm check:probes` cannot see it —
+each probe does look inside its own node's surface, and it is the _deliverable_ that came from
+elsewhere. `p6.scenario1` is retired: `p3.cli` owns the executable and `p7.e2e` owns the
+assertion that its data produces no recommendation. `p7.readme` now probes the two things only
+the rewrite can produce — the `Status: Phase 1 of 7` banner gone, and the §25 demo command
+documented. Every scenario probe requires **both** its root script and its own directory.
+
+**Two packets were cut.** `p6.real-provider` needed a paid credential against an MVP that
+requires zero paid API calls, and `p5.spike-deleted` destroyed the only on-disk record of the
+seven rows where the spike disagrees with the corrected grid by design. Both are in §27.
 
 ---
 
