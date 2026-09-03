@@ -24,10 +24,24 @@ export interface TelemetryTransport {
    * Deliver one batch. Never called concurrently by the client. Implementations SHOULD
    * honour `signal`; the client bounds the attempt either way, so one that ignores it
    * cannot hang the host.
+   *
+   * `droppedSinceLastBatch` is ADDITIVE and OPTIONAL on purpose (ADR 0014 decision 2): a
+   * transport written before the field existed keeps compiling and keeps working, and the
+   * option arrives as `undefined` for anyone calling `send` directly. `0` and `undefined`
+   * are different facts — see `createHttpTransport` below.
    */
   send(
     events: readonly TelemetryEventEnvelope[],
-    options: { readonly signal: AbortSignal },
+    options: {
+      readonly signal: AbortSignal;
+      /**
+       * The sum of §16's five client-side drop counters NOT yet acknowledged by a
+       * successfully delivered batch. The client snapshots it once per batch and hands the
+       * same snapshot to every retry of that batch, so a transport must not try to
+       * recompute or adjust it.
+       */
+      readonly droppedSinceLastBatch?: number | undefined;
+    },
   ): Promise<TransportResult>;
 }
 
@@ -64,10 +78,16 @@ export function createHttpTransport(options: HttpTransportOptions): TelemetryTra
   if (options.apiKey !== undefined) headers.authorization = `Bearer ${options.apiKey}`;
 
   return {
-    async send(events, { signal }) {
+    async send(events, { signal, droppedSinceLastBatch }) {
       let body: string;
       try {
-        body = JSON.stringify({ events });
+        // Omitted, never `0`, when the caller has no opinion: `IngestRequestSchema` makes
+        // the field `.optional()` precisely so an SDK that predates it reads as "not
+        // reported" (`RunSummary.droppedTelemetryEventCount: null`) rather than as a
+        // silently-manufactured zero. A caller that DID report zero gets a zero on the wire.
+        body = JSON.stringify(
+          droppedSinceLastBatch === undefined ? { events } : { events, droppedSinceLastBatch },
+        );
       } catch (error) {
         // Circular data, a BigInt, a getter that throws (§15). Re-sending cannot fix it.
         return { outcome: 'permanent', detail: `serialization failed: ${describeError(error)}` };

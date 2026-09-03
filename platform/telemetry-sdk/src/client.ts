@@ -126,6 +126,17 @@ class Client implements TelemetryClient, EventRecorder {
 
   private inFlight: AbortController | null = null;
 
+  /**
+   * ADR 0014 decision 2's batch-level `droppedSinceLastBatch` is "since the LAST batch",
+   * and the only honest reading of that is "not yet acknowledged by a batch the far end
+   * actually took". This is that acknowledged baseline: it advances ONLY after a
+   * `delivered` outcome, by exactly the snapshot that batch carried. A failed attempt
+   * therefore never clears a drop, a retry re-reports the same snapshot rather than a
+   * freshly grown one, and two consecutive successful batches cannot count the same drop
+   * twice.
+   */
+  private acknowledgedDrops = 0;
+
   private readonly counters = {
     recorded: 0,
     delivered: 0,
@@ -220,6 +231,37 @@ class Client implements TelemetryClient, EventRecorder {
     };
   }
 
+  /**
+   * §16's five drop counters, summed. `droppedOverflow` lives on the queue rather than in
+   * `counters`, which is why this reads both. The SUM and not the breakdown is deliberate:
+   * `IngestRequestSchema.droppedSinceLastBatch` carries one number, and anything that needs
+   * the per-reason split reads `stats()`.
+   */
+  private totalDropped(): number {
+    return (
+      this.queue.dropped +
+      this.counters.droppedInvalid +
+      this.counters.droppedTooLarge +
+      this.counters.droppedAfterShutdown +
+      this.counters.droppedUndeliverable
+    );
+  }
+
+  /**
+   * What the next batch should report: everything dropped, less everything a delivered
+   * batch has already carried. Never negative — `acknowledgedDrops` only ever advances by a
+   * snapshot taken from this same subtraction.
+   *
+   * NOT clamped to `IngestRequestSchema`'s `MAX_DROPPED_SINCE_LAST_BATCH` (2^31-1), which
+   * that schema REJECTS rather than clamps. Reaching it needs 2.1 billion drops in one
+   * process lifetime, and the constant is not on `@lengentic/shared`'s public entry, so
+   * exporting it is a change to a package this packet may not write. Recorded in
+   * `BACKLOG.md` (2026-09-03) rather than mirrored into a third copy of the number.
+   */
+  private pendingDropReport(): number {
+    return this.totalDropped() - this.acknowledgedDrops;
+  }
+
   private enqueue<K extends TelemetryEventType>(
     type: K,
     entityId: string,
@@ -304,13 +346,21 @@ class Client implements TelemetryClient, EventRecorder {
     const maxAttempts = this.config.maxRetries + 1;
     let attempt = 0;
 
+    // Snapshotted ONCE, here, before the first attempt — not inside the loop. Drops that
+    // happen while this batch is in flight (an overflow from a caller still recording) grow
+    // the pending count, and re-reading it per attempt would send a retry a number the
+    // earlier attempt might already have delivered.
+    const droppedSinceLastBatch = this.pendingDropReport();
+
     // `!this.abandoned` at the TOP, not only after the attempt: once shutdown() has given
     // up, waking the pending backoff must end the batch, never start one more request. The
     // trailing check below cannot cover this — it runs after an attempt has already gone out.
     while (attempt < maxAttempts && !this.abandoned) {
       attempt += 1;
-      const result = await this.attemptDelivery(batch);
+      const result = await this.attemptDelivery(batch, droppedSinceLastBatch);
       if (result.outcome === 'delivered') {
+        // The baseline advances here and nowhere else: the far end has the number now.
+        this.acknowledgedDrops += droppedSinceLastBatch;
         this.counters.delivered += batch.length;
         if (result.response !== null) {
           this.counters.serverAccepted += result.response.accepted;
@@ -351,11 +401,17 @@ class Client implements TelemetryClient, EventRecorder {
     );
   }
 
-  private async attemptDelivery(batch: TelemetryEventEnvelope[]): Promise<TransportResult> {
+  private async attemptDelivery(
+    batch: TelemetryEventEnvelope[],
+    droppedSinceLastBatch: number,
+  ): Promise<TransportResult> {
     const controller = new AbortController();
     this.inFlight = controller;
     try {
-      return await this.raceTimeout(this.invokeTransport(batch, controller.signal), controller);
+      return await this.raceTimeout(
+        this.invokeTransport(batch, controller.signal, droppedSinceLastBatch),
+        controller,
+      );
     } finally {
       if (this.inFlight === controller) this.inFlight = null;
     }
@@ -406,9 +462,10 @@ class Client implements TelemetryClient, EventRecorder {
   private async invokeTransport(
     batch: TelemetryEventEnvelope[],
     signal: AbortSignal,
+    droppedSinceLastBatch: number,
   ): Promise<TransportResult> {
     try {
-      return await this.config.transport.send(batch, { signal });
+      return await this.config.transport.send(batch, { signal, droppedSinceLastBatch });
     } catch (error) {
       // Covers a custom transport that throws synchronously as well as one that rejects.
       return { outcome: 'retryable', detail: `transport threw: ${describeError(error)}` };

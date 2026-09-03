@@ -132,6 +132,51 @@ describe('the HTTP transport', () => {
     expect(result.outcome).toBe('retryable');
   });
 
+  it('serializes droppedSinceLastBatch beside events, and IngestRequestSchema accepts it', async () => {
+    const { endpoint, recorded } = await serve((_request, response) => {
+      response.writeHead(200);
+      response.end('{}');
+    });
+
+    await createHttpTransport({ endpoint }).send([event], {
+      signal: new AbortController().signal,
+      droppedSinceLastBatch: 7,
+    });
+
+    const body: unknown = JSON.parse(recorded.body);
+    expect(body).toMatchObject({ droppedSinceLastBatch: 7 });
+    // The independent oracle: `@lengentic/shared` is the same schema the API validates
+    // with, so a request it accepts here is one the API accepts.
+    expect(IngestRequestSchema.safeParse(body).success).toBe(true);
+  });
+
+  it('omits the field entirely when the caller reported nothing — "not reported" is not 0', async () => {
+    const { endpoint, recorded } = await serve((_request, response) => {
+      response.writeHead(200);
+      response.end('{}');
+    });
+
+    await send(endpoint); // no droppedSinceLastBatch option at all
+
+    // `IngestRequestSchema` makes the field `.optional()` so a pre-field SDK reads as
+    // `null` on the Dashboard. Emitting `0` here would manufacture a report nobody made.
+    expect(Object.keys(JSON.parse(recorded.body) as object)).toStrictEqual(['events']);
+  });
+
+  it('sends a zero the caller DID report, rather than dropping it as falsy', async () => {
+    const { endpoint, recorded } = await serve((_request, response) => {
+      response.writeHead(200);
+      response.end('{}');
+    });
+
+    await createHttpTransport({ endpoint }).send([event], {
+      signal: new AbortController().signal,
+      droppedSinceLastBatch: 0,
+    });
+
+    expect(JSON.parse(recorded.body)).toMatchObject({ droppedSinceLastBatch: 0 });
+  });
+
   it('reports circular data as permanent — re-sending it cannot make it serializable', async () => {
     const { endpoint } = await serve((_request, response) => {
       response.writeHead(200);

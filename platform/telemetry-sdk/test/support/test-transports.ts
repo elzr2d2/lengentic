@@ -5,6 +5,9 @@ import type { TelemetryTransport, TransportResult } from '../../src/transport';
 export class RecordingTransport implements TelemetryTransport {
   readonly batches: TelemetryEventEnvelope[][] = [];
 
+  /** One entry per `send` call: the batch-level drop report the client handed over. */
+  readonly dropReports: Array<number | undefined> = [];
+
   constructor(
     private readonly result: TransportResult = { outcome: 'delivered', response: null },
   ) {}
@@ -13,8 +16,12 @@ export class RecordingTransport implements TelemetryTransport {
     return this.batches.flat();
   }
 
-  send(events: readonly TelemetryEventEnvelope[]): Promise<TransportResult> {
+  send(
+    events: readonly TelemetryEventEnvelope[],
+    options: { readonly droppedSinceLastBatch?: number | undefined },
+  ): Promise<TransportResult> {
     this.batches.push([...events]);
+    this.dropReports.push(options.droppedSinceLastBatch);
     return Promise.resolve(this.result);
   }
 }
@@ -23,10 +30,17 @@ export class RecordingTransport implements TelemetryTransport {
 export class FailingTransport implements TelemetryTransport {
   attempts = 0;
 
+  /** One entry per ATTEMPT, retries included — the snapshot each retry was handed. */
+  readonly dropReports: Array<number | undefined> = [];
+
   constructor(private readonly result: TransportResult) {}
 
-  send(): Promise<TransportResult> {
+  send(
+    _events: readonly TelemetryEventEnvelope[],
+    options: { readonly droppedSinceLastBatch?: number | undefined },
+  ): Promise<TransportResult> {
     this.attempts += 1;
+    this.dropReports.push(options.droppedSinceLastBatch);
     return Promise.resolve(this.result);
   }
 }
@@ -66,14 +80,20 @@ export class HangingTransport implements TelemetryTransport {
 export class GatedTransport implements TelemetryTransport {
   readonly batches: TelemetryEventEnvelope[][] = [];
 
+  readonly dropReports: Array<number | undefined> = [];
+
   private readonly gates: Array<() => void> = [];
 
   get pending(): number {
     return this.gates.length;
   }
 
-  send(events: readonly TelemetryEventEnvelope[]): Promise<TransportResult> {
+  send(
+    events: readonly TelemetryEventEnvelope[],
+    options: { readonly droppedSinceLastBatch?: number | undefined },
+  ): Promise<TransportResult> {
     this.batches.push([...events]);
+    this.dropReports.push(options.droppedSinceLastBatch);
     return new Promise<TransportResult>((settle) => {
       this.gates.push(() => {
         settle({ outcome: 'delivered', response: null });
