@@ -3736,3 +3736,29 @@ The judgement is reversible and it is the weakest link in the Phase 6 parallelis
 wave-1 gate finds this packet reaching outside
 `playground/scenarios/deterministic-decision/**`, restore `risk: high` and serialise — do not
 widen `allowed_paths`.
+
+## Discovered at the `p4.sdk-drop-reporting` per-node contract cadence (2026-09-03)
+
+### The SDK cannot clamp `droppedSinceLastBatch` to the bound its own wire contract enforces
+
+**Source:** implementing `p4.sdk-drop-reporting`.
+**Trigger:** whenever `platform/shared/**` is next open for a write — one export line.
+
+`IngestRequestSchema.droppedSinceLastBatch` is `.max(MAX_DROPPED_SINCE_LAST_BATCH)`
+(2^31-1) and REJECTS rather than clamps, deliberately: "a clamp would store a number the
+client never reported". That makes an over-bound report a request-level rejection, which
+loses the batch's events too, identically on every retry — the same permanent-poison shape
+R1 and R4 were repairs for, one layer further out.
+
+`Client.pendingDropReport()` therefore cannot bound what it sends, because
+`MAX_DROPPED_SINCE_LAST_BATCH` is not re-exported from `platform/shared/index.ts` (only
+`INGEST_LIMITS` and the ingest schemas are), and `platform/shared/**` is a forbidden path
+for this packet. Hand-copying the number into the SDK would make a THIRD instance —
+`platform/api/src/telemetry/wire-sanitize.ts` holds the second as `POSTGRES_INT4_MAX` — of a
+constant whose whole defence is that nobody chooses it.
+
+Not urgent: reaching the bound needs 2.1 billion dropped events in one process lifetime, and
+the SDK's own counters are the only source. The fix is one line in `platform/shared/index.ts`
+exporting the constant, then `Math.min` in `pendingDropReport()` acknowledging only what was
+actually sent so the clamped remainder stays pending for a later batch rather than being
+silently forgotten.
