@@ -6,7 +6,7 @@ import { IdSchema, NameSchema, TimestampSchema } from './primitives';
  * `tool_call.recorded` — §13's ToolCall. One event after the call finished, like
  * `model_call.recorded`.
  */
-export const ToolCallRecordedPayloadSchema = z.object({
+const ToolCallRecordedPayloadObjectSchema = z.object({
   stepId: IdSchema,
 
   toolName: NameSchema,
@@ -40,6 +40,19 @@ export const ToolCallRecordedPayloadSchema = z.object({
    * genuine zero. Absent is that "not captured" state; a real `0` (measured, and genuinely
    * empty) still ships as `0` and is unaffected.
    *
+   * Narrowed (Reviewer B2 / Tester F3, Phase 4 phase gate repair attempt 2): "absent" means
+   * "not captured" and NOTHING ELSE. Attempt 1 made this relaxation unconditional, which
+   * re-opened the exact defect it was fixing one layer down — `captureToolIO: false` also
+   * makes `inputTruncated`/`outputTruncated` always `false` (`payload-safety.ts`'s
+   * `toolIO`), so a call that WAS truncated always has a real byte count to report, and one
+   * that reports `inputTruncated: true` with `inputBytes` absent is not "not captured", it
+   * is a malformed claim — truncation losing the measurement along with the payload, which
+   * is precisely what the comment two paragraphs up says must never happen. The
+   * `superRefine` below rejects that combination at the wire, the one place that can still
+   * make it a request-level impossibility rather than a downstream rendering problem
+   * (`run-telemetry.ts`'s `assessIngestionHealth` carries a second, defensive guard against
+   * it too, for data that predates this refinement).
+   *
    * The Prisma columns (`ToolCall.inputBytes`/`outputBytes`) moved from NOT NULL to
    * nullable in lockstep — see `schema.prisma` and its migration — so this relaxation has
    * somewhere to land at the persistence edge; before that migration the column had "nowhere
@@ -61,5 +74,37 @@ export const ToolCallRecordedPayloadSchema = z.object({
   success: z.boolean(),
   error: z.string().nullish(),
 });
+
+/**
+ * Reviewer B2 / Tester F3 (Phase 4 phase gate repair attempt 2). `inputBytes`/`outputBytes`
+ * absent is a legitimate wire state ("not captured", `captureToolIO: false`) ONLY when the
+ * matching truncation flag is also `false`. Attempt 1's `.nullish()` alone let
+ * `inputTruncated: true` pair with an absent `inputBytes` through as a valid event — parsed,
+ * stored, and read back over `GET /v1/runs/:id` as "1 tool input truncated" beside "0 bytes
+ * lost to truncation", a manufactured zero for a quantity the system never received
+ * (`CLAUDE.md` ## Product claims). Symmetric for `output*`. This is the one property this
+ * object schema cannot express field-by-field — it is a relationship BETWEEN two fields —
+ * hence `superRefine` rather than a stricter `.nullish()`.
+ */
+export const ToolCallRecordedPayloadSchema = ToolCallRecordedPayloadObjectSchema.superRefine(
+  (payload, ctx) => {
+    if (payload.inputTruncated && payload.inputBytes == null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['inputBytes'],
+        message:
+          'inputBytes is required when inputTruncated is true — truncation must lose the payload, not the measurement',
+      });
+    }
+    if (payload.outputTruncated && payload.outputBytes == null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['outputBytes'],
+        message:
+          'outputBytes is required when outputTruncated is true — truncation must lose the payload, not the measurement',
+      });
+    }
+  },
+);
 
 export type ToolCallRecordedPayload = z.infer<typeof ToolCallRecordedPayloadSchema>;

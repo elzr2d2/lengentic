@@ -1230,6 +1230,219 @@ describe('POST /v1/telemetry/events — the five Phase 4 entity types persist fo
     expect(run?.droppedTelemetryEventCount).not.toBe(10);
   });
 
+  describe('F1 / B1 / F4 / B5 (Phase 4 phase gate repair attempt 2): the drop replay key lives in its own table, not IngestedEvent', () => {
+    const runStarted = (
+      runId: string,
+      eventId: string,
+      occurredAt: string,
+    ): Record<string, unknown> => ({
+      eventId,
+      schemaVersion: '1',
+      type: 'run.started',
+      entityId: runId,
+      runId,
+      occurredAt,
+      payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+    });
+
+    /**
+     * F1 (Tester) / B1 (Reviewer). Attempt 1 wrote the replay key as `"drop:" + deliveryId`
+     * into `IngestedEvent.eventId` (`VarChar(128)`) — the 5-character prefix meant any
+     * legal, `IdSchema`-valid `deliveryId` of 124-128 chars produced a 129-133 char key and
+     * a Postgres `22001`, raised AFTER the batch's own event had already committed, and
+     * identical on every retry. `DropDelivery.deliveryId` has no prefix, so the same value
+     * that used to 500 at 124 chars must now succeed even at the wire's own maximum, 128 —
+     * proved at the boundary, not by inspection of the column width.
+     */
+    it('F1: a deliveryId at the wire maximum (128 chars) does not overflow the replay ledger', async () => {
+      const runId = 'e2e-run-dropped-delivery-id-max';
+      const deliveryId = 'd'.repeat(128);
+      expect(deliveryId).toHaveLength(128);
+
+      await post([runStarted(runId, 'evt-e2e-delivery-id-max-start', '2026-09-03T10:00:00.000Z')]);
+
+      const response = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [
+            runStarted(runId, 'evt-e2e-delivery-id-max-complete', '2026-09-03T10:00:01.000Z'),
+          ],
+          droppedSinceLastBatch: 4,
+          deliveryId,
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.status).not.toBe(500);
+
+      const run = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(run?.droppedTelemetryEventCount).toBe(4);
+
+      // And the identical retry — the whole point of a replay-stable key — still credits
+      // once, at this same boundary length.
+      const retry = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [
+            runStarted(runId, 'evt-e2e-delivery-id-max-complete', '2026-09-03T10:00:01.000Z'),
+          ],
+          droppedSinceLastBatch: 4,
+          deliveryId,
+        });
+      expect(retry.status).toBe(200);
+
+      const runAfterRetry = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(runAfterRetry?.droppedTelemetryEventCount).toBe(4);
+      expect(runAfterRetry?.droppedTelemetryEventCount).not.toBe(8);
+    });
+
+    /**
+     * F4 (Tester) / part of B1's fix. Attempt 1's replay key shared `IngestedEvent.eventId`'s
+     * value space with real, caller-supplied event ids on a public wire: a real event whose
+     * `eventId` happened to equal `"drop:" + X` collided with a drop batch whose `deliveryId`
+     * was `X`. Direction A here: seed a drop report under `deliveryId`, then send a REAL
+     * event whose `eventId` is the exact string `"drop:" + deliveryId` — it must be accepted
+     * as a new event, not silently read as `DUPLICATE` against the ledger row the drop report
+     * left behind.
+     */
+    it('F4 direction A: a real eventId shaped like the old "drop:" + deliveryId key is accepted, not swallowed as DUPLICATE', async () => {
+      const runId = 'e2e-run-drop-namespace-a';
+      const deliveryId = 'e2e-namespace-a-delivery';
+
+      await post([runStarted(runId, 'evt-e2e-namespace-a-start', '2026-09-03T10:00:02.000Z')]);
+
+      await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runStarted(runId, 'evt-e2e-namespace-a-drop-batch', '2026-09-03T10:00:03.000Z')],
+          droppedSinceLastBatch: 2,
+          deliveryId,
+        });
+
+      const collidingEventId = `drop:${deliveryId}`;
+      const response = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [
+            {
+              eventId: collidingEventId,
+              schemaVersion: '1',
+              type: 'step.started',
+              entityId: 'e2e-namespace-a-step',
+              runId,
+              occurredAt: '2026-09-03T10:00:04.000Z',
+              payload: { name: 's', agentName: 'a', type: 'execute', parentStepId: null },
+            },
+          ],
+        });
+      const body = response.body as IngestResponse;
+
+      expect(body.results[0]).toMatchObject({ eventId: collidingEventId, status: 'ACCEPTED' });
+      const step = await prisma.client.step.findUnique({ where: { id: 'e2e-namespace-a-step' } });
+      expect(step).not.toBeNull();
+    });
+
+    /**
+     * F4 direction B. A real, accepted event whose `eventId` is `"drop:" + Y` must not make a
+     * later drop report with `deliveryId: Y` silently discarded — before this fix, the report
+     * lost the ledger insert race against that pre-existing `eventId` and the run's count
+     * stayed `NULL` despite a 200 response.
+     */
+    it('F4 direction B: a drop report is credited even when a real event already used "drop:" + deliveryId as its own eventId', async () => {
+      const runId = 'e2e-run-drop-namespace-b';
+      const deliveryId = 'e2e-namespace-b-delivery';
+      const collidingEventId = `drop:${deliveryId}`;
+
+      await post([
+        runStarted(runId, 'evt-e2e-namespace-b-start', '2026-09-03T10:00:05.000Z'),
+        {
+          eventId: collidingEventId,
+          schemaVersion: '1',
+          type: 'step.started',
+          entityId: 'e2e-namespace-b-step',
+          runId,
+          occurredAt: '2026-09-03T10:00:06.000Z',
+          payload: { name: 's', agentName: 'a', type: 'execute', parentStepId: null },
+        },
+      ]);
+
+      const response = await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runStarted(runId, 'evt-e2e-namespace-b-drop-batch', '2026-09-03T10:00:07.000Z')],
+          droppedSinceLastBatch: 42,
+          deliveryId,
+        });
+
+      expect(response.status).toBe(200);
+      const run = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(run?.droppedTelemetryEventCount).toBe(42);
+      expect(run?.droppedTelemetryEventCount).not.toBeNull();
+    });
+
+    /**
+     * B5. `IngestedEvent` is documented, in two places, as holding real accepted events and
+     * nothing else. Proves it by construction rather than by re-reading the comments: a run
+     * that received one real event and one drop report has exactly one `IngestedEvent` row
+     * (the real event) and its drop replay key lives in `DropDelivery` instead.
+     */
+    it('B5: a drop report never adds a row to IngestedEvent — it lands in DropDelivery', async () => {
+      const runId = 'e2e-run-drop-ledger-split';
+      const deliveryId = 'e2e-ledger-split-delivery';
+
+      await post([runStarted(runId, 'evt-e2e-ledger-split-start', '2026-09-03T10:00:08.000Z')]);
+
+      await request(httpServer(app))
+        .post('/v1/telemetry/events')
+        .send({
+          events: [runStarted(runId, 'evt-e2e-ledger-split-complete', '2026-09-03T10:00:09.000Z')],
+          droppedSinceLastBatch: 6,
+          deliveryId,
+        });
+
+      expect(await prisma.client.ingestedEvent.count({ where: { runId } })).toBe(2);
+      expect(
+        await prisma.client.ingestedEvent.findFirst({
+          where: { runId, eventId: { contains: 'drop:' } },
+        }),
+      ).toBeNull();
+      expect(
+        await prisma.client.dropDelivery.findUnique({
+          where: { runId_deliveryId: { runId, deliveryId } },
+        }),
+      ).not.toBeNull();
+    });
+
+    /**
+     * F5 (Tester). A zero-amount report needs no replay guard — adding zero is idempotent on
+     * every retry and every flush — so `incrementDroppedCount` skips `DropDelivery`
+     * entirely for `amount === 0`, even though every batch the SDK sends carries the field.
+     * Five flushes reporting zero must leave zero rows, not one per flush.
+     */
+    it('F5: a batch reporting zero drops never grows DropDelivery, across many flushes', async () => {
+      const runId = 'e2e-run-drop-zero-no-growth';
+
+      await post([runStarted(runId, 'evt-e2e-zero-growth-start', '2026-09-03T10:00:10.000Z')]);
+
+      for (let i = 0; i < 5; i += 1) {
+        const response = await request(httpServer(app))
+          .post('/v1/telemetry/events')
+          .send({
+            events: [
+              runStarted(runId, `evt-e2e-zero-growth-${i}`, `2026-09-03T10:00:${11 + i}.000Z`),
+            ],
+            droppedSinceLastBatch: 0,
+            deliveryId: `e2e-zero-growth-delivery-${i}`,
+          });
+        expect(response.status).toBe(200);
+      }
+
+      expect(await prisma.client.dropDelivery.count({ where: { runId } })).toBe(0);
+      const run = await prisma.client.run.findUnique({ where: { id: runId } });
+      expect(run?.droppedTelemetryEventCount).toBe(0);
+      expect(run?.droppedTelemetryEventCount).not.toBeNull();
+    });
+  });
+
   /**
    * R3 (Reviewer finding, 2026-09-02, repair attempt 1). The test above claims "a real zero
    * included" in its title but only ever posted `droppedSinceLastBatch: 3`; the zero case is

@@ -103,9 +103,19 @@ export async function fetchRunDetail(id: string): Promise<RunDetailResult> {
  * `encodeURIComponent` + `typeof value === 'number'` because the lane that wrote it could not
  * write `lib/**` — a boundary that does not apply at the gate. Folded in here behind the same
  * `requestJson` + `safeParse` pattern every other read on this page uses, against
- * `RunSummaryDropCountSchema` (`@lengentic/shared/read`): a renamed or re-typed
- * `droppedTelemetryEventCount` now fails a parse instead of silently reading as "not
- * reported".
+ * `RunSummaryDropCountSchema` (`@lengentic/shared/read`).
+ *
+ * Reviewer B4 (Phase 4 phase gate repair attempt 2) corrected the claim this docstring used
+ * to make: `safeParse` guards against a wrong *type* silently reaching the card as a bad
+ * value (a string where a number was expected, for instance) — it is NOT a mechanism that
+ * fails visibly on a renamed or re-typed `droppedTelemetryEventCount`. A parse failure is
+ * caught here and folded into the exact same `null` a genuine "never reported" produces, one
+ * line below; the two are deliberately not told apart (see the paragraph after this one), so
+ * schema drift on this one field renders identically to an ordinary absence rather than as a
+ * distinguishable fault. Smaller fix than giving this function `fetchRunDetail`'s
+ * discriminated result shape, chosen because nothing on this page currently acts on the
+ * distinction and the card's own header comment already commits to collapsing both cases —
+ * widening the return type would be a change this repair does not need to make.
  *
  * Never throws, same contract every other reader on this page keeps: a run detail page that
  * cannot answer this one extra question must still render every other card. `null` covers

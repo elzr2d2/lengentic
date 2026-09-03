@@ -3450,21 +3450,55 @@ double-credits the drops. Not wrong today only because nothing populates the fie
 **Do:** key the increment on something replay-stable — a batch id, or the ledger. **Trigger:**
 `p4.sdk-drop-reporting`, the node that lands the producer. This becomes live the moment it does.
 
-**Addressed 2026-09-03** (Phase 4 phase gate repair attempt 1, Reviewer finding S1 —
-`p4.sdk-drop-reporting` landed at `9050756`, making this entry's trigger live, exactly as
-predicted, and unremarked until the phase gate). `IngestRequestSchema` gained an optional,
+**Partially addressed, corrected 2026-09-03** (Phase 4 phase gate repair attempt 1 landed
+`deliveryId`; repair attempt 2 closed what attempt 1 did not, and this entry's own
+`Addressed` claim — unqualified, naming no residual — was itself an instance of the ledger
+failure this entry is about, caught at the gate by Reviewer B3 and Tester F2 independently).
+Two rounds:
+
+Attempt 1 (Reviewer finding S1, `9050756`): `IngestRequestSchema` gained an optional,
 client-generated `deliveryId` — the SDK mints one per batch in `TelemetryClient.deliverBatch`
 (`platform/telemetry-sdk/src/client.ts`) and sends the identical value on every retry of that
-batch. `TelemetryRepository.incrementDroppedCount` (`platform/api/src/telemetry/
-telemetry.repository.ts`) now folds the increment inside a transaction guarded by a synthetic
-`IngestedEvent` ledger row keyed `(runId, "drop:" + deliveryId)` — reusing the ADR 0005 §1
-ledger rather than adding a table — and skips the increment when that row already existed.
-Backward-compatible: an SDK that predates `deliveryId` sends none, and the persistence edge
-falls back to the pre-existing non-idempotent behaviour rather than rejecting the batch.
-Regression: `platform/api/test/telemetry.integration.spec.ts` replays one identical batch
-against real Postgres and asserts `Run.droppedTelemetryEventCount` is credited once, not
-twice; mutation-checked (revert → red → restore → green,
-`.artifacts/evidence/4/phase-gate/repair-1/`).
+batch, and `TelemetryRepository.incrementDroppedCount` folds the increment inside a
+transaction guarded by a replay-ledger row, skipping the increment when that row already
+existed. This closed the double-count for a batch retried WITHIN its own `deliverBatch` call.
+It did not close a batch ABANDONED after the retry budget ran out: `acknowledgedDrops`
+advances only on `delivered`, so the NEXT batch re-sent the same pending amount under a NEW
+`deliveryId`, and a real reproduction (`.artifacts/evidence/4/phase-gate/tester/t2/p-sdk-4.cjs`)
+measured 9 stored for 6 actually dropped — the exact overcount `client.ts:130-136`'s own
+comment says cannot happen.
+
+Attempt 2 (Reviewer B1/B3/B5, Tester F1/F2/F4) closed the rest: `client.ts`'s
+`pendingDeliveryId` now carries the same replay identity across an ABANDONED batch too, not
+only a retried one — the next batch reuses it until a `delivered` outcome clears it, so the
+server's replay guard recognises a lost-response commit either way. Separately, the
+replay-guard row itself moved out of `IngestedEvent` into its own table, `DropDelivery`
+(`platform/database/prisma/schema.prisma`): reusing `IngestedEvent.eventId` as
+`"drop:" + deliveryId` let a legal 124-128-char `deliveryId` overflow that column's
+`VarChar(128)` (a 500 thrown after every event in the batch had already committed,
+permanently unretryable — Tester F1), and put a synthetic key in the same value space a real,
+caller-supplied `eventId` could collide with in both directions (Tester F4). `DropDelivery`'s
+own `deliveryId` column holds exactly what the wire's `IdSchema` allows, no prefix, no shared
+namespace. A zero-amount report is skipped from the ledger entirely (Tester F5) — adding zero
+is idempotent by construction and needs no replay guard, so it no longer grows the table by
+one row per flush.
+
+**Residual, still open, and this time named:** reusing an abandoned batch's `deliveryId`
+trades the overcount direction for the pre-existing, already-accepted undercount direction —
+if the abandoned batch's first attempt actually committed server-side (response merely
+lost), the reused id is already in `DropDelivery` and the server skips the WHOLE next
+report, growth included, not only the part that would have double-counted. Same direction
+`acknowledgedDrops`'s own doc comment already accepts for two other cases (an all-rejected
+batch, a batch naming no existing Run row): the Dashboard reads LOW, never wrong-high.
+Closing this fully still needs a per-count receipt on `IngestResponse` — a wire change,
+`platform/shared` + `platform/api` both, out of scope for an SDK-only or repository-only
+packet.
+
+Regression: `platform/api/test/telemetry.integration.spec.ts` (attempt 1, retried-batch
+double-credit) plus `platform/telemetry-sdk/test/drop-reporting.spec.ts` (attempt 2,
+abandoned-then-reused `deliveryId` and the fresh id after a delivered batch); mutation-checked
+both attempts (`.artifacts/evidence/4/phase-gate/repair-1/`,
+`.artifacts/evidence/4/phase-gate/repair-2/`).
 
 ### `droppedSinceLastBatch` credits its full count to every run a batch names
 

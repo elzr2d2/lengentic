@@ -234,22 +234,38 @@ export class TelemetryRepository {
    * optional, wire field on `IngestRequestSchema` (`.optional()` for the same reason
    * `droppedSinceLastBatch` is — an SDK built before this landed sends neither) — is the
    * batch's own replay-stable identity, stable across every retry `deliverBatch` makes of one
-   * batch (minted once, before its retry loop) and distinct for the next one. When it is
-   * present, the ledger gets a synthetic row keyed `(runId, "drop:" + deliveryId)` — reusing
-   * `IngestedEvent` rather than adding a table, the same primitive `recordIngestedEvents`
-   * uses below (`createMany({ skipDuplicates: true })`, i.e. `INSERT ... ON CONFLICT DO
-   * NOTHING`) — and the increment runs only when that insert actually happened (`count > 0`).
-   * A genuine replay loses the unique-constraint race, its `count` comes back `0`, and the
-   * increment is skipped: the amount is folded in exactly once per `(runId, deliveryId)` pair,
-   * inside one transaction so a crash between the two statements cannot leave the ledger
-   * saying "applied" while the count was never actually added.
+   * batch (minted once, before its retry loop) and distinct for the next one, and (Reviewer
+   * B3 / Tester F2, Phase 4 phase gate repair attempt 2) reused by the CLIENT for the next
+   * batch too whenever this one is abandoned instead of delivered — see `client.ts`'s
+   * `pendingDeliveryId`. When present, this method records a row in `DropDelivery` keyed
+   * `(runId, deliveryId)` and runs the increment only when that insert actually happened
+   * (`count > 0`). A genuine replay — of one retried batch, OR of the next batch after an
+   * abandonment the client's own retry of `deliveryId` covers — loses the unique-constraint
+   * race, its `count` comes back `0`, and the increment is skipped: the amount is folded in
+   * exactly once per `(runId, deliveryId)` pair, inside one transaction so a crash between
+   * the two statements cannot leave the ledger saying "applied" while the count was never
+   * actually added.
    *
-   * The synthetic `"drop:" + deliveryId` key sharing `IngestedEvent.eventId`'s column with real
-   * event ids is a deliberately accepted, not enforced, non-collision: real event ids are
-   * minted by the SDK's `IdGenerator` (UUID-shaped, never `drop:`-prefixed) and `deliveryId` is
-   * internal SDK state a caller never supplies, so nothing outside the SDK can construct a
-   * value this scheme depends on staying apart — the same class of accepted lossiness
-   * `lockEntity`'s 32-bit hash namespace below documents for the same reason.
+   * `DropDelivery` (Reviewer B1/B5, Tester F1/F4, Phase 4 phase gate repair attempt 2) is its
+   * own table, not a synthetic `"drop:" + deliveryId` row sharing `IngestedEvent.eventId`'s
+   * column the way attempt 1 shipped it. That reuse broke two things at once: the 5-character
+   * prefix let a legal, `IdSchema`-valid `deliveryId` (124-128 chars) overflow `eventId`'s
+   * `VarChar(128)` — a 500 thrown from AFTER every event in the batch had committed, on every
+   * retry, permanently — and it put a real event id and a synthetic replay key in the same
+   * value space on a PUBLIC wire, where a caller-supplied `eventId` of `"drop:" + X` and a
+   * caller-supplied `deliveryId` of `X` collided in both directions (a real event silently
+   * read as `DUPLICATE`, or a real drop report silently discarded as if it were one). Neither
+   * failure mode is reachable through `DropDelivery`: its `deliveryId` column holds exactly
+   * what `IdSchema` allows, with no prefix to overflow it, and it shares no value space with
+   * any `eventId` for one to collide with.
+   *
+   * Skipped entirely when `amount === 0` (Tester F5): adding zero is idempotent on every
+   * retry and every flush with nothing to guard, so folding a `0` through the replay ledger
+   * would only grow `DropDelivery` by one row per flush, forever, for no correctness this
+   * table exists to provide — `incrementDroppedCountRaw` still runs unconditionally in that
+   * case, because it is the only thing that ever moves the column off `NULL` ("never
+   * reported") to a genuine `0` ("reported zero", per its own comment above), and every
+   * report after the first is a true no-op there too.
    *
    * When `deliveryId` is absent (an SDK built before this landed, or a direct caller of the
    * transport that never adopted it), this falls back to the pre-existing, non-idempotent
@@ -262,15 +278,14 @@ export class TelemetryRepository {
     deliveryId: string | undefined,
     receivedAt: Date,
   ): Promise<void> {
-    if (deliveryId === undefined) {
+    if (deliveryId === undefined || amount === 0) {
       await incrementDroppedCountRaw(this.prisma.client, runId, amount);
       return;
     }
 
     await this.prisma.client.$transaction(async (tx) => {
-      const replayKey = `drop:${deliveryId}`;
-      const { count } = await tx.ingestedEvent.createMany({
-        data: [{ runId, eventId: replayKey, receivedAt }],
+      const { count } = await tx.dropDelivery.createMany({
+        data: [{ runId, deliveryId, receivedAt }],
         skipDuplicates: true,
       });
       // Lost the insert-or-skip race: this exact (runId, deliveryId) pair already credited the

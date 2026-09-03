@@ -238,13 +238,15 @@ describe('tool_call.recorded — §13/§15', () => {
     if (!result.ok) expect(result.code).toBe('INVALID_PAYLOAD');
   });
 
-  it('accepts a missing byte count (S3, Phase 4 phase gate repair attempt 1) — "not captured", not "measured zero"', () => {
+  it('accepts a missing byte count when the call was never truncated (S3, Phase 4 phase gate repair attempt 1) — "not captured", not "measured zero"', () => {
     // Reviewer S3: `captureToolIO: false` has nothing to measure at all, and a required
     // field forced the SDK to send a manufactured `0` — which the Dashboard then rendered as
     // a real "0 bytes lost to truncation" for a run whose tool IO was never captured
     // (`CLAUDE.md` ## Product claims). `inputBytes`/`outputBytes` are `.nullish()` for
     // exactly that reason; this test used to pin the opposite (a missing count was
     // REJECTED), which is the defect S3 closes, not a property still worth protecting.
+    // `TOOL_CALL.payload.inputTruncated` is `false`, which is what makes this "not
+    // captured" rather than the malformed state the two tests below reject.
     const { inputBytes: _b, ...payload } = TOOL_CALL.payload;
     const result = parseTelemetryEvent({ ...TOOL_CALL, payload });
     expect(result.ok).toBe(true);
@@ -261,6 +263,41 @@ describe('tool_call.recorded — §13/§15', () => {
     const result = parseTelemetryEvent({ ...TOOL_CALL, payload });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('INVALID_PAYLOAD');
+  });
+
+  it('rejects inputTruncated: true with inputBytes absent — the narrowed invariant Reviewer B2 / Tester F3 restore (Phase 4 phase gate repair attempt 2)', () => {
+    // Attempt 1's unconditional `.nullish()` let this exact combination through: a call
+    // reported as truncated with no byte count at all, which the Dashboard then rendered as
+    // "1 tool input truncated" beside "0 bytes lost to truncation" — a manufactured zero for
+    // a quantity the system never received. `captureToolIO: false` (the only legitimate
+    // reason bytes go unreported) also forces `inputTruncated: false`
+    // (`payload-safety.ts`'s `toolIO`), so a call that WAS truncated always has a real count
+    // to report; absent here is a malformed claim, not "not captured".
+    const { inputBytes: _b, ...payload } = TOOL_CALL.payload;
+    const result = parseTelemetryEvent({
+      ...TOOL_CALL,
+      payload: { ...payload, inputTruncated: true },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('INVALID_PAYLOAD');
+  });
+
+  it('rejects outputTruncated: true with outputBytes absent — symmetric with inputBytes', () => {
+    const { outputBytes: _b, ...payload } = TOOL_CALL.payload;
+    const result = parseTelemetryEvent({
+      ...TOOL_CALL,
+      payload: { ...payload, outputTruncated: true },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('INVALID_PAYLOAD');
+  });
+
+  it('accepts inputTruncated: true when inputBytes is a real measurement — the pairing, not the flag alone, is what is enforced', () => {
+    const result = parseTelemetryEvent({
+      ...TOOL_CALL,
+      payload: { ...TOOL_CALL.payload, inputTruncated: true, inputBytes: 65_536 },
+    });
+    expect(result.ok).toBe(true);
   });
 
   it('accepts a failed call carrying an error message', () => {

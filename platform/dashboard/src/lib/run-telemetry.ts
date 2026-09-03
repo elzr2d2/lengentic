@@ -166,6 +166,16 @@ export interface IngestionHealth {
    * The summed **original** size of every truncated payload — `inputBytes` / `outputBytes`
    * are what the SDK measured before §15's cap, not what survived it. This is the quantity
    * the DoD line "a 1MB tool output is truncated and flagged" is about.
+   *
+   * `null` (Reviewer B2 / Tester F3, Phase 4 phase gate repair attempt 2) whenever ANY
+   * truncated call in this run's tool calls has no byte count to contribute — not `0`, and
+   * not a partial sum silently missing one call's share. `platform/shared/schema`'s wire
+   * contract now rejects `inputTruncated: true` with `inputBytes` absent at ingest (the
+   * pairing this field's own header note requires), so this should be unreachable through
+   * the wire going forward; it stays a real branch here, not an assertion, because this
+   * function reads whatever `RunDetailView` the response actually carried — including a row
+   * persisted before that wire fix existed — and `CLAUDE.md` ## Product claims: a total this
+   * function cannot stand behind must never render as a number.
    */
   readonly truncatedOriginalBytes: number | null;
   readonly toolCallsWithClockAnomaly: number | null;
@@ -173,16 +183,54 @@ export interface IngestionHealth {
   readonly modelCallsMissingOutputTokens: number | null;
 }
 
-/**
- * `null` (Reviewer S3, Phase 4 phase gate repair attempt 1) only under
- * `captureToolIO: false`, where `inputTruncated`/`outputTruncated` are also always `false`
- * (`payload-safety.ts`'s `toolIO`) — so a call this function is ever called for (one whose
- * truncation flag is `true`) never actually has a `null` measurement. The `?? 0` fallback is
- * therefore unreachable by construction; it exists only so a nullable measurement type
- * checks, not because a truncated call's bytes are ever genuinely unmeasured.
- */
-function measuredBytes(bytes: number | null): number {
-  return bytes ?? 0;
+interface ToolCallTruncationTally {
+  readonly toolInputsTruncated: number;
+  readonly toolOutputsTruncated: number;
+  readonly truncatedOriginalBytes: number;
+  /**
+   * Reviewer B2 / Tester F3 (Phase 4 phase gate repair attempt 2). Set the moment any
+   * truncated call's byte count is `null` — the state the wire contract now rejects at
+   * ingest but this reader must still treat safely if it ever reaches a `RunDetailView`
+   * (see `truncatedOriginalBytes` on `IngestionHealth`). Once set, `truncatedOriginalBytes`
+   * stops being a number the caller can stand behind.
+   */
+  readonly truncatedBytesUnknown: boolean;
+  readonly toolCallsWithClockAnomaly: number;
+}
+
+/** Extracted from `assessIngestionHealth` to keep its own branch count within ESLint's bound. */
+function tallyToolCallTruncation(rows: readonly ToolCallView[]): ToolCallTruncationTally {
+  let toolInputsTruncated = 0;
+  let toolOutputsTruncated = 0;
+  let truncatedOriginalBytes = 0;
+  let truncatedBytesUnknown = false;
+  let toolCallsWithClockAnomaly = 0;
+
+  for (const call of rows) {
+    if (call.inputTruncated) {
+      toolInputsTruncated += 1;
+      if (call.inputBytes === null) truncatedBytesUnknown = true;
+      else truncatedOriginalBytes += call.inputBytes;
+    }
+
+    if (call.outputTruncated) {
+      toolOutputsTruncated += 1;
+      if (call.outputBytes === null) truncatedBytesUnknown = true;
+      else truncatedOriginalBytes += call.outputBytes;
+    }
+
+    // Once per call, not once per anomaly: the reader is counting calls they cannot trust.
+    const clock = readToolCallClock(call);
+    if (clock.instantsReversed || clock.durationNegative) toolCallsWithClockAnomaly += 1;
+  }
+
+  return {
+    toolInputsTruncated,
+    toolOutputsTruncated,
+    truncatedOriginalBytes,
+    truncatedBytesUnknown,
+    toolCallsWithClockAnomaly,
+  };
 }
 
 export function assessIngestionHealth(run: RunDetailView): IngestionHealth {
@@ -190,26 +238,7 @@ export function assessIngestionHealth(run: RunDetailView): IngestionHealth {
   const toolCallsAnswered = telemetry.toolCalls.presence !== 'absent';
   const modelCallsAnswered = telemetry.modelCalls.presence !== 'absent';
 
-  let toolInputsTruncated = 0;
-  let toolOutputsTruncated = 0;
-  let truncatedOriginalBytes = 0;
-  let toolCallsWithClockAnomaly = 0;
-
-  for (const call of telemetry.toolCalls.rows) {
-    if (call.inputTruncated) {
-      toolInputsTruncated += 1;
-      truncatedOriginalBytes += measuredBytes(call.inputBytes);
-    }
-
-    if (call.outputTruncated) {
-      toolOutputsTruncated += 1;
-      truncatedOriginalBytes += measuredBytes(call.outputBytes);
-    }
-
-    // Once per call, not once per anomaly: the reader is counting calls they cannot trust.
-    const clock = readToolCallClock(call);
-    if (clock.instantsReversed || clock.durationNegative) toolCallsWithClockAnomaly += 1;
-  }
+  const toolCallTally = tallyToolCallTruncation(telemetry.toolCalls.rows);
 
   let modelCallsMissingInputTokens = 0;
   let modelCallsMissingOutputTokens = 0;
@@ -226,10 +255,13 @@ export function assessIngestionHealth(run: RunDetailView): IngestionHealth {
       report('Tool calls', telemetry.toolCalls),
       report('Errors', telemetry.errors),
     ],
-    toolInputsTruncated: toolCallsAnswered ? toolInputsTruncated : null,
-    toolOutputsTruncated: toolCallsAnswered ? toolOutputsTruncated : null,
-    truncatedOriginalBytes: toolCallsAnswered ? truncatedOriginalBytes : null,
-    toolCallsWithClockAnomaly: toolCallsAnswered ? toolCallsWithClockAnomaly : null,
+    toolInputsTruncated: toolCallsAnswered ? toolCallTally.toolInputsTruncated : null,
+    toolOutputsTruncated: toolCallsAnswered ? toolCallTally.toolOutputsTruncated : null,
+    truncatedOriginalBytes:
+      toolCallsAnswered && !toolCallTally.truncatedBytesUnknown
+        ? toolCallTally.truncatedOriginalBytes
+        : null,
+    toolCallsWithClockAnomaly: toolCallsAnswered ? toolCallTally.toolCallsWithClockAnomaly : null,
     modelCallsMissingInputTokens: modelCallsAnswered ? modelCallsMissingInputTokens : null,
     modelCallsMissingOutputTokens: modelCallsAnswered ? modelCallsMissingOutputTokens : null,
   };

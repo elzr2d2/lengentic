@@ -42,7 +42,9 @@ import type { ErrorService } from '../error/error.service';
  * `TelemetryService`'s persistence-failure classification (ADR 0010) is tested through,
  * without a real Prisma error ever crossing this boundary.
  */
-function fakeRepository(options: { failFor?: Map<string, unknown> } = {}): {
+function fakeRepository(
+  options: { failFor?: Map<string, unknown>; dropFoldFailFor?: Set<string> } = {},
+): {
   repository: TelemetryRepository;
   runs: Map<string, EntityMergeState>;
   steps: Map<string, { runId: string; state: EntityMergeState }>;
@@ -56,6 +58,10 @@ function fakeRepository(options: { failFor?: Map<string, unknown> } = {}): {
   const ledger = new Map<string, Set<string>>();
   const droppedCounts = new Map<string, number>();
   const failFor = options.failFor ?? new Map<string, unknown>();
+  // F1 second half (Tester, Phase 4 phase gate repair attempt 2): runIds named here make
+  // `incrementDroppedCount` reject, the same shape a poisoned key or a transient connection
+  // error would produce against real Postgres, without needing either.
+  const dropFoldFailFor = options.dropFoldFailFor ?? new Set<string>();
   let saveRunCalls = 0;
   let saveStepCalls = 0;
 
@@ -74,6 +80,9 @@ function fakeRepository(options: { failFor?: Map<string, unknown> } = {}): {
       _deliveryId?: string,
       _receivedAt?: Date,
     ): Promise<void> => {
+      if (dropFoldFailFor.has(runId)) {
+        return Promise.reject(new Error(`fake drop-fold failure for ${runId}`));
+      }
       droppedCounts.set(runId, (droppedCounts.get(runId) ?? 0) + amount);
       return Promise.resolve();
     },
@@ -797,6 +806,41 @@ describe('TelemetryService.ingest — droppedSinceLastBatch (ADR 0014 decision 2
     await service.ingest([decisionRecordedEvent()], 4);
 
     expect(droppedCounts.get('run-1')).toBe(4);
+  });
+
+  /**
+   * F1 second half (Tester, Phase 4 phase gate repair attempt 2). The third recurrence of
+   * one class (R1, R4, S1 before it): a post-commit fold must never turn work that already
+   * landed into an unclassified 500. `incrementDroppedCount` runs AFTER the event above has
+   * already been folded and (in the real repository) saved — a failure here must be
+   * contained and reported, never allowed to discard `results` for an event that committed.
+   */
+  it('a drop-count fold failure does not throw — the event it was folded for still reports its real result', async () => {
+    const { repository } = fakeRepository({ dropFoldFailFor: new Set(['run-1']) });
+    const service = createTelemetryService(repository);
+
+    const response = await service.ingest([runStartedEvent()], 3);
+
+    expect(response.results[0]).toMatchObject({ status: 'ACCEPTED' });
+    expect(response.accepted).toBe(1);
+    expect(response.rejected).toBe(0);
+  });
+
+  it('a drop-count fold failure for one run does not suppress the fold for another run the same batch names', async () => {
+    const { repository, droppedCounts } = fakeRepository({ dropFoldFailFor: new Set(['run-a']) });
+    const service = createTelemetryService(repository);
+
+    const response = await service.ingest(
+      [
+        runStartedEvent({ entityId: 'run-a', runId: 'run-a' }),
+        runStartedEvent({ entityId: 'run-b', runId: 'run-b' }),
+      ],
+      2,
+    );
+
+    expect(response.accepted).toBe(2);
+    expect(droppedCounts.get('run-a')).toBeUndefined();
+    expect(droppedCounts.get('run-b')).toBe(2);
   });
 });
 

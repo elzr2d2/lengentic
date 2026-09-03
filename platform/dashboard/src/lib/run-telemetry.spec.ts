@@ -313,6 +313,49 @@ describe('assessIngestionHealth — what was lost, and what cannot be asked', ()
     expect(health.truncatedOriginalBytes).toBe(0);
   });
 
+  it('reports truncatedOriginalBytes as null, not 0, when a truncated call has no byte count', () => {
+    // Reviewer B2 / Tester F3 (Phase 4 phase gate repair attempt 2). `inputTruncated: true`
+    // with `inputBytes: null` is now rejected at the wire (`tool-call-events.ts`'s
+    // `superRefine`), so this combination should not reach a real `RunDetailView` going
+    // forward — but this reader must still not manufacture a `0` if it ever does (a row
+    // persisted before that wire fix, for instance). Real reproduction: the exact wire
+    // round trip rendered "1 tool input truncated" beside "Payload bytes lost to
+    // truncation: 0 bytes" — a measurement the system never received, stated as a fact.
+    const health = assessIngestionHealth(
+      runWithout({
+        toolCalls: [
+          toolCall({
+            id: 'tool-truncated-unmeasured',
+            inputTruncated: true,
+            inputBytes: null,
+            outputTruncated: true,
+            outputBytes: null,
+          }),
+        ],
+      }),
+    );
+
+    expect(health.toolInputsTruncated).toBe(1);
+    expect(health.toolOutputsTruncated).toBe(1);
+    expect(health.truncatedOriginalBytes).toBeNull();
+  });
+
+  it('does not let one call with an unmeasured truncation hide bytes a sibling call DID measure', () => {
+    // The `truncatedBytesUnknown` flag must taint the whole sum, not just its own call's
+    // share — a partial total that silently drops one call's contribution is the same
+    // manufactured-number failure with fewer zeros in it.
+    const health = assessIngestionHealth(
+      runWithout({
+        toolCalls: [
+          toolCall({ id: 'tool-measured', outputTruncated: true, outputBytes: 4_096 }),
+          toolCall({ id: 'tool-unmeasured', inputTruncated: true, inputBytes: null }),
+        ],
+      }),
+    );
+
+    expect(health.truncatedOriginalBytes).toBeNull();
+  });
+
   it('counts a tool call whose client clock contradicts itself, once per call', () => {
     const health = assessIngestionHealth(
       runWithout({

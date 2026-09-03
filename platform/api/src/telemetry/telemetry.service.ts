@@ -656,15 +656,34 @@ export class TelemetryService {
     // ADR 0014 decision 2. Applied once per run this batch actually named, after every write
     // above has either landed or the whole response has already aborted — a batch that fails
     // partway through must not have credited a drop count for work that never committed.
+    //
+    // F1 second half (Tester, Phase 4 phase gate repair attempt 2) — the third recurrence of
+    // one class (R1, R4, S1 before it): a post-commit fold must never be able to turn work
+    // that already landed into an unclassified 500. `results`/`accepted`/`duplicate`/
+    // `rejected` above are already final at this point — every event's own verdict is decided
+    // and would otherwise be thrown away by an exception from a step that persists nothing
+    // about any individual event. Contained per run, not just per batch, so one run's failure
+    // (a poisoned key, a transient connection error) cannot suppress the fold for every other
+    // run this batch also named. Reported, not swallowed: a structured WARN naming the run,
+    // the amount and the `deliveryId`, so an operator can see the roll-up under-count instead
+    // of it disappearing silently — see the `DropDelivery` doc comment on `incrementDroppedCount`
+    // for what a retried batch does with the same `deliveryId` afterwards.
     if (droppedSinceLastBatch !== undefined) {
       const receivedAtDate = new Date(receivedAt);
       for (const runId of referencedRunIds) {
-        await this.repository.incrementDroppedCount(
-          runId,
-          droppedSinceLastBatch,
-          deliveryId,
-          receivedAtDate,
-        );
+        try {
+          await this.repository.incrementDroppedCount(
+            runId,
+            droppedSinceLastBatch,
+            deliveryId,
+            receivedAtDate,
+          );
+        } catch (error) {
+          this.logger.warn(
+            { err: error, runId, deliveryId, amount: droppedSinceLastBatch },
+            'drop count fold failed for this run; per-event results for the batch still stand',
+          );
+        }
       }
     }
 

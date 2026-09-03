@@ -209,6 +209,40 @@ model IngestedEvent {
   @@id([runId, eventId])
 }
 
+/// ADR 0014 decision 2's replay guard for `droppedSinceLastBatch`, split out of
+/// `IngestedEvent` (Phase 4 phase gate repair attempt 2 — Reviewer B1/B5, Tester F1/F4).
+/// Attempt 1 folded the synthetic key into `IngestedEvent.eventId` as `"drop:" + deliveryId`,
+/// which broke that table's own two invariants at once: `eventId` grew a second, 5-char-
+/// longer value space that could overflow the same `VarChar(128)` the wire's own `deliveryId`
+/// (`IdSchema`, `max(128)`) is allowed to fill, and it put a non-event row in a table whose
+/// header comment and every reader (`loadIngestedEventIds`) say "every accepted event, and
+/// nothing else". This table answers a different question — "has this run already been
+/// credited for this delivery?" — with its own column, sized to exactly what `deliveryId`
+/// can be (no prefix, so no possible overflow), and no shared namespace with a real
+/// `eventId` for a real one to collide with.
+///
+/// Deliberately as thin as `IngestedEvent`: `runId`, `deliveryId`, `receivedAt`, nothing
+/// else. `TelemetryRepository.incrementDroppedCount` inserts a row here (skipping the
+/// insert, and therefore the increment, when one already exists for this `(runId,
+/// deliveryId)`) only when the batch's reported amount is non-zero — adding zero is
+/// idempotent by construction and needs no replay guard, so a batch reporting no NEW drops
+/// never grows this table (F5).
+model DropDelivery {
+  /// Same run-scoping reason as `IngestedEvent.runId`: a client-generated id is unique per
+  /// run, not globally.
+  runId String @db.VarChar(128)
+
+  /// `IngestRequestSchema.deliveryId` verbatim — `IdSchema`, `max(128)` — never a derived or
+  /// prefixed value, so this column's width and the wire's own bound are the same number by
+  /// construction, not by a comment promising they will not drift apart.
+  deliveryId String @db.VarChar(128)
+
+  /// Server clock, same reasoning as `IngestedEvent.receivedAt`.
+  receivedAt DateTime @db.Timestamptz(3)
+
+  @@id([runId, deliveryId])
+}
+
 // ---------------------------------------------------------------------------
 // Rich entities — MVP_PLAN_V3.md §13 (Decision, ModelCall, ToolCall, Error) and §14
 // (contextKey, attestation). Same doctrine as Run/Step: client-generated VarChar(128) ids

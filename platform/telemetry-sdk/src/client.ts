@@ -132,7 +132,10 @@ class Client implements TelemetryClient, EventRecorder {
    * actually took". This is that delivered baseline: it advances ONLY after a `delivered`
    * outcome, by exactly the snapshot that batch carried. A failed attempt therefore never
    * clears a drop, a retry re-reports the same snapshot rather than a freshly grown one,
-   * and two consecutive successful batches cannot count the same drop twice.
+   * and — with `pendingDeliveryId` below carrying the replay key across an ABANDONED batch
+   * too, not only a retried one (Reviewer B3 / Tester F2, Phase 4 phase gate repair attempt
+   * 2) — two consecutive successful batches cannot count the same drop twice, full stop, not
+   * only within one `deliverBatch` call's own retries.
    *
    * CARRIED, not ACKNOWLEDGED, and the distinction is not pedantry. `IngestResponse` has
    * `batchId`/`accepted`/`duplicate`/`rejected`/`results` and NOTHING about
@@ -145,8 +148,39 @@ class Client implements TelemetryClient, EventRecorder {
    * so the Dashboard reads LOW rather than wrong-high. Reachable under ordinary SDK/API
    * version skew. Closing it needs a per-count receipt on `IngestResponse` — a wire change,
    * hence `platform/shared` + `platform/api`, both forbidden here. `BACKLOG.md` (2026-09-03).
+   *
+   * The SAME residual now also covers what `pendingDeliveryId` trades away: reusing an
+   * abandoned batch's `deliveryId` for the next one means that if the abandoned batch's
+   * FIRST attempt actually committed at the server (response merely lost), the reused id is
+   * already in `DropDelivery` and the server skips the WHOLE next report, growth included —
+   * not just the part that would have double-counted. Still LOW, never wrong-high, and still
+   * the direction `BACKLOG.md` already accepts; the alternative attempt 1 shipped (a fresh
+   * `deliveryId` per batch, unconditionally) was wrong-HIGH instead, which is the defect this
+   * repair closes.
    */
   private acknowledgedDrops = 0;
+
+  /**
+   * Reviewer B3 / Tester F2 (Phase 4 phase gate repair attempt 2). `deliveryId` used to be
+   * minted fresh in every `deliverBatch` call, which closed ASYNC-5 only for retries WITHIN
+   * one call — `attemptDelivery` reusing the same local `deliveryId` across its own while
+   * loop. It did not close it for a batch `deliverBatch` gives up on ENTIRELY: the give-up
+   * path adds the batch to `droppedUndeliverable` without ever touching `acknowledgedDrops`
+   * (only a `delivered` outcome does that), so the NEXT `deliverBatch` call re-reports the
+   * same pending amount — grown by the abandonment — under what used to be a brand new id.
+   * If the abandoned batch's first attempt had actually committed server-side before its
+   * response was lost, the server had no way to recognise the next batch as covering the
+   * same ground and credited it again: a real reproduction measured 9 stored for 6 actually
+   * dropped.
+   *
+   * Held here, across `deliverBatch` calls, so the NEXT batch can present the SAME identity
+   * the abandoned one did — the server's `DropDelivery` replay guard (`ASYNC-5`'s whole
+   * mechanism) then recognises it exactly the way it already recognises a retry within one
+   * `deliverBatch` call. `null` means "no snapshot is currently pending under a specific
+   * id" — either nothing has been abandoned yet, or the last batch that carried one was
+   * actually `delivered`, which is the only event that clears it (`deliverBatch` below).
+   */
+  private pendingDeliveryId: string | null = null;
 
   private readonly counters = {
     recorded: 0,
@@ -364,16 +398,27 @@ class Client implements TelemetryClient, EventRecorder {
     const droppedSinceLastBatch = this.pendingDropReport();
 
     // ASYNC-5 (Reviewer S1, Phase 4 phase gate repair attempt 1). This batch's replay-stable
-    // identity — `IngestRequestSchema.deliveryId`, minted ONCE here, same rule as
-    // `droppedSinceLastBatch` above and for the same reason: `raceTimeout` classifies an
-    // attempt that timed out AFTER the server already committed as `retryable`, so a retry
-    // of this batch must carry the SAME id on every attempt, or the server has no way to
-    // tell that retry apart from a new batch and double-credits `droppedSinceLastBatch`'s
-    // amount. Named `deliveryId`, not `batchId`, to stay clear of `IngestResponse.batchId`
-    // just above — an unrelated, server-generated response id. `idGenerator` is the same
-    // seeded seam every other id in this SDK uses (Phase 3/6 determinism), not a fresh UUID
-    // call, so a seeded scenario replays this id too.
-    const deliveryId = this.config.idGenerator.next();
+    // identity — `IngestRequestSchema.deliveryId`, same rule as `droppedSinceLastBatch` above
+    // and for the same reason: `raceTimeout` classifies an attempt that timed out AFTER the
+    // server already committed as `retryable`, so a retry of this batch must carry the SAME
+    // id on every attempt, or the server has no way to tell that retry apart from a new batch
+    // and double-credits `droppedSinceLastBatch`'s amount. Named `deliveryId`, not `batchId`,
+    // to stay clear of `IngestResponse.batchId` just above — an unrelated, server-generated
+    // response id.
+    //
+    // Reviewer B3 / Tester F2 (Phase 4 phase gate repair attempt 2): reused from
+    // `pendingDeliveryId` rather than minted unconditionally, because "one id per
+    // `deliverBatch` CALL" is not the same guarantee as "one id per pending snapshot" — a
+    // batch this method gives up on (see the bottom of this method) leaves its snapshot
+    // pending, and the NEXT call must present the SAME id for the server's replay guard to
+    // recognise it, or a lost-response commit on the abandoned batch gets credited twice. A
+    // fresh id is minted only when nothing is currently pending under one — `idGenerator` is
+    // the same seeded seam every other id in this SDK uses (Phase 3/6 determinism), not a
+    // fresh UUID call, so a seeded scenario replays this id too. Recorded back into
+    // `pendingDeliveryId` unconditionally: if THIS batch is also abandoned, the id it just
+    // used (freshly minted or carried over) is what the batch after it must carry.
+    const deliveryId = this.pendingDeliveryId ?? this.config.idGenerator.next();
+    this.pendingDeliveryId = deliveryId;
 
     // `!this.abandoned` at the TOP, not only after the attempt: once shutdown() has given
     // up, waking the pending backoff must end the batch, never start one more request. The
@@ -386,6 +431,10 @@ class Client implements TelemetryClient, EventRecorder {
         // delivered. Not a receipt for the count itself — see `acknowledgedDrops`.
         this.acknowledgedDrops += droppedSinceLastBatch;
         this.counters.delivered += batch.length;
+        // Clears the carried-over identity: this snapshot has now genuinely been carried by
+        // a delivered batch, so the NEXT batch (whatever it reports) starts a fresh replay
+        // identity rather than reusing one the server has already seen and would skip.
+        this.pendingDeliveryId = null;
         if (result.response !== null) {
           this.counters.serverAccepted += result.response.accepted;
           this.counters.serverDuplicate += result.response.duplicate;
@@ -416,6 +465,10 @@ class Client implements TelemetryClient, EventRecorder {
 
     // §16 requires the retry budget to be FINITE. This is where finite stops being a
     // configuration value and becomes an observable event: the batch is lost, and counted.
+    //
+    // `pendingDeliveryId` is deliberately NOT cleared here (Reviewer B3 / Tester F2): this
+    // batch was abandoned, not delivered, so its snapshot is still pending and the id it
+    // used must carry over to whichever batch reports that (now larger) snapshot next.
     this.counters.droppedUndeliverable += batch.length;
     this.emit(
       'batch_dropped',

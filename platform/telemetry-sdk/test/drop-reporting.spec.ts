@@ -75,14 +75,19 @@ class RetryingTransport implements TelemetryTransport {
 /** Hands out a scripted result per attempt, and records the snapshot each one carried. */
 class ScriptedTransport implements TelemetryTransport {
   readonly dropReports: Array<number | undefined> = [];
+  readonly deliveryIds: Array<string | undefined> = [];
 
   constructor(private readonly results: TransportResult[]) {}
 
   send(
     _events: readonly TelemetryEventEnvelope[],
-    options: { readonly droppedSinceLastBatch?: number | undefined },
+    options: {
+      readonly droppedSinceLastBatch?: number | undefined;
+      readonly deliveryId?: string | undefined;
+    },
   ): Promise<TransportResult> {
     this.dropReports.push(options.droppedSinceLastBatch);
+    this.deliveryIds.push(options.deliveryId);
     return Promise.resolve(this.results.shift() ?? { outcome: 'delivered', response: null });
   }
 }
@@ -237,6 +242,48 @@ describe('reporting drops to the batch-level droppedSinceLastBatch', () => {
     // acknowledged by the refused batch, so all four are still owed.
     expect(client.stats()).toMatchObject({ droppedTooLarge: 2, droppedUndeliverable: 2 });
     expect(transport.dropReports).toStrictEqual([2, 4]);
+
+    // Reviewer B3 / Tester F2 (Phase 4 phase gate repair attempt 2). Batch 1 was ABANDONED,
+    // not merely retried within itself — `deliverBatch` gave up on it after one permanently
+    // refused attempt, so its drop snapshot is still pending. Batch 2 must carry the SAME
+    // `deliveryId` batch 1 used, or the server has no way to tell "batch 1 actually
+    // committed server-side and its response was merely lost" from "a brand new report",
+    // and would credit both — the real reproduction measured 9 stored for 6 actually
+    // dropped. Two DIFFERENT batches carrying the SAME id looks like the exact defect S1's
+    // ledger exists to prevent; it is not, because the id identifies a still-pending
+    // SNAPSHOT, not "one delivery attempt" — see `pendingDeliveryId` on `Client`.
+    expect(transport.deliveryIds).toHaveLength(2);
+    expect(transport.deliveryIds[0]).toBeDefined();
+    expect(transport.deliveryIds[1]).toBe(transport.deliveryIds[0]);
+  });
+
+  it('mints a fresh deliveryId after a delivered batch, even though the one before it was abandoned', async () => {
+    const scheduler = new FakeScheduler();
+    // Batch 1 is abandoned (permanent refusal). Batches 2 and 3 both deliver — `ScriptedTransport`
+    // defaults to `delivered` once its scripted outcomes run out.
+    const transport = new ScriptedTransport([PERMANENT]);
+    const client = createTelemetryClient({
+      transport,
+      scheduler,
+      clock: fixedClock,
+      maxRetries: 0,
+    });
+
+    const step = stepOf(client); // batch 1: run.started + step.started
+    dropOne(step);
+    const first = client.flush();
+    await scheduler.advance(600_000);
+    await first; // batch 1 abandoned
+
+    step.complete(); // batch 2: delivered, carrying batch 1's reused id
+    await client.flush();
+
+    stepOf(client); // batch 3: a fresh run + step, no new drops
+    await client.flush();
+
+    expect(transport.deliveryIds).toHaveLength(3);
+    expect(transport.deliveryIds[1]).toBe(transport.deliveryIds[0]); // reused across the abandonment
+    expect(transport.deliveryIds[2]).not.toBe(transport.deliveryIds[1]); // fresh after a delivered batch
   });
 
   it('preserves drops that happen while a delivery is in flight', async () => {
