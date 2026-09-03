@@ -4124,3 +4124,88 @@ short-circuits on `amount === 0`, verbatim what the **Do:** asked for. Proved by
 integration case and by the live probe ending `ledger drop: rows = 0`
 (`.artifacts/evidence/4/phase-gate/repair-2/tester-rerun/p-sdk-4-rerun.log`). Confirmed closed by
 the attempt-3 Reviewer (finding Sc-1).
+
+---
+
+## Discovered building `p5.rec-persistence` (2026-09-04)
+
+### The fingerprint UNIQUE constraint is never exercised against Postgres
+
+**Source:** `p5.rec-persistence` Builder, commit `c7c0cf4`.
+
+§21's "re-analysis with the same fingerprint does not insert a duplicate" is enforced by
+`CREATE UNIQUE INDEX "Recommendation_fingerprint_key"` plus a single `upsert` keyed on that
+column. Both halves are verified — the query shape against a Prisma double, the behaviour
+against a fake implementing Prisma's documented `upsert` semantics
+(`platform/api/src/recommendations/recommendations.repository.spec.ts`), and five mutants
+killed (`.artifacts/evidence/5b/p5.rec-persistence/mutation-check.md`). Neither half touches
+a database.
+
+The property those tests cannot reach is the one the constraint exists for: TWO CONCURRENT
+analysis runs on the same group. A fake `Map` has no concurrency, so an implementation that
+dropped the `@unique` from the model would keep every unit test green and produce two rows
+under a real race. The Phase 4 wave-5 Validator ran exactly this shape of probe for
+`decision.upsert` (20 concurrent calls, `rowCount: 1`, no `P2002`) — the technique exists
+and is on file at
+`.artifacts/evidence/4/wave-5/validator/atomicity-probe.mts`.
+
+**Do:** add a Testcontainers case under `platform/api/test/**` that fires N concurrent
+`recordSighting` calls for one group and asserts exactly one row, and a second that dismisses
+a row and re-sights it. `platform/api/test/**` is outside `p5.rec-persistence`'s
+`allowed_paths`, which is why this is here rather than in that commit.
+**Trigger:** `p5.analysis-endpoint`, which owns `platform/api/**` and is the first node that
+can write there.
+
+### `RecommendationsModule` is built, tested and unrouted
+
+**Source:** `p5.rec-persistence` Builder, commit `c7c0cf4`.
+
+`PATCH /v1/recommendations/:id/status` (§21) exists as a controller, is registered on
+`RecommendationsModule`, and resolves through a real Nest container in
+`recommendations.module.spec.ts`. It serves no HTTP, because `AppModule` does not import the
+module and `platform/api/src/app.module.ts` is outside this lane's `allowed_paths`.
+
+This is not a defect and not a gap in the packet — §21's endpoint is this packet's
+deliverable, the wiring is the next one's — but it is invisible from the outside, and a
+reader who curls the route will get a 404 from the router rather than from the handler.
+
+**Do:** import `RecommendationsModule` in `AppModule` alongside the analysis endpoint.
+**Trigger:** `p5.analysis-endpoint`.
+
+### `sourceWatermark` still has no producer
+
+**Source:** `.artifacts/framing/phase-5b-recon.md` D3, restated after building the contract.
+
+§21 requires the field persisted and the column is NOT NULL, so every caller must supply one.
+The contract defines it as the analysis window's UPPER BOUND — the newest source instant the
+run included — because §22's analysis is a full recomputation from the beginning of history
+and the lower bound therefore never varies (`SourceWatermarkSchema`,
+`platform/shared/schema/recommendation.ts`).
+
+Nothing in `platform/analysis-engine/**` computes it. The engine consumes
+`DecisionRecord[]` and its records carry no ingest instant at all, so the value has to come
+from whatever reads the rows — which is the analysis endpoint, not the engine.
+
+**Do:** derive it at the read edge as `MAX(Decision.createdAt)` over the rows fed to the
+aggregation, taken from the same query, not from a second one. If the two ends ever need to
+differ (incremental analysis), that is a contract change to `SourceWatermarkSchema`, not a
+field to overload.
+**Trigger:** `p5.analysis-endpoint`.
+
+### The recommendation fingerprint's input set is a documented assumption, not a decision record
+
+**Source:** `p5.rec-persistence` Builder, commit `c7c0cf4`; `.artifacts/framing/phase-5b-recon.md`
+D2 asked for a decision record and `docs/decisions/**` is outside this lane's `allowed_paths`.
+
+§21 states only the negative constraint. The input set taken —
+`analyzerId`, `analyzerVersion`, and §18's four-member `GroupKey` — is argued at length in the
+header of `platform/api/src/recommendations/fingerprint.ts`, including why `configSnapshot`
+and `contextKey` are excluded and what reversing it costs (existing rows keep their old
+fingerprints; the next analysis inserts new ones beside them; no migration is owed).
+
+A file header is where an implementer looks and a decision record is where a reviewer looks.
+The reasoning should be in both.
+
+**Do:** promote the `fingerprint.ts` header into `docs/decisions/` if it survives review
+unchanged, or record the amendment there if it does not.
+**Trigger:** the `p5.rec-persistence` per-node review, whose change class is `contract`.
