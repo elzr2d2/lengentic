@@ -10,10 +10,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "pretest:integration": "pnpm --filter @lengentic/database --filter @lengentic/shared --filter @lengentic/telemetry-sdk build",
+    "pretest:integration": "pnpm --filter @lengentic/analysis-engine --filter @lengentic/database --filter @lengentic/shared --filter @lengentic/telemetry-sdk build",
     "test:integration": "vitest run --config vitest.integration.config.mts"
   },
   "dependencies": {
+    "@lengentic/analysis-engine": "workspace:*",
     "@lengentic/database": "workspace:*",
     "@lengentic/shared": "workspace:*",
     "@nestjs/common": "^11.2.1",

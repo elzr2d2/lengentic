@@ -47,6 +47,9 @@ importers:
 
   platform/api:
     dependencies:
+      '@lengentic/analysis-engine':
+        specifier: workspace:*
+        version: link:../analysis-engine
       '@lengentic/database':
         specifier: workspace:*
         version: link:../database
