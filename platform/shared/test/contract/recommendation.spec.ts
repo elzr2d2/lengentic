@@ -6,12 +6,16 @@ import {
   AnalyzerConfigSnapshotSchema,
   CounterexampleSchema,
   EvaluatedGroupSchema,
+  ExclusionCountsSchema,
   GATE_IDS,
   GATE_STATUSES,
   GateResultSchema,
+  GateResultsSchema,
   RECOMMENDATION_CATEGORIES,
   RECOMMENDATION_STATUSES,
   RECOMMENDATIONS_PATH,
+  RecommendationEvidenceSchema,
+  RecommendationGroupKeySchema,
   RecommendationSchema,
   RecommendationStatusPatchSchema,
   VERDICTS,
@@ -309,6 +313,279 @@ describe('PATCH /v1/recommendations/:id/status — §21 { status, note? }', () =
     expect(RecommendationStatusPatchSchema.safeParse({ status: 'SNOOZED' }).success).toBe(false);
     expect(
       RecommendationStatusPatchSchema.safeParse({ status: 'DISMISSED', note: '' }).success,
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §19's reporting rule as behaviour rather than as prose
+// ---------------------------------------------------------------------------
+
+/** `PASSING_GATES` with the named gates flipped to FAIL. Order untouched: G1..G5. */
+function gatesFailing(...ids: readonly string[]): Record<string, unknown>[] {
+  return PASSING_GATES.map((gate) =>
+    ids.includes(gate.id) ? { ...gate, status: 'FAIL' } : { ...gate },
+  );
+}
+
+/**
+ * A §22 evaluated group, valid by default, so each test below varies exactly one thing:
+ * CANDIDATE, five passing gates, no failed gates, and the id of the row it was persisted as.
+ */
+function evaluatedGroup(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    groupKey: GROUP_KEY,
+    verdict: 'CANDIDATE',
+    failedGates: [],
+    gates: PASSING_GATES,
+    recommendationId: 'rec-1',
+    ...overrides,
+  };
+}
+
+/**
+ * Delete one key at a time and expect a parse failure — which is what "required" means on
+ * the wire.
+ *
+ * A sweep rather than field by field, because two mutation probes at the 5b wave gate
+ * (`RecommendationGroupKeySchema.decisionType` and `ExclusionCountsSchema.staleRun`, each
+ * turned `.optional()`) survived the whole suite unchanged: required-ness was only ever
+ * asserted for `configSnapshot`, `counterexamples` and `dominantOptionAttestedSuccessRate`.
+ * An optional field is a different claim from a present one — a producer with nothing to say
+ * and a producer that omits the field become the same value to every consumer — and on a
+ * contract two lanes fan out from, that difference is inherited silently.
+ *
+ * The key is carried into the assertion so a failure names which field went missing rather
+ * than reporting `true !== false`.
+ */
+function expectEveryFieldRequired(
+  schema: { safeParse: (value: unknown) => { success: boolean } },
+  valid: Record<string, unknown>,
+): void {
+  expect(schema.safeParse(valid).success).toBe(true);
+  expect(Object.keys(valid).length).toBeGreaterThan(0);
+
+  for (const key of Object.keys(valid)) {
+    const partial: Record<string, unknown> = { ...valid };
+    delete partial[key];
+
+    expect({ omitted: key, parses: schema.safeParse(partial).success }).toStrictEqual({
+      omitted: key,
+      parses: false,
+    });
+  }
+}
+
+describe('§19 report order is held by the contract, not described by it', () => {
+  it('requires exactly one result per gate — four results is a report that omits a gate', () => {
+    expect(GateResultsSchema.safeParse(PASSING_GATES).success).toBe(true);
+    expect(GateResultsSchema.safeParse(PASSING_GATES.slice(0, 4)).success).toBe(false);
+    expect(GateResultsSchema.safeParse([]).success).toBe(false);
+    expect(GateResultsSchema.safeParse([...PASSING_GATES, PASSING_GATES[0]]).success).toBe(false);
+  });
+
+  it('requires G1..G5 order — a reordered report puts the wrong gate on the wrong line', () => {
+    const swapped = [
+      PASSING_GATES[1],
+      PASSING_GATES[0],
+      PASSING_GATES[2],
+      PASSING_GATES[3],
+      PASSING_GATES[4],
+    ];
+
+    expect(GateResultsSchema.safeParse(swapped).success).toBe(false);
+  });
+
+  it('rejects five results that repeat one gate and drop another', () => {
+    const duplicated = [
+      PASSING_GATES[0],
+      PASSING_GATES[1],
+      PASSING_GATES[2],
+      PASSING_GATES[3],
+      { ...PASSING_GATES[3] },
+    ];
+
+    expect(GateResultsSchema.safeParse(duplicated).success).toBe(false);
+  });
+
+  it('holds on persisted evidence too — a stored recommendation can always render its Gates block', () => {
+    const evidence = { ...(recommendation().evidence as Record<string, unknown>), gates: [] };
+
+    expect(RecommendationSchema.safeParse(recommendation({ evidence })).success).toBe(false);
+  });
+});
+
+describe("§19's reporting rule — every failing gate, not the first", () => {
+  it('rejects a group that names one failing gate while two failed', () => {
+    // "Suppressed by G2" when it also fails G4 understates the problem (§19), and an engineer
+    // who fixes only context diversity returns to find it still suppressed.
+    expect(
+      EvaluatedGroupSchema.safeParse(
+        evaluatedGroup({
+          verdict: 'SUPPRESSED',
+          failedGates: ['G2_context_diversity'],
+          gates: gatesFailing('G2_context_diversity', 'G4_outcome_success'),
+          recommendationId: null,
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('accepts the same group once it names both', () => {
+    expect(
+      EvaluatedGroupSchema.safeParse(
+        evaluatedGroup({
+          verdict: 'SUPPRESSED',
+          failedGates: ['G2_context_diversity', 'G4_outcome_success'],
+          gates: gatesFailing('G2_context_diversity', 'G4_outcome_success'),
+          recommendationId: null,
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('rejects failing gates listed out of report order', () => {
+    expect(
+      EvaluatedGroupSchema.safeParse(
+        evaluatedGroup({
+          verdict: 'SUPPRESSED',
+          failedGates: ['G4_outcome_success', 'G2_context_diversity'],
+          gates: gatesFailing('G2_context_diversity', 'G4_outcome_success'),
+          recommendationId: null,
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('rejects a failed gate no gate result supports — the list is derived, not asserted', () => {
+    expect(
+      EvaluatedGroupSchema.safeParse(
+        evaluatedGroup({
+          verdict: 'SUPPRESSED',
+          failedGates: ['G3_dominance'],
+          recommendationId: null,
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('never lists a NOT_APPLICABLE gate as failing — it is not a third spelling of FAIL', () => {
+    const notApplicable = PASSING_GATES.map((gate) =>
+      gate.id === 'G4_outcome_success' ? { ...gate, status: 'NOT_APPLICABLE' } : { ...gate },
+    );
+
+    expect(EvaluatedGroupSchema.safeParse(evaluatedGroup({ gates: notApplicable })).success).toBe(
+      true,
+    );
+    expect(
+      EvaluatedGroupSchema.safeParse(
+        evaluatedGroup({
+          verdict: 'SUPPRESSED',
+          gates: notApplicable,
+          failedGates: ['G4_outcome_success'],
+          recommendationId: null,
+        }),
+      ).success,
+    ).toBe(false);
+  });
+});
+
+describe('§19 verdict and §22 recommendationId are derived from the gates', () => {
+  it('rejects a CANDIDATE that carries a failing gate', () => {
+    expect(
+      EvaluatedGroupSchema.safeParse(
+        evaluatedGroup({
+          failedGates: ['G2_context_diversity'],
+          gates: gatesFailing('G2_context_diversity'),
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('rejects a SUPPRESSED group whose gates all passed — a refusal with nothing to render', () => {
+    expect(
+      EvaluatedGroupSchema.safeParse(
+        evaluatedGroup({ verdict: 'SUPPRESSED', recommendationId: null }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('rejects a SUPPRESSED group that names a persisted row — §22 never persists one', () => {
+    expect(
+      EvaluatedGroupSchema.safeParse(
+        evaluatedGroup({
+          verdict: 'SUPPRESSED',
+          failedGates: ['G2_context_diversity'],
+          gates: gatesFailing('G2_context_diversity'),
+          recommendationId: 'rec-1',
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('rejects a CANDIDATE with a null recommendationId — a recommendation nothing can link to', () => {
+    expect(EvaluatedGroupSchema.safeParse(evaluatedGroup({ recommendationId: null })).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('required-ness is part of the contract', () => {
+  it('requires every member of §18 group key', () => {
+    expectEveryFieldRequired(RecommendationGroupKeySchema, { ...GROUP_KEY });
+  });
+
+  it('requires both exclusion counts — an omitted count is not a zero count', () => {
+    expectEveryFieldRequired(ExclusionCountsSchema, { staleRun: 0, missingContextKey: 0 });
+  });
+
+  it('requires every field of §21 evidence', () => {
+    expectEveryFieldRequired(
+      RecommendationEvidenceSchema,
+      recommendation().evidence as Record<string, unknown>,
+    );
+  });
+
+  it('requires every field of the §21 recommendation itself', () => {
+    expectEveryFieldRequired(RecommendationSchema, recommendation());
+  });
+
+  it('requires every field of a §22 evaluated group', () => {
+    expectEveryFieldRequired(EvaluatedGroupSchema, evaluatedGroup());
+  });
+
+  it('requires every field of a §20.1 counterexample', () => {
+    expectEveryFieldRequired(CounterexampleSchema, {
+      decisionId: 'dec-c41d',
+      runId: 'run-c41d',
+      contextKey: 'post_refactor_large_diff',
+      selectedOption: 'YES',
+      outcome: 'FAILURE',
+    });
+  });
+
+  it('requires every field of a §19 gate result', () => {
+    expectEveryFieldRequired(GateResultSchema, {
+      id: 'G1_sample_count',
+      status: 'PASS',
+      comparison: '50 >= 30',
+    });
+  });
+});
+
+describe('§20.1 — a counterexample is a FAILURE or a SUCCESS, never an UNKNOWN', () => {
+  it('rejects an UNKNOWN outcome, which names neither half of §20.1 definition', () => {
+    // A counterexample is a dominant-option FAILURE or a minority-option SUCCESS.
+    // `extractCounterexamples` filters on exactly those two, so UNKNOWN is a value no
+    // producer can reach and a reader would have to guess at.
+    expect(
+      CounterexampleSchema.safeParse({
+        decisionId: 'dec-c41d',
+        runId: 'run-c41d',
+        contextKey: 'post_refactor_large_diff',
+        selectedOption: 'YES',
+        outcome: 'UNKNOWN',
+      }).success,
     ).toBe(false);
   });
 });

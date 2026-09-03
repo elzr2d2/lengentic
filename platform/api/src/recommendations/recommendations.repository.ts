@@ -5,6 +5,9 @@ import {
   AnalyzerConfigSnapshotSchema,
   CounterexampleSchema,
   RecommendationEvidenceSchema,
+  type AnalyzerConfigSnapshot,
+  type Counterexample,
+  type RecommendationEvidence,
   type RecommendationStatus,
 } from '@lengentic/shared';
 import { z } from 'zod';
@@ -86,8 +89,26 @@ export function toRecommendationRecord(row: RecommendationRow): RecommendationRe
   };
 }
 
-function toJsonInput(value: unknown): RecommendationJsonInput {
-  return value as RecommendationJsonInput;
+/**
+ * The three JSON columns, on their way in.
+ *
+ * No `as`. The previous version took `unknown` and asserted, which
+ * `docs/ENGINEERING_STANDARDS.md` ## TS allows only with the proof written beside it — and
+ * the proof was never written, because the assertion was never needed. Naming the three wire
+ * values this repository actually writes is enough: each is a `z.infer` of a schema built
+ * from `z.object`, `z.array`, `z.string`, `z.number` and `z.enum` alone
+ * (`platform/shared/schema/recommendation.ts`), so each is a plain object, array, string or
+ * number — no `Date`, no class instance, no cycle — and assignable to Prisma's JSON input on
+ * its own structure. The compiler checks the claim instead of being told it.
+ *
+ * Keeping the function rather than passing the values straight through is what pins that:
+ * widen this parameter back to `unknown`, or add a fourth column carrying a `Date`, and the
+ * failure is a type error here rather than a row that round-trips into an unreadable column.
+ */
+function toJsonInput(
+  value: AnalyzerConfigSnapshot | RecommendationEvidence | readonly Counterexample[],
+): RecommendationJsonInput {
+  return value;
 }
 
 /**
@@ -162,12 +183,6 @@ export class RecommendationsRepository {
     });
 
     return toRecommendationRecord(row);
-  }
-
-  async findById(id: string): Promise<RecommendationRecord | undefined> {
-    const row = await this.prisma.client.recommendation.findUnique({ where: { id } });
-
-    return row === null ? undefined : toRecommendationRecord(row);
   }
 
   /**

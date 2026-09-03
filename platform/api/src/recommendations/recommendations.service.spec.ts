@@ -160,12 +160,8 @@ describe('RecommendationsService', () => {
   });
 
   it('reports undefined for an unknown id rather than inventing a recommendation', async () => {
-    const service = serviceOver({
-      setStatus: () => Promise.resolve(undefined),
-      findById: () => Promise.resolve(undefined),
-    });
+    const service = serviceOver({ setStatus: () => Promise.resolve(undefined) });
 
     await expect(service.setStatus('nope', { status: 'DISMISSED' })).resolves.toBeUndefined();
-    await expect(service.findById('nope')).resolves.toBeUndefined();
   });
 });

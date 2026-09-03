@@ -35,11 +35,12 @@ export class RecommendationsService {
     return toRecommendation(await this.repository.recordSighting(sighting));
   }
 
-  async findById(id: string): Promise<Recommendation | undefined> {
-    const record = await this.repository.findById(id);
-
-    return record === undefined ? undefined : toRecommendation(record);
-  }
+  /*
+   * There is deliberately no read method here. The list and detail reads the Dashboard needs
+   * are `p5.recs-ui`'s consumers and `p5.analysis-endpoint`'s to expose; adding one against
+   * no caller would be this lane writing a signature the next lane did not choose, and no
+   * packet line asks for it.
+   */
 
   async setStatus(
     id: string,

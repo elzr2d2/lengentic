@@ -63,7 +63,15 @@ const ROW = {
     dominantOptionAttestedSuccessRate: 0.96,
     minorityContextConcentration: [],
     excluded: { staleRun: 0, missingContextKey: 0 },
-    gates: [],
+    // Five results in G1..G5 order, because `RecommendationEvidenceSchema` now requires them
+    // (§19's report order) and `toRecommendationRecord` parses this column on the way out.
+    gates: [
+      { id: 'G1_sample_count', status: 'PASS', comparison: '50 >= 30' },
+      { id: 'G2_context_diversity', status: 'PASS', comparison: '12 >= 5' },
+      { id: 'G3_dominance', status: 'PASS', comparison: '100.0% >= 90.0%' },
+      { id: 'G4_outcome_success', status: 'PASS', comparison: '96.0% >= 90.0%' },
+      { id: 'G5_outcome_coverage', status: 'PASS', comparison: '94.0% >= 80.0%' },
+    ],
   },
   counterexamples: [],
   firstSeenAt: new Date('2026-09-04T09:00:00.000Z'),

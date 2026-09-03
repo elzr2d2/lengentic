@@ -59,6 +59,34 @@ export const GateResultSchema = z.object({
   comparison: z.string(),
 });
 
+/**
+ * A complete gate evaluation: exactly one result per `GATE_IDS` member, in `GATE_IDS` order.
+ *
+ * §19's report order is a rule about what a reader is shown, so a plain
+ * `z.array(GateResultSchema)` states it and does not hold it — a gate array with three
+ * entries, or with G4 before G3, would parse and then render a report that silently omits or
+ * reorders a gate. §19 spends a paragraph forbidding exactly the understated report, and
+ * `platform/shared/schema/**` is the only place the plan lets the invariant live.
+ *
+ * Both the persisted evidence and the analysis response use this schema, so the two cannot
+ * drift apart: §21's output shape prints five gate lines for a CANDIDATE, and §25 beat 6
+ * renders the failing gate of a SUPPRESSED group from the same array.
+ */
+export const GateResultsSchema = z
+  .array(GateResultSchema)
+  .length(GATE_IDS.length)
+  .superRefine((gates, ctx) => {
+    GATE_IDS.forEach((id, index) => {
+      if (gates[index]?.id !== id) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [index, 'id'],
+          message: `§19 report order: gate ${String(index)} must be ${id}`,
+        });
+      }
+    });
+  });
+
 // ---------------------------------------------------------------------------
 // §21 — the recommendation entity
 // ---------------------------------------------------------------------------
@@ -80,12 +108,18 @@ export const RECOMMENDATION_STATUSES = Object.freeze(['OPEN', 'DISMISSED'] as co
 export const RecommendationStatusSchema = z.enum(RECOMMENDATION_STATUSES);
 
 /**
- * The attested outcome carried on a counterexample. Mirrors `DecisionOutcomeSchema`
- * (`./decision-events.ts`) and the engine's `Outcome`; re-declared rather than imported so
- * that the ingest vocabulary and the analysis vocabulary can move independently — the same
- * reason `read/run-view.ts` keeps `RunViewStatus` apart from `RunStatus`.
+ * The attested outcome carried on a counterexample. Re-declared rather than imported from
+ * `DecisionOutcomeSchema` (`./decision-events.ts`) so that the ingest vocabulary and the
+ * analysis vocabulary can move independently — the same reason `read/run-view.ts` keeps
+ * `RunViewStatus` apart from `RunStatus`.
+ *
+ * It is a strict SUBSET of the ingest outcome, and deliberately: §20.1 defines a
+ * counterexample as a dominant-option FAILURE or a minority-option SUCCESS, so `UNKNOWN` is
+ * neither and cannot name one. `extractCounterexamples`
+ * (`platform/analysis-engine/src/aggregate.ts:170`) filters on exactly those two outcomes and
+ * can emit nothing else, so this narrows the wire to what a producer can actually produce.
  */
-export const RecommendationOutcomeSchema = z.enum(['SUCCESS', 'FAILURE', 'UNKNOWN'] as const);
+export const RecommendationOutcomeSchema = z.enum(['SUCCESS', 'FAILURE'] as const);
 
 /**
  * §18's corrected group key. `contextKey` is deliberately not a member — it is a dimension
@@ -191,8 +225,8 @@ export const RecommendationEvidenceSchema = z.object({
   dominantOptionAttestedSuccessRate: z.number().min(0).max(1).nullable(),
   minorityContextConcentration: z.array(ContextConcentrationSchema),
   excluded: ExclusionCountsSchema,
-  /** One entry per `GATE_IDS` member, in `GATE_IDS` order. */
-  gates: z.array(GateResultSchema),
+  /** One entry per `GATE_IDS` member, in `GATE_IDS` order — enforced by `GateResultsSchema`. */
+  gates: GateResultsSchema,
 });
 
 /**
@@ -275,19 +309,65 @@ export const AnalysisRunRequestSchema = z.object({});
  * cannot be rendered: §25 beat 6 names the workflow and decision it is refusing to make a
  * claim about. It is additive — a consumer written against the four-field shape still parses.
  */
-export const EvaluatedGroupSchema = z.object({
-  groupKey: RecommendationGroupKeySchema,
-  verdict: VerdictSchema,
-  /**
-   * Exactly the ids whose status is FAIL — **all** of them, not the first (§19's reporting
-   * rule). A NOT_APPLICABLE gate never appears here. Empty iff `verdict` is CANDIDATE.
-   */
-  failedGates: z.array(GateIdSchema),
-  /** One entry per `GATE_IDS` member, in `GATE_IDS` order, whatever the verdict. */
-  gates: z.array(GateResultSchema),
-  /** The persisted row's id for a CANDIDATE; null for a SUPPRESSED group. */
-  recommendationId: IdSchema.nullable(),
-});
+export const EvaluatedGroupSchema = z
+  .object({
+    groupKey: RecommendationGroupKeySchema,
+    verdict: VerdictSchema,
+    /**
+     * Exactly the ids whose status is FAIL — **all** of them, not the first (§19's reporting
+     * rule). A NOT_APPLICABLE gate never appears here. Empty iff `verdict` is CANDIDATE.
+     */
+    failedGates: z.array(GateIdSchema),
+    /** One entry per `GATE_IDS` member, in `GATE_IDS` order, whatever the verdict. */
+    gates: GateResultsSchema,
+    /** The persisted row's id for a CANDIDATE; null for a SUPPRESSED group. */
+    recommendationId: IdSchema.nullable(),
+  })
+  .superRefine((group, ctx) => {
+    // §19's reporting rule, encoded rather than described. Derived from `gates` on every
+    // parse, so `failedGates` cannot understate the problem: "suppressed by G2" when it also
+    // fails G4 is the exact failure §19 spends a paragraph forbidding, and a producer that
+    // reported only the first failing gate would otherwise be indistinguishable on the wire
+    // from one that reported all of them.
+    const failed = group.gates.filter((gate) => gate.status === 'FAIL').map((gate) => gate.id);
+
+    if (
+      group.failedGates.length !== failed.length ||
+      group.failedGates.some((id, index) => id !== failed[index])
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['failedGates'],
+        message:
+          '§19 reporting rule: `failedGates` must be every FAIL id in `gates`, all of them, in report order',
+      });
+    }
+
+    // "Verdict is SUPPRESSED if any gate fails", and `failedGates` is empty iff CANDIDATE —
+    // one biconditional, so a group cannot be emitted as a CANDIDATE while carrying a failure.
+    const impliedVerdict = failed.length === 0 ? 'CANDIDATE' : 'SUPPRESSED';
+
+    if (group.verdict !== impliedVerdict) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['verdict'],
+        message: `§19: verdict is SUPPRESSED iff a gate failed — these gates imply ${impliedVerdict}`,
+      });
+    }
+
+    // §22: a SUPPRESSED group is never persisted as an entity, so it has no row to name; a
+    // CANDIDATE always has one. A null id on a CANDIDATE is a recommendation nothing can link
+    // to, and a non-null id on a SUPPRESSED group asserts a suppression table the MVP does
+    // not have.
+    if ((group.recommendationId === null) === (group.verdict === 'CANDIDATE')) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['recommendationId'],
+        message:
+          '§22: `recommendationId` names the persisted row for a CANDIDATE and is null for a SUPPRESSED group',
+      });
+    }
+  });
 
 export const AnalysisRunResponseSchema = z.object({
   /**
@@ -315,6 +395,7 @@ export type GateId = z.infer<typeof GateIdSchema>;
 export type GateStatus = z.infer<typeof GateStatusSchema>;
 export type Verdict = z.infer<typeof VerdictSchema>;
 export type GateResult = z.infer<typeof GateResultSchema>;
+export type GateResults = z.infer<typeof GateResultsSchema>;
 export type RecommendationCategory = z.infer<typeof RecommendationCategorySchema>;
 export type RecommendationStatus = z.infer<typeof RecommendationStatusSchema>;
 export type RecommendationOutcome = z.infer<typeof RecommendationOutcomeSchema>;
