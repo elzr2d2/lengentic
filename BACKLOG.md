@@ -4453,3 +4453,63 @@ rather than a demo"; these are the three things it must now do:
 
 **Do:** nothing now. This is `p5.analysis-endpoint`'s acceptance criteria, written down early.
 **Trigger:** `p5.analysis-endpoint` dispatch.
+
+## Discovered while building `p5.recs-ui` (2026-09-04)
+
+### `GET /v1/recommendations` has no frozen envelope in the wire contract
+
+**Source:** `p5.recs-ui` dispatch. `platform/shared/schema/recommendation.ts` exports
+`RECOMMENDATIONS_PATH` but no list-response schema, and
+`platform/api/src/recommendations/recommendations.controller.ts:16` records why: §21 specifies only
+`PATCH /v1/recommendations/:id/status`, so `p5.rec-persistence` deliberately did not write a GET.
+
+The Dashboard needs the list — §21's `evidence` and `counterexamples` exist nowhere else, and §22's
+analysis response carries gates only. `platform/dashboard/src/lib/recommendations-api.ts` therefore
+reads the array in **both** shapes a producer could plausibly send (bare, or under a
+`recommendations` key like `RunListViewSchema`'s `runs`) and validates the elements against the
+frozen `RecommendationSchema`. `platform/shared/**` is outside that packet's `allowed_paths`, so it
+could not freeze one itself.
+
+**Do:** add `RecommendationListViewSchema` to `platform/shared/schema/recommendation.ts`, have
+whichever lane owns the GET return it, and delete the envelope tolerance in `unwrapList`.
+**Trigger:** the lane that implements `GET /v1/recommendations`; at the latest, the 5b wave-2 gate
+where the live connection is proven.
+
+### The Analyze action is a GET that has a side effect
+
+**Source:** `p5.recs-ui` dispatch. `platform/dashboard/src/app/recommendations/page.tsx` triggers
+`POST /v1/analysis/run` from a `<form method="get">` navigation to `?analyze=1`, because §22's
+SUPPRESSED groups exist **only** in the analysis response — they are never persisted — so the page
+that renders §25 beat 6 has to be the one holding that response. A client component would hold it in
+React state, but the dashboard has no DOM testing library and `package.json` was outside the
+packet's `allowed_paths`, so the trigger itself would have gone untested.
+
+Bounded today by §21 (re-analysis with the same fingerprint updates rather than inserts) and §22 (a
+suppressed group is never written), so re-running converges rather than accumulating.
+
+**Do:** move the trigger to a client component with an in-flight state and a real POST, once the
+dashboard has a way to test a mounted component.
+**Trigger:** the first dashboard packet that adds a DOM testing library, or any interactive control
+on this page (the obvious next one is DISMISS, below).
+
+### The Dashboard cannot dismiss a recommendation
+
+**Source:** `p5.recs-ui` dispatch. §21 specifies `PATCH /v1/recommendations/:id/status` and
+`p5.rec-persistence` implemented it, but nothing in the 5b Definition of Done asks the Dashboard to
+call it, so the page renders `status` as a badge and offers no control. A DISMISS button needs the
+same client-side machinery the Analyze action above is waiting on.
+
+**Do:** add a DISMISS / re-open control with its optional note.
+**Trigger:** together with the client-side Analyze action.
+
+### `requestJson` now exists twice under `platform/dashboard/src/lib`
+
+**Source:** `p5.recs-ui` dispatch. `runs-api.ts` and `recommendations-api.ts` each carry a private
+`requestJson` + `describe` pair that differ only in the HTTP method and the timeout. Not extracted
+during the packet: `runs-api.ts` belongs to `p4.run-explorer` and refactoring across it is outside
+this packet's blast radius (ENGINEERING_STANDARDS REFAC-3). This is now DESIGN-1's second real
+variation, so the abstraction is earned.
+
+**Do:** fold both into one `platform/dashboard/src/lib/api-request.ts`, with the failure union and
+the issue-message formatter.
+**Trigger:** the next change to either reader.
