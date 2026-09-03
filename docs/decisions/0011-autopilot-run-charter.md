@@ -105,3 +105,33 @@ sources in `autopilot` §3, without per-phase approval.
   THIS run only. If a session after the run cites this record to decline an escalation
   `CLAUDE.md` requires, the scoping in Consequences was read as permanent and this record needs
   superseding rather than quoting.
+
+## Addendum — 2026-09-03: the `/goal` run is bounded at the end of Phase 5
+
+The human reopened the run with `/goal proceed until phase 4 and 5 are completed`. That
+narrows the objective and nothing else; preferences (1)-(8) above are unchanged and still
+binding.
+
+- **Stop condition for this run.** Not `pnpm flow next` returning `COMPLETE`, but the Phase 5
+  phase gate recorded GREEN. In the amended execution order (`0 → 1 → 5a → 2 → 3 → 4 → 5b →
+6 → 7`) that is: finish Phase 4's last packet, then Phase 5 waves 4-6 (`5b`). Phases 6 and 7
+  are out of scope for this run.
+- **How it is enforced.** `pnpm autopilot` has no `--until-phase`; the Coordinator monitors and
+  issues `pnpm autopilot stop` once the Phase 5 gate record exists and is GREEN. A supervisor
+  that reaches Phase 6 before the stop lands is not a violation — it stops at its next safe
+  point and Phase 6 work is reverted or abandoned, not merged.
+- **The stale escalation of 2026-08-31 is resolved, not overridden.** It held segment 4's wave
+  gate over `p4.read-model / p4.run-summary / p4.sdk-decisions` on a Reviewer CHANGES REQUESTED
+  plus an undecidable DoD checkbox 6. Both are closed on disk: the gate is recorded at
+  `.artifacts/gates/wave-4-p4-read-model-p4-run-summary-p4-sdk-decisions.json` (2026-09-01), two
+  later segment-4 wave gates have recorded since, and checkbox 6's wire gap was decided the way
+  the envelope's first option proposed — commit `49c7fb0` cut `p4.sdk-drop-reporting`
+  (batch-level `droppedSinceLastBatch`). The escalation counter also mis-attributed two wave-1
+  attempts to the wave-2 gate, which the gate worker's own envelope states.
+- **`--max-repairs 3` is passed, naming this record.** Its Detection section predicted the exact
+  failure of not doing so.
+
+### Detection (addendum)
+
+- **The bound was ignored.** If the supervisor records a Phase 6 packet as DONE, the stop was
+  never issued and this addendum's objective was read as the standing one.
