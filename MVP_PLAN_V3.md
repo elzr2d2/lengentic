@@ -2704,6 +2704,58 @@ When implementing analyzers, write the negative fixtures before the positive pat
 
 ---
 
+# 30. Demo Readiness — Who Supplies Each Beat of §25
+
+§24 is the Definition of Done and §25 is the demo. Neither says which work package supplies
+which beat, so "what is left before we can show this" has been answered by reading the whole
+plan every time. This section is that mapping, written once.
+
+It is **structure, not status** — the packet that owns a beat does not change when the beat
+gets built. Counts and dates live in `pnpm oracle status` and in the dated snapshot at
+`.artifacts/framing/demo-readiness.md`. Do not put progress in this section.
+
+| §25 beat                                                                                   | Owning packet                                                       |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `docker compose up`                                                                        | `p1.docker-runtime`, proven from a clean clone by `p7.docker-smoke` |
+| `pnpm playground:deterministic-decision`                                                   | `p6.scenario3`                                                      |
+| 1–2. Runs list, Run detail — Timeline, Steps, Decisions, Tool Calls, Model Calls           | `p4.run-explorer`                                                   |
+| 3. Trigger analysis                                                                        | `p5.analysis-endpoint` (§22)                                        |
+| 4. Decision History                                                                        | `p5.recs-ui`                                                        |
+| 5. Recommendation with counterexamples                                                     | `p5.rec-persistence` (§21) stores it, `p5.recs-ui` renders it       |
+| 6. The closing move — batch-iteration workload emits nothing, then a `SUPPRESSED` G2 group | **unassigned — see below**                                          |
+
+The demo path is therefore
+`p5.rec-persistence → p5.analysis-endpoint → p5.recs-ui`, strictly sequential, plus
+`p6.scenario3`. Everything else in §24 is real work with a real owner, and none of it appears
+on screen during §25.
+
+**Three structural gaps this mapping exposed.** These are plan gaps, not judgement calls, and each is due at the frame of the phase that
+owns it. None of them is authority to widen a packet mid-dispatch.
+
+**The closing move has no owner.** §25 beat 6 requires a batch-iteration workload — the one
+the section itself calls "the thing worth showing", because declining to recommend is the
+claim the product is making. Phase 6 is exactly three scenarios (happy path, repeated
+failure, repeated decision) and none of them is it. No graph node declares it, so no
+`allowed_paths` contain it and no probe can observe it. Settle at the Phase 6 frame: extend
+Scenario 1, add a fourth scenario, or drive it from the negative fixtures already proven in
+5a. `BACKLOG.md` carries the entry.
+
+**Two of the three advertised commands do not exist.** The Phase 6 section lists
+`playground:happy-path`, `playground:repeated-failure` and `playground:deterministic-decision`.
+Only the first is a script. Root `package.json` is a shared write surface, so each scenario
+packet must be dispatched knowing it registers its own command — otherwise the demo's second
+line stays unrunnable after the code that implements it lands.
+
+**A probe can be satisfied by another node's deliverable.** `p6.scenario1` probes the script
+`p3.cli` delivered; `p7.readme` probes strings the current README already contains. Both report
+DONE against surfaces they have not built. This is the failure `CLAUDE.md` names under
+**The oracle must not lie**, and `pnpm check:probes` cannot see it — each probe does look
+inside its own node's surface, and it is the _deliverable_ that came from elsewhere. Read
+`pnpm oracle status` for Phases 6 and 7 as two counts higher than the truth until both nodes
+are re-probed against something only they can produce.
+
+---
+
 # RESOLVED DECISIONS
 
 All six were confirmed by a human on **2026-08-16**, as proposed. They are recorded here

@@ -3579,3 +3579,74 @@ above may eventually authorise. A comment does not do that.
 **Do:** add one test — same message, no `redact` hook, assert the secret is present on the wire —
 so the deliberate boundary breaks the build when it moves. **Trigger:** whoever acts on the entry
 above; the two belong together.
+
+---
+
+## Discovered during the demo-readiness roadmap pass (2026-09-03)
+
+Three gaps found by mapping every beat of `MVP_PLAN_V3.md` §25 to the work package that
+supplies it. The mapping itself is now §30; the dated detail is
+`.artifacts/framing/demo-readiness.md`.
+
+### §25's closing move — the batch-iteration workload — has no owner
+
+**Source:** the §25 → work-package mapping written as `MVP_PLAN_V3.md` §30, 2026-09-03.
+
+§25 beat 6 requires running a batch-iteration workload and showing that LenGentic emits
+nothing, then showing a low-diversity group at `SUPPRESSED / G2 context_diversity (2 < 5)`.
+The string "batch-iteration" appears exactly once in the repository, at `MVP_PLAN_V3.md:2517`.
+Phase 6 is exactly three scenarios — happy path, repeated failure, repeated decision — and
+none of them is it. There is no graph node, so no `allowed_paths` contain it, no probe can
+observe it, and no packet will fail for its absence.
+
+This is not a nice-to-have beat. §25 argues it is the _only_ interesting one: "A tool that
+produces recommendations is unremarkable. A tool that demonstrably declines to produce bad
+ones is the thing worth showing." The claim the product makes is the refusal.
+
+Three shapes are open and none is ruled out: extend Scenario 1, add a fourth Phase 6 scenario,
+or drive the beat from the 5a negative fixtures, which already prove the iteration-vs-repetition
+discrimination and the G2 suppression without a live agent run. The third is cheapest and is
+the only one that needs no new `playground:*` command; it is also the one that shows a JSON
+fixture rather than a running agent, which may be the wrong thing to put on screen.
+**Trigger:** the Phase 6 frame, before any scenario packet is cut.
+
+### Two of the three advertised `playground:*` commands do not exist
+
+**Source:** same pass. `MVP_PLAN_V3.md:2336-2340` against `package.json:41`.
+
+The Phase 6 section advertises `pnpm playground:happy-path`, `pnpm playground:repeated-failure`
+and `pnpm playground:deterministic-decision`. Root `package.json` defines only the first.
+`pnpm playground:deterministic-decision` is also the second line of the §25 demo, so the demo
+is unrunnable by its own text until that script exists.
+
+Root `package.json` is a declared shared write surface, so a scenario packet cannot register
+its own command without either widening its surface or having the line already there. This is
+the same shape as `p5.spike-deleted` leaving `package.json:41`'s `spike` script dangling —
+`pnpm gates` never invokes a `playground:*` script, so gates stay green with a command the
+plan documents and the repository does not have. **Trigger:** the Phase 6 frame, together with
+the entry above — whoever decides the scenario surfaces decides who writes those two lines.
+
+### `p6.scenario1` and `p7.readme` are the two concrete instances of the probe lie
+
+**Source:** same pass; re-verified on `main` @ `f0244ba`. Instance list for the entry at
+`BACKLOG.md:2135`, which names the class and whose trigger — "before the Phase 4 gate" — is now
+imminent.
+
+`p6.scenario1` probes `{kind: "script", name: "playground:happy-path"}`. That script exists at
+`package.json:42` and was delivered by `p3.cli`. The node's own surface,
+`playground/scenarios/happy-path/**`, does not exist as a directory at all. It is the whole of
+Phase 6's reported `1/4`.
+
+`p7.readme` probes three greps of `README.md` for `attested success`, `demotion` and
+`G2|context_diversity`. All three strings are present at `README.md:128,144,159` — and
+`README.md:12-15` says verbatim "**Status: Phase 1 of 7** … This README is rewritten as a
+Phase 7 deliverable (`p7.readme`)". The file self-declares as unwritten while its probe reports
+DONE. It is the whole of Phase 7's reported `1/5`.
+
+So `pnpm oracle status` overstates Phases 6 and 7 by one node each; both are really `0/n`.
+`pnpm check:probes` cannot catch either, because in both cases the probe does look inside the
+node's own declared surface — it is the _deliverable_ that came from elsewhere, which is the
+gap already described at `BACKLOG.md:2903`. **Do:** re-probe both against something only they
+can produce — a `path` probe on `playground/scenarios/happy-path/` for the first, and for the
+second a grep that fails while the "Status: Phase 1 of 7" banner is still in the file.
+**Trigger:** with the class entry at `BACKLOG.md:2135`, before the Phase 4 gate.
