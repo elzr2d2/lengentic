@@ -90,7 +90,7 @@ export interface SupervisorState {
   segment: string | null;
   phase: number | null;
   nodes: Record<string, NodeRecord>;
-  /** `${segment}::${node ?? 'gate'}` -> materially different repair strategies already spent. */
+  /** `repairKey()` -> materially different repair strategies already spent on that one bucket. */
   repairAttempts: Record<string, number>;
   lastGreenCommit: string | null;
   blockingFailures: BlockingFailure[];
@@ -248,8 +248,34 @@ export function readJournal(dir: string): JournalEntry[] {
     });
 }
 
-export function repairKey(segment: string | null, node: string | null): string {
-  return `${segment ?? '-'}::${node ?? 'gate'}`;
+/**
+ * The bucket a repair attempt is charged to.
+ *
+ * `scope` matters. Without it every gate in a segment shared one counter, so a phase with
+ * three waves charged all of their attempts, plus the phase gate's, to `4::gate` — and the
+ * fourth distinct gate action escalated on trigger 5 having had one attempt of its own. It
+ * happened twice: the 2026-08-31 wave gate said so in its own envelope ("the two spent on the
+ * wave 1 gate are a different segment-4 gate action"), and the 2026-09-03 phase gate escalated
+ * at 5 of 3 on its first attempt. An attempt IS a strategy, so a counter that charges one
+ * gate for another gate's work does not raise the bar — it hides a gate that is genuinely
+ * stuck behind gates that were not.
+ *
+ * Pass `gateScope()` for a gate. Node repairs key on the node and need nothing.
+ */
+export function repairKey(segment: string | null, node: string | null, scope?: string): string {
+  const bucket = node ?? (scope === undefined ? 'gate' : `gate:${scope}`);
+  return `${segment ?? '-'}::${bucket}`;
+}
+
+/**
+ * What makes one gate action distinct from another inside the same segment: the phase gate is
+ * one bucket, and each wave gate is its own, identified by the packets it gates — the same
+ * identity `.artifacts/gates/wave-<segment>-<packets>.json` records under.
+ */
+export function gateScope(kind: 'wave' | 'phase', packets: readonly string[]): string {
+  if (kind === 'phase') return 'phase';
+  const named = [...packets].filter((p) => p.trim() !== '').sort();
+  return named.length === 0 ? 'wave' : `wave:${named.join('+')}`;
 }
 
 export function unresolvedFailures(s: SupervisorState): BlockingFailure[] {

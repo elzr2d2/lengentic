@@ -31,6 +31,7 @@ import {
   appendJournal,
   clearStop,
   failuresBlockingGate,
+  gateScope,
   loadOrInit,
   repairKey,
   stopRequested,
@@ -356,15 +357,20 @@ function setNode(ctx: Ctx, node: string, patch: Partial<NodeRecord>): void {
   });
 }
 
-function bumpRepair(ctx: Ctx, segment: string | null, node: string | null): number {
-  const key = repairKey(segment, node);
+function bumpRepair(ctx: Ctx, segment: string | null, node: string | null, scope?: string): number {
+  const key = repairKey(segment, node, scope);
   const next = (ctx.state.repairAttempts[key] ?? 0) + 1;
   save(ctx, (s) => ({ ...s, repairAttempts: { ...s.repairAttempts, [key]: next } }));
   return next;
 }
 
-function repairsSpent(ctx: Ctx, segment: string | null, node: string | null): number {
-  return ctx.state.repairAttempts[repairKey(segment, node)] ?? 0;
+function repairsSpent(
+  ctx: Ctx,
+  segment: string | null,
+  node: string | null,
+  scope?: string,
+): number {
+  return ctx.state.repairAttempts[repairKey(segment, node, scope)] ?? 0;
 }
 
 // ── worker dispatch ───────────────────────────────────────────────────────────────────
@@ -623,7 +629,7 @@ async function runGate(ctx: Ctx, action: FlowAction, kind: 'wave' | 'phase'): Pr
       ...action,
       steps: [...(action.steps ?? []), `write ${relativeToRoot(ctx.opts.root, dodPath)}`],
     },
-    repairsSpent(ctx, segment, null) + 1,
+    repairsSpent(ctx, segment, null, gateScope(kind, action.packets ?? [])) + 1,
   );
 
   const workerEvidence = (worker.report?.evidence ?? []).filter((p) => p.trim() !== '');
@@ -772,7 +778,7 @@ async function handleGate(
     detail: `${kind} gate held: ${outcome.verdict.blockers.map((b) => `${b.source} ${b.why}`).join('; ')}`,
     evidence: outcome.evidence,
   });
-  const spent = bumpRepair(ctx, segment, null);
+  const spent = bumpRepair(ctx, segment, null, gateScope(kind, action.packets ?? []));
   if (spent > ctx.opts.repair.bound) {
     return escalationForRepairExhaustion(
       ctx,

@@ -45,10 +45,12 @@ import {
 } from './progression.ts';
 import {
   failuresBlockingGate,
+  gateScope,
   initialState,
   loadOrInit,
   readJournal,
   readState,
+  repairKey,
   requestStop,
   StaleStateError,
   unresolvedFailures,
@@ -1659,6 +1661,39 @@ ${verdictFile === null ? '' : readFileSync(verdictFile, 'utf8')}`,
       return expect(
         a.action !== 'ERROR',
         `the live tree must produce a non-ERROR action; got ${JSON.stringify(a)}`,
+      );
+    },
+  );
+
+  await scenario(
+    50,
+    "each gate in a segment gets its own repair bucket — a phase gate never inherits a wave gate's spent attempts",
+    () => {
+      const phase = repairKey('4', null, gateScope('phase', []));
+      const waveA = repairKey('4', null, gateScope('wave', ['p4.read-model', 'p4.run-summary']));
+      const waveB = repairKey('4', null, gateScope('wave', ['p4.sdk-drop-reporting']));
+
+      // The live regression, twice over: `4::gate` held 5 attempts spread across four distinct
+      // gate actions, and the fifth action escalated on trigger 5 having spent one of its own.
+      return (
+        expect(phase !== waveA, `the phase gate and a wave gate shared ${phase}`) ??
+        expect(waveA !== waveB, `two wave gates over different packets shared ${waveA}`) ??
+        expect(
+          repairKey('4', null, gateScope('wave', ['p4.run-summary', 'p4.read-model'])) === waveA,
+          'the same packets in a different order must be the same gate',
+        ) ??
+        expect(
+          repairKey('4', 'p4.read-model') !== phase,
+          'a node repair must not share the phase gate bucket',
+        ) ??
+        expect(
+          repairKey('4', null) === '4::gate',
+          'the un-scoped key is unchanged, so old state still reads',
+        ) ??
+        expect(
+          repairKey('5', null, gateScope('phase', [])) !== phase,
+          "one phase's gate must not charge another phase's",
+        )
       );
     },
   );

@@ -51,6 +51,15 @@ exit, and including when the work actually succeeded.
 
 Write it with the Write tool. Write it LAST, after the work and its evidence are on disk.
 
+**Never end your turn while an agent or background task you started is still running.** Ending
+the turn ends this session, and the runtime kills every child with it — their reports are lost
+and no envelope exists, so the supervisor records FAILED over work that was going fine. If a
+step of yours dispatches agents, wait for every one of them to report, in the same turn, and
+read what they returned before you decide your outcome. "Waiting on the agents" is not a state
+you can exit in: if you genuinely cannot wait, that is ROTATE with a continuation brief, never
+a turn that simply ends. This has cost a real phase gate its tester and reviewer passes once
+already.
+
     {
       "schemaVersion": 1,
       "workerId": "<workerId>",
