@@ -27,8 +27,8 @@ import {
  * fetch) still has nothing to report. ADR 0014 decision 2 added exactly one number: the
  * batch-level `droppedSinceLastBatch` SUM, folded into `Run.droppedTelemetryEventCount` and
  * surfaced at `GET /v1/runs/:id/summary` — a second, independent fetch
- * (`ingestion-health-data.ts`'s `fetchDroppedTelemetryEventCount`), because the detail
- * response this page otherwise reads does not carry it.
+ * (`lib/runs-api.ts`'s `fetchRunDroppedTelemetryEventCount`), because the detail response
+ * this page otherwise reads does not carry it.
  *
  * `droppedTelemetryEventCount` is `null` in exactly two cases this card cannot and need not
  * tell apart: no batch for this run has ever reported one, or the summary request itself
@@ -56,11 +56,17 @@ import {
  * What is still true is the part that matters, and it is what this now says: §16's five
  * per-reason counters remain client-side SDK state (only their SUM crosses the wire), no drop
  * count has been reported for THIS run, and absence is not a claim that nothing was dropped.
- * The two reasons are named together deliberately — `ingestion-health-data.ts` collapses a
- * failed `/summary` fetch into the same `null`, so a note that claimed only "never reported"
- * would be false after a transport error.
+ * The two reasons are named together deliberately — `lib/runs-api.ts`'s
+ * `fetchRunDroppedTelemetryEventCount` collapses a failed `/summary` fetch into the same
+ * `null`, so a note that claimed only "never reported" would be false after a transport
+ * error.
+ *
+ * S7 (Reviewer, Phase 4 phase gate repair attempt 1): exported, not module-private — the
+ * exact wording used to be duplicated verbatim in `runs-pages.spec.ts` (twice), which failed
+ * on any wording change to this string alone, R2 among them. The test now imports this
+ * constant and asserts on it, pinning *which* note renders rather than *how* it is spelled.
  */
-const DROP_COUNT_NOTE =
+export const DROP_COUNT_NOTE =
   '§16’s five per-reason drop counters stay client-side SDK state; only their sum crosses the wire, and none has been reported for this run — either no batch has sent one, or the run summary could not be fetched. That is not a claim that none were dropped.';
 
 export function IngestionHealthCard({

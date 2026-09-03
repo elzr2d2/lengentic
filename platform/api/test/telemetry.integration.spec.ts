@@ -1168,6 +1168,69 @@ describe('POST /v1/telemetry/events — the five Phase 4 entity types persist fo
   });
 
   /**
+   * S1 (Reviewer finding, ASYNC-5 [MUST], Phase 4 phase gate repair attempt 1).
+   * `IngestRequestSchema.deliveryId` and its use inside `TelemetryRepository.
+   * incrementDroppedCount` exist to close exactly this: the SDK's `deliverBatch` retries the
+   * SAME `droppedSinceLastBatch` snapshot — with the SAME `deliveryId` — on any `retryable`
+   * outcome, including a `200` the client never saw because its own read timed out AFTER the
+   * server had already committed. Without a replay key the second, identical POST below
+   * would double-credit the run; this proves it does not, against real Postgres (the unique
+   * constraint the fix relies on cannot be proven against a mock).
+   *
+   * Mutation check (quoted verbatim in the Builder handoff): reverting
+   * `TelemetryRepository.incrementDroppedCount` to the pre-fix plain
+   * `$executeRaw` COALESCE/+= call (no `deliveryId` branch) turns this test red — the run
+   * ends up credited `10`, not `5` — and restoring the fix turns it green again.
+   */
+  it('S1: replaying the identical batch (same events, same deliveryId) credits droppedSinceLastBatch once, not twice', async () => {
+    const runId = 'e2e-run-dropped-replay';
+
+    await post([
+      {
+        eventId: 'evt-e2e-run-dropped-replay-start',
+        schemaVersion: '1',
+        type: 'run.started',
+        entityId: runId,
+        runId,
+        occurredAt: '2026-09-02T10:00:11.000Z',
+        payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+      },
+    ]);
+
+    const body = {
+      events: [
+        {
+          eventId: 'evt-e2e-run-dropped-replay-complete',
+          schemaVersion: '1',
+          type: 'run.completed',
+          entityId: runId,
+          runId,
+          occurredAt: '2026-09-02T10:00:12.000Z',
+          payload: { status: 'COMPLETED' },
+        },
+      ],
+      droppedSinceLastBatch: 5,
+      deliveryId: 'e2e-replay-key-1',
+    };
+
+    // Attempt 1: the request that "committed", whose 200 the client (hypothetically) never
+    // saw — modelled here simply by not inspecting its response and posting again.
+    await request(httpServer(app)).post('/v1/telemetry/events').send(body);
+
+    // Attempt 2: the SDK's retry of the identical snapshot — same events (including the same
+    // eventId, so the event itself is correctly DUPLICATE), same droppedSinceLastBatch, same
+    // deliveryId.
+    const replay = await request(httpServer(app)).post('/v1/telemetry/events').send(body);
+    const replayBody = replay.body as IngestResponse;
+
+    expect(replayBody.results[0]).toMatchObject({ status: 'DUPLICATE' });
+
+    const run = await prisma.client.run.findUnique({ where: { id: runId } });
+    expect(run?.droppedTelemetryEventCount).toBe(5);
+    expect(run?.droppedTelemetryEventCount).not.toBe(10);
+  });
+
+  /**
    * R3 (Reviewer finding, 2026-09-02, repair attempt 1). The test above claims "a real zero
    * included" in its title but only ever posted `droppedSinceLastBatch: 3`; the zero case is
    * the one ADR 0014's Detection section actually asks for at the store level, because zero

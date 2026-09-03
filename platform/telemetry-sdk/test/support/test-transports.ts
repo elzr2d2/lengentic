@@ -8,6 +8,9 @@ export class RecordingTransport implements TelemetryTransport {
   /** One entry per `send` call: the batch-level drop report the client handed over. */
   readonly dropReports: Array<number | undefined> = [];
 
+  /** One entry per `send` call: the S1 replay key (ASYNC-5) the client handed over. */
+  readonly deliveryIds: Array<string | undefined> = [];
+
   constructor(
     private readonly result: TransportResult = { outcome: 'delivered', response: null },
   ) {}
@@ -18,10 +21,14 @@ export class RecordingTransport implements TelemetryTransport {
 
   send(
     events: readonly TelemetryEventEnvelope[],
-    options: { readonly droppedSinceLastBatch?: number | undefined },
+    options: {
+      readonly droppedSinceLastBatch?: number | undefined;
+      readonly deliveryId?: string | undefined;
+    },
   ): Promise<TransportResult> {
     this.batches.push([...events]);
     this.dropReports.push(options.droppedSinceLastBatch);
+    this.deliveryIds.push(options.deliveryId);
     return Promise.resolve(this.result);
   }
 }

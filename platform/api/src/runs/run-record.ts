@@ -82,8 +82,9 @@ export interface ToolCallRecord {
   readonly output: unknown;
   readonly inputTruncated: boolean;
   readonly outputTruncated: boolean;
-  readonly inputBytes: number;
-  readonly outputBytes: number;
+  /** `null` means `captureToolIO: false` — not measured (Reviewer S3, phase gate repair 1). */
+  readonly inputBytes: number | null;
+  readonly outputBytes: number | null;
   /** Client clocks (§13), and `durationMs` is the client's own measurement (§12). */
   readonly startedAt: Date;
   readonly completedAt: Date;

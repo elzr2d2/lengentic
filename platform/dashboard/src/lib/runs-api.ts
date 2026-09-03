@@ -2,6 +2,7 @@ import {
   RunDetailViewSchema,
   RunListViewSchema,
   RunsListQuerySchema,
+  RunSummaryDropCountSchema,
   type RunDetailView,
   type RunListView,
   type RunsListQuery,
@@ -91,6 +92,36 @@ export async function fetchRunDetail(id: string): Promise<RunDetailResult> {
   return parsed.success
     ? { kind: 'ok', run: parsed.data }
     : { kind: 'invalid', reason: describe(parsed.error), endpoint };
+}
+
+/**
+ * `GET /v1/runs/:id/summary`'s one field the Ingestion Health card reads —
+ * `droppedTelemetryEventCount` (ADR 0014 decision 2).
+ *
+ * Reviewer S5, Phase 4 phase gate repair attempt 1: this replaces a separate, unvalidated
+ * reader (`app/runs/[id]/ingestion-health-data.ts`, deleted) that hand-rolled `fetch` +
+ * `encodeURIComponent` + `typeof value === 'number'` because the lane that wrote it could not
+ * write `lib/**` — a boundary that does not apply at the gate. Folded in here behind the same
+ * `requestJson` + `safeParse` pattern every other read on this page uses, against
+ * `RunSummaryDropCountSchema` (`@lengentic/shared/read`): a renamed or re-typed
+ * `droppedTelemetryEventCount` now fails a parse instead of silently reading as "not
+ * reported".
+ *
+ * Never throws, same contract every other reader on this page keeps: a run detail page that
+ * cannot answer this one extra question must still render every other card. `null` covers
+ * both "the platform said no drop count has been reported" and "this request could not be
+ * answered at all" — the Ingestion Health card's own `not reported` rendering already
+ * covers both identically, so this does not invent a second vocabulary for a distinction
+ * nothing downstream acts on.
+ */
+export async function fetchRunDroppedTelemetryEventCount(runId: string): Promise<number | null> {
+  const endpoint = `${resolveApiBaseUrl()}/v1/runs/${encodeURIComponent(runId)}/summary`;
+  const raw = await requestJson(endpoint);
+
+  if (raw.kind !== 'body') return null;
+
+  const parsed = RunSummaryDropCountSchema.safeParse(raw.body);
+  return parsed.success ? parsed.data.droppedTelemetryEventCount : null;
 }
 
 type RawResponse =

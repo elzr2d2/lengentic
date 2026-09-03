@@ -245,6 +245,10 @@ describe('DoD support: captureToolIO: false', () => {
     const [payload] = toolCallPayloads(transport);
     expect(payload?.input).toBeNull();
     expect(payload?.output).toBeNull();
+    // S3 (Reviewer, Phase 4 phase gate repair attempt 1): `null`, not a manufactured `0` —
+    // nothing was measured, and the wire must say so rather than claim a genuine zero.
+    expect(payload?.inputBytes).toBeNull();
+    expect(payload?.outputBytes).toBeNull();
     // §15: "while retaining timing and success data".
     expect(payload?.durationMs).toBe(2_500);
     expect(payload?.startedAt).toBe('2026-08-31T09:00:00.000Z');

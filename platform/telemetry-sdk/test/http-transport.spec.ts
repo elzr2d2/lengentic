@@ -177,6 +177,40 @@ describe('the HTTP transport', () => {
     expect(JSON.parse(recorded.body)).toMatchObject({ droppedSinceLastBatch: 0 });
   });
 
+  it('serializes deliveryId beside droppedSinceLastBatch, and IngestRequestSchema accepts it (S1, ASYNC-5)', async () => {
+    const { endpoint, recorded } = await serve((_request, response) => {
+      response.writeHead(200);
+      response.end('{}');
+    });
+
+    await createHttpTransport({ endpoint }).send([event], {
+      signal: new AbortController().signal,
+      droppedSinceLastBatch: 5,
+      deliveryId: 'delivery-1',
+    });
+
+    const body: unknown = JSON.parse(recorded.body);
+    expect(body).toMatchObject({ droppedSinceLastBatch: 5, deliveryId: 'delivery-1' });
+    expect(IngestRequestSchema.safeParse(body).success).toBe(true);
+  });
+
+  it('omits deliveryId when the caller supplies none, even alongside a droppedSinceLastBatch', async () => {
+    const { endpoint, recorded } = await serve((_request, response) => {
+      response.writeHead(200);
+      response.end('{}');
+    });
+
+    await createHttpTransport({ endpoint }).send([event], {
+      signal: new AbortController().signal,
+      droppedSinceLastBatch: 5,
+    });
+
+    expect(Object.keys(JSON.parse(recorded.body) as object)).toStrictEqual([
+      'events',
+      'droppedSinceLastBatch',
+    ]);
+  });
+
   it('reports circular data as permanent — re-sending it cannot make it serializable', async () => {
     const { endpoint } = await serve((_request, response) => {
       response.writeHead(200);

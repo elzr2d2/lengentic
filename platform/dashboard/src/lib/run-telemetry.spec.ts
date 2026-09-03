@@ -286,6 +286,33 @@ describe('assessIngestionHealth — what was lost, and what cannot be asked', ()
     expect(health.truncatedOriginalBytes).toBe(1_048_576 + 65_536);
   });
 
+  it('does not count a not-captured call (null bytes, never truncated) toward truncated bytes', () => {
+    // S3 (Reviewer, Phase 4 phase gate repair attempt 1). `inputBytes`/`outputBytes` are
+    // `null` for a call recorded with `captureToolIO: false`; such a call is also never
+    // truncated (`payload-safety.ts`), so it must contribute nothing to either count here —
+    // the regression this proves against is a `truncatedOriginalBytes += null` throwing, or
+    // (before the SDK fix) a manufactured `0` silently entering a sum that should stay `0`.
+    const health = assessIngestionHealth(
+      runWithout({
+        toolCalls: [
+          toolCall({
+            id: 'tool-not-captured',
+            input: null,
+            output: null,
+            inputTruncated: false,
+            outputTruncated: false,
+            inputBytes: null,
+            outputBytes: null,
+          }),
+        ],
+      }),
+    );
+
+    expect(health.toolInputsTruncated).toBe(0);
+    expect(health.toolOutputsTruncated).toBe(0);
+    expect(health.truncatedOriginalBytes).toBe(0);
+  });
+
   it('counts a tool call whose client clock contradicts itself, once per call', () => {
     const health = assessIngestionHealth(
       runWithout({

@@ -173,6 +173,18 @@ export interface IngestionHealth {
   readonly modelCallsMissingOutputTokens: number | null;
 }
 
+/**
+ * `null` (Reviewer S3, Phase 4 phase gate repair attempt 1) only under
+ * `captureToolIO: false`, where `inputTruncated`/`outputTruncated` are also always `false`
+ * (`payload-safety.ts`'s `toolIO`) — so a call this function is ever called for (one whose
+ * truncation flag is `true`) never actually has a `null` measurement. The `?? 0` fallback is
+ * therefore unreachable by construction; it exists only so a nullable measurement type
+ * checks, not because a truncated call's bytes are ever genuinely unmeasured.
+ */
+function measuredBytes(bytes: number | null): number {
+  return bytes ?? 0;
+}
+
 export function assessIngestionHealth(run: RunDetailView): IngestionHealth {
   const telemetry = readRunTelemetry(run);
   const toolCallsAnswered = telemetry.toolCalls.presence !== 'absent';
@@ -186,12 +198,12 @@ export function assessIngestionHealth(run: RunDetailView): IngestionHealth {
   for (const call of telemetry.toolCalls.rows) {
     if (call.inputTruncated) {
       toolInputsTruncated += 1;
-      truncatedOriginalBytes += call.inputBytes;
+      truncatedOriginalBytes += measuredBytes(call.inputBytes);
     }
 
     if (call.outputTruncated) {
       toolOutputsTruncated += 1;
-      truncatedOriginalBytes += call.outputBytes;
+      truncatedOriginalBytes += measuredBytes(call.outputBytes);
     }
 
     // Once per call, not once per anomaly: the reader is counting calls they cannot trust.

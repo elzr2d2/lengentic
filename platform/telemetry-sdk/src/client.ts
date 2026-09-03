@@ -363,12 +363,24 @@ class Client implements TelemetryClient, EventRecorder {
     // earlier attempt might already have delivered.
     const droppedSinceLastBatch = this.pendingDropReport();
 
+    // ASYNC-5 (Reviewer S1, Phase 4 phase gate repair attempt 1). This batch's replay-stable
+    // identity — `IngestRequestSchema.deliveryId`, minted ONCE here, same rule as
+    // `droppedSinceLastBatch` above and for the same reason: `raceTimeout` classifies an
+    // attempt that timed out AFTER the server already committed as `retryable`, so a retry
+    // of this batch must carry the SAME id on every attempt, or the server has no way to
+    // tell that retry apart from a new batch and double-credits `droppedSinceLastBatch`'s
+    // amount. Named `deliveryId`, not `batchId`, to stay clear of `IngestResponse.batchId`
+    // just above — an unrelated, server-generated response id. `idGenerator` is the same
+    // seeded seam every other id in this SDK uses (Phase 3/6 determinism), not a fresh UUID
+    // call, so a seeded scenario replays this id too.
+    const deliveryId = this.config.idGenerator.next();
+
     // `!this.abandoned` at the TOP, not only after the attempt: once shutdown() has given
     // up, waking the pending backoff must end the batch, never start one more request. The
     // trailing check below cannot cover this — it runs after an attempt has already gone out.
     while (attempt < maxAttempts && !this.abandoned) {
       attempt += 1;
-      const result = await this.attemptDelivery(batch, droppedSinceLastBatch);
+      const result = await this.attemptDelivery(batch, droppedSinceLastBatch, deliveryId);
       if (result.outcome === 'delivered') {
         // The baseline advances here and nowhere else: a batch CARRYING the number was
         // delivered. Not a receipt for the count itself — see `acknowledgedDrops`.
@@ -416,12 +428,13 @@ class Client implements TelemetryClient, EventRecorder {
   private async attemptDelivery(
     batch: TelemetryEventEnvelope[],
     droppedSinceLastBatch: number,
+    deliveryId: string,
   ): Promise<TransportResult> {
     const controller = new AbortController();
     this.inFlight = controller;
     try {
       return await this.raceTimeout(
-        this.invokeTransport(batch, controller.signal, droppedSinceLastBatch),
+        this.invokeTransport(batch, controller.signal, droppedSinceLastBatch, deliveryId),
         controller,
       );
     } finally {
@@ -475,9 +488,10 @@ class Client implements TelemetryClient, EventRecorder {
     batch: TelemetryEventEnvelope[],
     signal: AbortSignal,
     droppedSinceLastBatch: number,
+    deliveryId: string,
   ): Promise<TransportResult> {
     try {
-      return await this.config.transport.send(batch, { signal, droppedSinceLastBatch });
+      return await this.config.transport.send(batch, { signal, droppedSinceLastBatch, deliveryId });
     } catch (error) {
       // Covers a custom transport that throws synchronously as well as one that rejects.
       return { outcome: 'retryable', detail: `transport threw: ${describeError(error)}` };

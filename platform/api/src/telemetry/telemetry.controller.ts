@@ -22,6 +22,6 @@ export class TelemetryEventsController {
   @Post()
   @HttpCode(HttpStatus.OK)
   async ingest(@Body(zodBody(IngestRequestSchema)) body: IngestRequest): Promise<IngestResponse> {
-    return this.telemetry.ingest(body.events, body.droppedSinceLastBatch);
+    return this.telemetry.ingest(body.events, body.droppedSinceLastBatch, body.deliveryId);
   }
 }

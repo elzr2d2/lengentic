@@ -51,6 +51,7 @@ function dropOne(step: StepHandle): void {
  */
 class RetryingTransport implements TelemetryTransport {
   readonly dropReports: Array<number | undefined> = [];
+  readonly deliveryIds: Array<string | undefined> = [];
 
   attempts = 0;
 
@@ -58,10 +59,14 @@ class RetryingTransport implements TelemetryTransport {
 
   send(
     _events: readonly TelemetryEventEnvelope[],
-    options: { readonly droppedSinceLastBatch?: number | undefined },
+    options: {
+      readonly droppedSinceLastBatch?: number | undefined;
+      readonly deliveryId?: string | undefined;
+    },
   ): Promise<TransportResult> {
     this.attempts += 1;
     this.dropReports.push(options.droppedSinceLastBatch);
+    this.deliveryIds.push(options.deliveryId);
     this.betweenAttempts();
     return Promise.resolve(RETRYABLE);
   }
@@ -137,6 +142,15 @@ describe('reporting drops to the batch-level droppedSinceLastBatch', () => {
     // by the first batch and is never re-sent. A running total would have said [1, 1].
     expect(transport.dropReports).toStrictEqual([1, 0]);
     expect(client.stats().droppedTooLarge).toBe(1);
+
+    // S1 (Reviewer, ASYNC-5 [MUST]). Two DIFFERENT batches — as opposed to two retries of
+    // one batch, `RetryingTransport`'s test above — must carry two DIFFERENT `deliveryId`s,
+    // or the server's replay guard would treat the second batch as a replay of the first and
+    // silently refuse to credit its own (zero) drop report.
+    expect(transport.deliveryIds).toHaveLength(2);
+    expect(transport.deliveryIds[0]).toBeDefined();
+    expect(transport.deliveryIds[1]).toBeDefined();
+    expect(transport.deliveryIds[0]).not.toBe(transport.deliveryIds[1]);
   });
 
   it('reuses one snapshot across every retry, even as new drops pile up between them', async () => {
@@ -167,6 +181,14 @@ describe('reporting drops to the batch-level droppedSinceLastBatch', () => {
     expect(transport.attempts).toBe(3);
     expect(transport.dropReports).toStrictEqual([2, 2, 2]);
     expect(client.stats()).toMatchObject({ droppedTooLarge: 5, droppedUndeliverable: 2 });
+
+    // S1 (Reviewer, ASYNC-5 [MUST], Phase 4 phase gate repair attempt 1). Same rule as the
+    // drop snapshot: `deliveryId` is minted once per batch, not once per attempt — three
+    // retries of the SAME batch must carry the SAME id, or the server has no way to tell a
+    // lost-response retry from a genuinely new batch and double-credits the amount above.
+    expect(transport.deliveryIds).toHaveLength(3);
+    expect(new Set(transport.deliveryIds).size).toBe(1);
+    expect(transport.deliveryIds[0]).toBeDefined();
   });
 
   it('makes a delta, not a running total, of the drops a retried batch never delivered', async () => {

@@ -61,10 +61,19 @@ function fakeRepository(options: { failFor?: Map<string, unknown> } = {}): {
 
   const repository = {
     // ADR 0014 decision 2. A plain accumulator — the real repository's COALESCE-based SQL
-    // (`telemetry.repository.ts`'s `incrementDroppedCount`) is Postgres's own concern,
-    // exercised against the real schema by `test/*.integration.spec.ts`; this fake only has
-    // to give `TelemetryService` the same "adds to a per-run running total" contract.
-    incrementDroppedCount: (runId: string, amount: number): Promise<void> => {
+    // and its S1 replay-ledger idempotency (`telemetry.repository.ts`'s
+    // `incrementDroppedCount`) are Postgres's own concern, exercised against the real schema
+    // by `test/*.integration.spec.ts` (the replay case specifically, by the S1 regression
+    // test there); this fake only has to give `TelemetryService` the same "adds to a per-run
+    // running total" contract. `deliveryId`/`receivedAt` are accepted and ignored — nothing
+    // at this seam depends on replay idempotency, which is exactly why it cannot be proven
+    // here.
+    incrementDroppedCount: (
+      runId: string,
+      amount: number,
+      _deliveryId?: string,
+      _receivedAt?: Date,
+    ): Promise<void> => {
       droppedCounts.set(runId, (droppedCounts.get(runId) ?? 0) + amount);
       return Promise.resolve();
     },

@@ -201,45 +201,105 @@ export class TelemetryRepository {
    * not a per-batch snapshot (a client flushes many times over a run's life, and each flush
    * with drops adds to the same run's count).
    *
-   * Raw SQL, not `update({ data: { droppedTelemetryEventCount: { increment: amount } } })`:
-   * the column starts `NULL` ("no batch for this run has ever reported one" —
-   * `schema.prisma`), and Postgres's arithmetic on `NULL` — which is what Prisma's
-   * `increment` compiles to — is `NULL`, so the FIRST report would stay `NULL` forever
-   * instead of becoming `amount`. `COALESCE(..., 0) + amount` is the one expression that
-   * treats "never reported" and "reported zero" as the two different states they are.
-   *
-   * `updateMany`, matching `touchRunLiveness`: zero rows is a silent no-op rather than an
-   * error. A batch may report drops for a run this request's own events have not created yet
-   * (out-of-order arrival is normal here, same as everywhere else in this file) — nothing
-   * conjures a stub Run row for it, for the same reason `touchRunLiveness` does not.
+   * The addition itself (`incrementDroppedCountRaw` below) is raw SQL, not
+   * `update({ data: { droppedTelemetryEventCount: { increment: amount } } })`: the column
+   * starts `NULL` ("no batch for this run has ever reported one" — `schema.prisma`), and
+   * Postgres's arithmetic on `NULL` — which is what Prisma's `increment` compiles to — is
+   * `NULL`, so the FIRST report would stay `NULL` forever instead of becoming `amount`.
+   * `COALESCE(..., 0) + amount` is the one expression that treats "never reported" and
+   * "reported zero" as the two different states they are.
    *
    * R4 (repair attempt 2, 2026-09-02) — the saturating half. `IngestRequestSchema` now bounds
    * one batch's `droppedSinceLastBatch` to what `int4` holds, but this statement is a RUNNING
    * TOTAL across every batch for the life of a run, so bounding each addend bounds nothing
-   * about the sum: a run at the ceiling plus a batch reporting `1` still overflowed, and
-   * `incrementDroppedCount` runs after every event in that batch has committed — an HTTP 500
-   * for work that landed, thrown again on every retry. Both halves are needed.
+   * about the sum: a run at the ceiling plus a batch reporting `1` still overflowed, and the
+   * increment runs after every event in that batch has committed — an HTTP 500 for work that
+   * landed, thrown again on every retry. Both halves are needed. The `::bigint` casts inside
+   * `incrementDroppedCountRaw` are load-bearing, not decoration: `int4 + int4` raises `22003`
+   * in Postgres BEFORE `LEAST` ever sees the result, so the addition has to happen in a type
+   * wide enough to hold the overflow that `LEAST` then discards. Saturation, where the
+   * request-level answer was rejection, because here there is no other answer: the column
+   * cannot hold more, and a run that has genuinely lost 2^31 - 1 events is long past any
+   * decision this number informs. `RunSummary.droppedTelemetryEventCount` reading
+   * `2147483647` is a count pinned at its ceiling; the alternative was that run refusing every
+   * batch it is ever sent again.
    *
-   * The `::bigint` casts are load-bearing, not decoration: `int4 + int4` raises `22003` in
-   * Postgres BEFORE `LEAST` ever sees the result, so the addition has to happen in a type
-   * wide enough to hold the overflow that `LEAST` then discards.
+   * R5 / ASYNC-5 [MUST] (Reviewer S1, Phase 4 phase gate repair attempt 1) — the idempotency
+   * half. `TelemetryClient.deliverBatch` (`platform/telemetry-sdk/src/client.ts`) retries the
+   * SAME `droppedSinceLastBatch` snapshot on any `retryable` outcome, and `raceTimeout`
+   * classifies an attempt that timed out AFTER the server already committed as `retryable` —
+   * a lost `200` therefore double-credits the run through the plain `+= amount` this method
+   * used to be. Events already de-duplicate through the `IngestedEvent` ledger (ADR 0005 §1 /
+   * ADR 0009); the drop counter did not participate in it. It now does: `deliveryId` — new,
+   * optional, wire field on `IngestRequestSchema` (`.optional()` for the same reason
+   * `droppedSinceLastBatch` is — an SDK built before this landed sends neither) — is the
+   * batch's own replay-stable identity, stable across every retry `deliverBatch` makes of one
+   * batch (minted once, before its retry loop) and distinct for the next one. When it is
+   * present, the ledger gets a synthetic row keyed `(runId, "drop:" + deliveryId)` — reusing
+   * `IngestedEvent` rather than adding a table, the same primitive `recordIngestedEvents`
+   * uses below (`createMany({ skipDuplicates: true })`, i.e. `INSERT ... ON CONFLICT DO
+   * NOTHING`) — and the increment runs only when that insert actually happened (`count > 0`).
+   * A genuine replay loses the unique-constraint race, its `count` comes back `0`, and the
+   * increment is skipped: the amount is folded in exactly once per `(runId, deliveryId)` pair,
+   * inside one transaction so a crash between the two statements cannot leave the ledger
+   * saying "applied" while the count was never actually added.
    *
-   * Saturation, where the request-level answer was rejection, because here there is no other
-   * answer: the column cannot hold more, and a run that has genuinely lost 2^31 - 1 events is
-   * long past any decision this number informs. `RunSummary.droppedTelemetryEventCount`
-   * reading `2147483647` is a count pinned at its ceiling; the alternative was that run
-   * refusing every batch it is ever sent again.
+   * The synthetic `"drop:" + deliveryId` key sharing `IngestedEvent.eventId`'s column with real
+   * event ids is a deliberately accepted, not enforced, non-collision: real event ids are
+   * minted by the SDK's `IdGenerator` (UUID-shaped, never `drop:`-prefixed) and `deliveryId` is
+   * internal SDK state a caller never supplies, so nothing outside the SDK can construct a
+   * value this scheme depends on staying apart — the same class of accepted lossiness
+   * `lockEntity`'s 32-bit hash namespace below documents for the same reason.
+   *
+   * When `deliveryId` is absent (an SDK built before this landed, or a direct caller of the
+   * transport that never adopted it), this falls back to the pre-existing, non-idempotent
+   * `incrementDroppedCountRaw` — additive-only backward compatibility, not a silent
+   * regression: the gap is exactly the one this repair closes for every SDK that upgrades.
    */
-  async incrementDroppedCount(runId: string, amount: number): Promise<void> {
-    await this.prisma.client.$executeRaw`
-      UPDATE "Run"
-      SET "droppedTelemetryEventCount" = LEAST(
-        COALESCE("droppedTelemetryEventCount", 0)::bigint + ${amount}::bigint,
-        2147483647::bigint
-      )::int
-      WHERE id = ${runId}
-    `;
+  async incrementDroppedCount(
+    runId: string,
+    amount: number,
+    deliveryId: string | undefined,
+    receivedAt: Date,
+  ): Promise<void> {
+    if (deliveryId === undefined) {
+      await incrementDroppedCountRaw(this.prisma.client, runId, amount);
+      return;
+    }
+
+    await this.prisma.client.$transaction(async (tx) => {
+      const replayKey = `drop:${deliveryId}`;
+      const { count } = await tx.ingestedEvent.createMany({
+        data: [{ runId, eventId: replayKey, receivedAt }],
+        skipDuplicates: true,
+      });
+      // Lost the insert-or-skip race: this exact (runId, deliveryId) pair already credited the
+      // run in an earlier attempt or an earlier delivery of the same retried batch.
+      if (count === 0) return;
+      await incrementDroppedCountRaw(tx, runId, amount);
+    });
   }
+}
+
+/**
+ * The raw `COALESCE`/`LEAST` statement `incrementDroppedCount` above documents in full.
+ * Extracted so the same statement can run either directly against `PrismaService.client`
+ * (no replay key available) or inside the replay-guarding transaction (against `tx`) —
+ * `Pick<PrismaClient, '$executeRaw'>` is satisfied structurally by both.
+ */
+async function incrementDroppedCountRaw(
+  client: Pick<PrismaClient, '$executeRaw'>,
+  runId: string,
+  amount: number,
+): Promise<void> {
+  await client.$executeRaw`
+    UPDATE "Run"
+    SET "droppedTelemetryEventCount" = LEAST(
+      COALESCE("droppedTelemetryEventCount", 0)::bigint + ${amount}::bigint,
+      2147483647::bigint
+    )::int
+    WHERE id = ${runId}
+  `;
 }
 
 // Advisory-lock namespace: keeps the Run id space and the Step id space from colliding

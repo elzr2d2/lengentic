@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { INGEST_LIMITS } from './limits';
+import { IdSchema } from './primitives';
 
 export const TELEMETRY_INGEST_PATH = '/v1/telemetry/events';
 
@@ -18,19 +19,23 @@ export const INGEST_ERROR_CODES = Object.freeze({
   // are not available once the body has been JSON-parsed into `unknown`, so
   // `parseTelemetryEvent` deliberately does not attempt this check).
   EVENT_TOO_LARGE: 'EVENT_TOO_LARGE',
-  // Phase 4. The schemaVersion '2' types (`decision.*`, `model_call.recorded`,
-  // `tool_call.recorded`, `error.recorded`) are part of the wire contract — they parse, they
-  // are not UNKNOWN_EVENT_TYPE, and an emitter built against v2 is not doing anything wrong.
-  // What does not exist yet is their server-side persistence: `merge-rules.ts` folds Run and
-  // Step lifecycle state and nothing else, and the Decision / ModelCall / ToolCall / Error
-  // tables (p4.entities) have no ingest path until `p4.attestation` lands one.
+  // Phase 4 (ADR 0014). The schemaVersion '2' types (`decision.*`, `model_call.recorded`,
+  // `tool_call.recorded`, `error.recorded`) landed their server-side persistence at
+  // `69eefd1` (`p4.entity-ingest`) — `platform/api/src/telemetry/event-mapping.ts`'s
+  // `ENTITY_KIND_BY_EVENT_TYPE` is total over the nine-member wire contract, and all five
+  // route to their own table. This code is not a placeholder for that landing; it is what
+  // stays reachable AFTER it, reserved for the NEXT wire type that arrives the same way
+  // these five did — parseable, not UNKNOWN_EVENT_TYPE, ahead of the persistence a later
+  // node gives it.
   //
-  // Three answers were available and two of them lie. Routing these types through
-  // `entityKindOf`'s Run/Step split writes a decision id into the Step table; accepting and
-  // dropping them returns ACCEPTED for an event that was never stored. Both read as working
-  // software. This code is the third: the event is REJECTED, event-level, with a reason that
-  // says exactly which part of the stack is missing. It is expected to become unreachable —
-  // deleting it is what "the persistence landed" looks like.
+  // Three answers are available whenever that happens, and two of them lie. Routing an
+  // unrecognised-but-parseable type through `entityKindOf`'s Run/Step split would write it
+  // into the wrong table; accepting and dropping it would return ACCEPTED for an event that
+  // was never stored. Both read as working software. This code is the third: the event is
+  // REJECTED, event-level, with a reason that says exactly which part of the stack is
+  // missing. `ADR 0014`'s Consequences are explicit that this code "stays in
+  // `INGEST_ERROR_CODES` and stays exercised" — it does not become unreachable, and deleting
+  // it is not what "the persistence landed" looks like.
   EVENT_TYPE_NOT_INGESTIBLE: 'EVENT_TYPE_NOT_INGESTIBLE',
 } as const);
 
@@ -123,6 +128,33 @@ export const IngestRequestSchema = z.object({
     .nonnegative()
     .max(MAX_DROPPED_SINCE_LAST_BATCH)
     .optional(),
+
+  /**
+   * ASYNC-5 [MUST] (Reviewer S1, Phase 4 phase gate repair attempt 1). `droppedSinceLastBatch`
+   * above has no replay key of its own: `TelemetryClient.deliverBatch`
+   * (`platform/telemetry-sdk/src/client.ts`) retries the SAME snapshot on any `retryable`
+   * outcome, including a 200 the client never saw because its own read timed out AFTER the
+   * server committed — without a key, that retry double-credits
+   * `Run.droppedTelemetryEventCount`. `deliveryId` is that key: the SDK mints one per batch
+   * (`deliverBatch`, not per attempt) and sends the identical value on every retry of that
+   * batch, so the persistence edge (`TelemetryRepository.incrementDroppedCount`) can tell "the
+   * same attempt, retried" from "a new batch" and fold the count in exactly once per
+   * `(runId, deliveryId)` pair.
+   *
+   * Named `deliveryId`, not `batchId`: `IngestResponseSchema.batchId` below is an unrelated,
+   * server-generated response-tracking id, request→response naming that already exists on
+   * this contract — reusing the same word for a client-generated, request-level replay key
+   * would put two different meanings on one name in one file.
+   *
+   * `.optional()`, same reasoning as `droppedSinceLastBatch` itself: an SDK built before this
+   * field existed sends a batch with no replay key, and the persistence edge falls back to its
+   * pre-existing (non-idempotent) behaviour rather than rejecting the batch — additive, never
+   * a breaking requirement on an older client. Client-generated rather than server-generated,
+   * the same reason every other id on this wire is (§11/§12's idempotency-key pattern,
+   * `IngestedEvent.eventId`'s own doctrine): only the party that decides whether to retry knows
+   * whether two requests are "the same attempt" or "a new one".
+   */
+  deliveryId: IdSchema.optional(),
 });
 
 export const IngestResultStatusSchema = z.enum(['ACCEPTED', 'DUPLICATE', 'REJECTED'] as const);

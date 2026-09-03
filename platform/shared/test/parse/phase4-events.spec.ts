@@ -238,9 +238,29 @@ describe('tool_call.recorded — §13/§15', () => {
     if (!result.ok) expect(result.code).toBe('INVALID_PAYLOAD');
   });
 
-  it('rejects missing byte counts — §15 truncation must lose the payload, not the measurement', () => {
+  it('accepts a missing byte count (S3, Phase 4 phase gate repair attempt 1) — "not captured", not "measured zero"', () => {
+    // Reviewer S3: `captureToolIO: false` has nothing to measure at all, and a required
+    // field forced the SDK to send a manufactured `0` — which the Dashboard then rendered as
+    // a real "0 bytes lost to truncation" for a run whose tool IO was never captured
+    // (`CLAUDE.md` ## Product claims). `inputBytes`/`outputBytes` are `.nullish()` for
+    // exactly that reason; this test used to pin the opposite (a missing count was
+    // REJECTED), which is the defect S3 closes, not a property still worth protecting.
     const { inputBytes: _b, ...payload } = TOOL_CALL.payload;
-    expect(parseTelemetryEvent({ ...TOOL_CALL, payload }).ok).toBe(false);
+    const result = parseTelemetryEvent({ ...TOOL_CALL, payload });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect((result.event.payload as { inputBytes?: number | null }).inputBytes).toBeUndefined();
+    }
+  });
+
+  it('rejects a missing inputTruncated even when inputBytes is also absent — the two are independent requirements', () => {
+    // Guards against a fix for the test above accidentally loosening `inputTruncated` too:
+    // §15's flag is still required verbatim (the sibling test above pins that on its own),
+    // and dropping BOTH together must still fail on the flag, not silently succeed.
+    const { inputTruncated: _t, inputBytes: _b, ...payload } = TOOL_CALL.payload;
+    const result = parseTelemetryEvent({ ...TOOL_CALL, payload });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('INVALID_PAYLOAD');
   });
 
   it('accepts a failed call carrying an error message', () => {

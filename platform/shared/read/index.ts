@@ -26,6 +26,7 @@ export {
   RunsListQuerySchema,
   RUNS_LIST_DEFAULT_LIMIT,
   RUNS_LIST_MAX_LIMIT,
+  RunSummaryDropCountSchema,
 } from './run-view';
 export type {
   RunViewStatus,
@@ -39,4 +40,5 @@ export type {
   RunDetailView,
   RunListView,
   RunsListQuery,
+  RunSummaryDropCount,
 } from './run-view';

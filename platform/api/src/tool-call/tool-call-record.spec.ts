@@ -73,4 +73,23 @@ describe('toToolCallWrite', () => {
     expect(write.inputBytes).toBe(32_768);
     expect(write.outputBytes).toBe(12);
   });
+
+  it('maps an absent (not-captured) inputBytes/outputBytes to null, not a manufactured 0', () => {
+    // S3 (Reviewer, Phase 4 phase gate repair attempt 1). `ToolCallRecordedPayloadSchema`
+    // made these `.nullish()` precisely so an SDK with `captureToolIO: false` can omit them;
+    // `?? null` is the domain-layer collapse of "omitted" and "explicitly null" into the one
+    // state `ToolCallWrite`/the nullable Prisma column actually distinguish: "not measured".
+    const write = toToolCallWrite(toolCallEvent({ inputBytes: undefined, outputBytes: undefined }));
+
+    expect(write.inputBytes).toBeNull();
+    expect(write.outputBytes).toBeNull();
+  });
+
+  it('keeps a real reported zero as 0, distinguishable from not-captured', () => {
+    const write = toToolCallWrite(toolCallEvent({ inputBytes: 0, outputBytes: 0 }));
+
+    expect(write.inputBytes).toBe(0);
+    expect(write.outputBytes).toBe(0);
+    expect(write.inputBytes).not.toBeNull();
+  });
 });

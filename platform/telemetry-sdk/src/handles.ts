@@ -280,7 +280,13 @@ function recordToolCall(
     completedAt: call.completedAt.toISOString(),
     durationMs,
     success: call.success,
-    ...(call.error === undefined ? {} : { error: call.error }),
+    // S2 (Reviewer, Phase 4 phase gate repair attempt 1; filed `BACKLOG.md` "`tool_call.
+    // recorded`'s `error` ships uncapped and unredacted", trigger `p4.sdk-drop-reporting`,
+    // landed at `9050756`). `call.error` is caller free text — the same class of value
+    // `recordError` below routes through `recorder.safety.text`, and for the same reason
+    // that comment gives: `text()` is the only mechanism that can reach a secret embedded in
+    // prose, since the shipped redaction defaults match on KEYS, not on value shape.
+    ...(call.error === undefined ? {} : { error: recorder.safety.text(call.error, 'error') }),
   });
 
   return toolCallId;

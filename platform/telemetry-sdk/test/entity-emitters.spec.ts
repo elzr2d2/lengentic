@@ -361,6 +361,40 @@ describe('DoD line 1 extended: §15 payload safety covers the two new payloads',
     const [event] = eventsOf(transport, 'error.recorded');
     expect((event?.payload as { message: string }).message).toBe('[SCRUBBED]');
   });
+
+  it('offers tool_call.recorded\'s error to the caller redact hook at path "error", the same as error.recorded\'s message', async () => {
+    // S2 (Reviewer, Phase 4 phase gate repair attempt 1; `BACKLOG.md` "`tool_call.recorded`'s
+    // `error` ships uncapped and unredacted", trigger `p4.sdk-drop-reporting`, landed
+    // `9050756`). Before the fix, `handles.ts`'s `recordToolCall` put `call.error` on the
+    // wire unrouted through `PayloadSafety.text` at all — this test could not have failed
+    // for the right reason, because the redact hook was never called for this field. It is
+    // now the sibling of the `error.recorded` test immediately above: same free-text
+    // reasoning, same extension point, different event type.
+    const seenPaths: string[] = [];
+    const { transport, client } = harness({
+      redact: (value, path) => {
+        seenPaths.push(path);
+        return path === 'error' ? '[SCRUBBED]' : value;
+      },
+    });
+    const startedAt = new Date('2026-09-02T10:00:00.000Z');
+    const completedAt = new Date('2026-09-02T10:00:00.500Z');
+    stepOf(client).recordToolCall({
+      toolName: 'charge_card',
+      input: null,
+      output: null,
+      startedAt,
+      completedAt,
+      success: false,
+      error: 'upstream rejected the call: apiKey=sk-live-FAKE-4040 is expired',
+    });
+    await client.shutdown();
+
+    expect(seenPaths).toContain('error');
+    expect(wireText(transport)).not.toContain('sk-live-FAKE-4040');
+    const [event] = eventsOf(transport, 'tool_call.recorded');
+    expect((event?.payload as { error: string }).error).toBe('[SCRUBBED]');
+  });
 });
 
 describe('DoD line 2 extended: a 1MB error message is truncated, not dropped', () => {

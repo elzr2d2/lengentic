@@ -81,13 +81,16 @@ export interface SafeToolIO {
    * `inputTruncated: true` and `inputBytes: 1048576` knows exactly what was dropped;
    * reporting the post-cap 32768 would lose the only fact truncation leaves behind.
    *
-   * Under `captureToolIO: false` both counts are `0` — nothing was serialized, so there is
-   * no measurement. `0` there means "not captured", not "empty"; the flags are `false` and
-   * the values are `null`. The wire contract has no third state to say so, and adding one
-   * is `platform/shared/**`, which this packet does not own.
+   * Under `captureToolIO: false` both counts are `null` (Reviewer S3, Phase 4 phase gate
+   * repair attempt 1 — previously `0`) — nothing was serialized, so there is no measurement.
+   * `null` there means "not captured"; a real, measured value of `0` is still `0`. The wire
+   * contract now has this third state (`ToolCallRecordedPayloadSchema.inputBytes`/
+   * `outputBytes` are `.nullish()`), which is what lets `null` ride straight through
+   * `handles.ts`'s `...io` spread without the `exactOptionalPropertyTypes` dance an
+   * `undefined` value would force.
    */
-  readonly inputBytes: number;
-  readonly outputBytes: number;
+  readonly inputBytes: number | null;
+  readonly outputBytes: number | null;
 }
 
 export interface PayloadSafety {
@@ -187,8 +190,8 @@ export function createPayloadSafety(options: PayloadSafetyOptions = {}): Payload
           output: null,
           inputTruncated: false,
           outputTruncated: false,
-          inputBytes: 0,
-          outputBytes: 0,
+          inputBytes: null,
+          outputBytes: null,
         };
       }
       const safeInput = prepare(input, 'input');

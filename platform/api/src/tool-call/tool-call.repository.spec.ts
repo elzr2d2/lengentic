@@ -63,6 +63,17 @@ describe('ToolCallRepository.record', () => {
     });
   });
 
+  it('carries a null byte count through unchanged — S3 (not-captured, never a manufactured 0)', async () => {
+    const { prisma, toolCall } = fakePrismaService();
+
+    await new ToolCallRepository(prisma).record(write({ inputBytes: null, outputBytes: null }));
+
+    expect(toolCall.upsert.mock.calls[0]?.[0].create).toMatchObject({
+      inputBytes: null,
+      outputBytes: null,
+    });
+  });
+
   it('create and update carry the same full column bag', async () => {
     const { prisma, toolCall } = fakePrismaService();
 

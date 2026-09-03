@@ -21,10 +21,8 @@ export const ToolCallRecordedPayloadSchema = z.object({
   output: z.unknown().nullish(),
 
   /**
-   * Required, not defaulted. §15's cap is applied by the SDK, so the SDK is the only party
-   * that knows whether it truncated and what the original size was — and `inputBytes` /
-   * `outputBytes` are NOT NULL with no default in the Prisma model, so they have nowhere
-   * else to come from.
+   * §15's cap is applied by the SDK, so the SDK is the only party that knows whether it
+   * truncated and what the original size was.
    *
    * Deliberately not `.nullish()` with a false default: an SDK that truncated and omitted
    * the flag would be read as having sent the whole value. Truncation must lose the
@@ -32,8 +30,23 @@ export const ToolCallRecordedPayloadSchema = z.object({
    */
   inputTruncated: z.boolean(),
   outputTruncated: z.boolean(),
-  inputBytes: z.number().int().nonnegative(),
-  outputBytes: z.number().int().nonnegative(),
+
+  /**
+   * `.nullish()` (Reviewer S3, Phase 4 phase gate repair attempt 1) — NOT required. With
+   * `captureToolIO: false` (`payload-safety.ts`), nothing was serialized, so there is no
+   * measurement to report; a required field forced the SDK to send `0`, which the Dashboard
+   * then rendered as "0 bytes lost to truncation" for a run whose tool IO was never
+   * measured at all — `CLAUDE.md` ## Product claims, a never-collected measure reading as a
+   * genuine zero. Absent is that "not captured" state; a real `0` (measured, and genuinely
+   * empty) still ships as `0` and is unaffected.
+   *
+   * The Prisma columns (`ToolCall.inputBytes`/`outputBytes`) moved from NOT NULL to
+   * nullable in lockstep — see `schema.prisma` and its migration — so this relaxation has
+   * somewhere to land at the persistence edge; before that migration the column had "nowhere
+   * else to come from" than a required wire field, which is why it started this way.
+   */
+  inputBytes: z.number().int().nonnegative().nullish(),
+  outputBytes: z.number().int().nonnegative().nullish(),
 
   /** Client clock (§13). Never combined with a server clock in one duration (§12). */
   startedAt: TimestampSchema,

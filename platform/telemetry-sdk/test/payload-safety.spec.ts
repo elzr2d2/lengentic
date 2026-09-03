@@ -303,7 +303,12 @@ describe('§15 size cap — 32KB per field, truncate and flag', () => {
 });
 
 describe('§15 captureToolIO — the opt-out', () => {
-  it('drops input and output entirely while the flags stay honest', () => {
+  it('drops input and output entirely while the flags stay honest, and reports the bytes as unmeasured, not zero', () => {
+    // S3 (Reviewer, Phase 4 phase gate repair attempt 1). Before this the not-captured
+    // branch reported `inputBytes: 0` / `outputBytes: 0` — indistinguishable from a real
+    // call whose sanitized value genuinely measured zero bytes, and the Dashboard rendered
+    // it as "0 bytes lost to truncation" for a run whose tool IO was never measured at all
+    // (`CLAUDE.md` ## Product claims). `null` is the honest "not reported" state.
     const opted = createPayloadSafety({ captureToolIO: false });
     const io = opted.toolIO({ apiKey: 'sk-live-1' }, 'a very long output');
 
@@ -313,9 +318,14 @@ describe('§15 captureToolIO — the opt-out', () => {
       output: null,
       inputTruncated: false,
       outputTruncated: false,
-      inputBytes: 0,
-      outputBytes: 0,
+      inputBytes: null,
+      outputBytes: null,
     });
+
+    // Distinguishable from a real, captured zero: a genuinely empty value still measures 0.
+    const captured = createPayloadSafety().toolIO('', '');
+    expect(captured.inputBytes).toBe(2); // `""` sanitizes/stringifies to `""`, 2 bytes.
+    expect(captured.inputBytes).not.toBeNull();
   });
 
   it('captures by default', () => {

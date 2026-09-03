@@ -45,6 +45,17 @@ export interface TelemetryTransport {
        * the snapshot once: send it in exactly one request, or not at all.
        */
       readonly droppedSinceLastBatch?: number | undefined;
+      /**
+       * ASYNC-5 (Reviewer S1). This batch's replay-stable identity — `IngestRequestSchema`'s
+       * `deliveryId` — stable across every retry `deliverBatch` makes of THIS batch, distinct
+       * for the next one. Named `deliveryId`, not `batchId`, to stay clear of
+       * `IngestResponse.batchId`, an unrelated server-generated id. Same rule as
+       * `droppedSinceLastBatch`: a transport must carry it unchanged, never mint or recompute
+       * its own, and never split one `send` carrying it into two requests (that would present
+       * the server with two different "same batch" claims). What lets the server tell a
+       * lost-response retry from a genuinely new batch.
+       */
+      readonly deliveryId?: string | undefined;
     },
   ): Promise<TransportResult>;
 }
@@ -82,16 +93,24 @@ export function createHttpTransport(options: HttpTransportOptions): TelemetryTra
   if (options.apiKey !== undefined) headers.authorization = `Bearer ${options.apiKey}`;
 
   return {
-    async send(events, { signal, droppedSinceLastBatch }) {
+    async send(events, { signal, droppedSinceLastBatch, deliveryId }) {
       let body: string;
       try {
         // Omitted, never `0`, when the caller has no opinion: `IngestRequestSchema` makes
         // the field `.optional()` precisely so an SDK that predates it reads as "not
         // reported" (`RunSummary.droppedTelemetryEventCount: null`) rather than as a
         // silently-manufactured zero. A caller that DID report zero gets a zero on the wire.
-        body = JSON.stringify(
-          droppedSinceLastBatch === undefined ? { events } : { events, droppedSinceLastBatch },
-        );
+        // `deliveryId` rides beside it the same way, and only alongside it — a batch with no
+        // drop opinion has nothing for a replay key to protect.
+        const payload: {
+          events: readonly TelemetryEventEnvelope[];
+          droppedSinceLastBatch?: number;
+          deliveryId?: string;
+        } = { events };
+        if (droppedSinceLastBatch !== undefined)
+          payload.droppedSinceLastBatch = droppedSinceLastBatch;
+        if (deliveryId !== undefined) payload.deliveryId = deliveryId;
+        body = JSON.stringify(payload);
       } catch (error) {
         // Circular data, a BigInt, a getter that throws (§15). Re-sending cannot fix it.
         return { outcome: 'permanent', detail: `serialization failed: ${describeError(error)}` };

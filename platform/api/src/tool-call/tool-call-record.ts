@@ -22,8 +22,15 @@ export interface ToolCallWrite {
 
   readonly inputTruncated: boolean;
   readonly outputTruncated: boolean;
-  readonly inputBytes: number;
-  readonly outputBytes: number;
+  /**
+   * `null` (Reviewer S3, Phase 4 phase gate repair attempt 1) means `captureToolIO: false` —
+   * nothing was measured, distinct from a real, reported `0`. `ToolCallRecordedPayloadSchema`
+   * carries the same absent/measured distinction as `.nullish()`; `??` collapses an absent
+   * wire value the same way a `null` one is already handled, since the domain shape has no
+   * use for the difference between "omitted" and "explicitly null".
+   */
+  readonly inputBytes: number | null;
+  readonly outputBytes: number | null;
 
   /** Client clock (§13). Never combined with a server clock in one duration calculation. */
   readonly startedAt: Date;
@@ -48,8 +55,8 @@ export function toToolCallWrite(event: TelemetryEventOf<'tool_call.recorded'>): 
     output: event.payload.output ?? null,
     inputTruncated: event.payload.inputTruncated,
     outputTruncated: event.payload.outputTruncated,
-    inputBytes: event.payload.inputBytes,
-    outputBytes: event.payload.outputBytes,
+    inputBytes: event.payload.inputBytes ?? null,
+    outputBytes: event.payload.outputBytes ?? null,
     startedAt: new Date(event.payload.startedAt),
     completedAt: new Date(event.payload.completedAt),
     durationMs: event.payload.durationMs,

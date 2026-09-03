@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import type { RunDetailView, StepView } from '@lengentic/shared/read';
-import { fetchRunDetail } from '@/lib/runs-api';
+import { fetchRunDetail, fetchRunDroppedTelemetryEventCount } from '@/lib/runs-api';
 import {
   buildStepTree,
   countStepNodes,
@@ -16,7 +16,6 @@ import { ModelCallsCard } from './model-calls-card';
 import { ToolCallsCard } from './tool-calls-card';
 import { ErrorsCard } from './errors-card';
 import { IngestionHealthCard } from './ingestion-health-card';
-import { fetchDroppedTelemetryEventCount } from './ingestion-health-data';
 
 // Same reason as the list: `status` is derived per request from the server's clock.
 export const dynamic = 'force-dynamic';
@@ -34,7 +33,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ id: 
   // is a sibling resource (`runs.controller.ts`'s own reason: "the detail response is read
   // on every run page ... folding it in would make every detail read pay for it").
   const droppedTelemetryEventCount =
-    result.kind === 'ok' ? await fetchDroppedTelemetryEventCount(id) : null;
+    result.kind === 'ok' ? await fetchRunDroppedTelemetryEventCount(id) : null;
 
   return (
     <>

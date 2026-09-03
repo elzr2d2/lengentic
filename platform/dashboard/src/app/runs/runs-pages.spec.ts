@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import type { RunDetailView, RunListView } from '@lengentic/shared/read';
 import RunsPage from './page';
 import RunDetailPage from './[id]/page';
+import { DROP_COUNT_NOTE } from './[id]/ingestion-health-card';
 
 /**
  * The Run Explorer pages, rendered.
@@ -1351,9 +1352,7 @@ describe('GET /runs/[id] — the Phase 4 collections, and the difference between
     );
 
     expect(labelledRow(markup, 'Dropped telemetry events')).toBe('not reported');
-    expect(telemetryCard(markup, 'Ingestion health').notes).toContain(
-      '§16’s five per-reason drop counters stay client-side SDK state; only their sum crosses the wire, and none has been reported for this run — either no batch has sent one, or the run summary could not be fetched. That is not a claim that none were dropped.',
-    );
+    expect(telemetryCard(markup, 'Ingestion health').notes).toContain(DROP_COUNT_NOTE);
   });
 
   // ADR 0014 decision 2: once a batch has reported a drop count, the summary endpoint
@@ -1374,9 +1373,7 @@ describe('GET /runs/[id] — the Phase 4 collections, and the difference between
     expect(labelledRow(markup, 'Dropped telemetry events')).toBe('17');
     // The "not reported" note only makes sense over an absence — it must not sit next to a
     // real number telling the reader the opposite.
-    expect(telemetryCard(markup, 'Ingestion health').notes).not.toContain(
-      '§16’s five per-reason drop counters stay client-side SDK state; only their sum crosses the wire, and none has been reported for this run — either no batch has sent one, or the run summary could not be fetched. That is not a claim that none were dropped.',
-    );
+    expect(telemetryCard(markup, 'Ingestion health').notes).not.toContain(DROP_COUNT_NOTE);
   });
 
   it('shows a real reported zero as 0, never as "not reported"', async () => {

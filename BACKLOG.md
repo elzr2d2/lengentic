@@ -39,6 +39,14 @@ Pre-existing — outside that node's blast radius, so it was not fixed there (`R
 one line to route, and the sibling is the precedent, so this stays cheap until someone adds a
 third caller and copies the wrong one.
 
+**Addressed 2026-09-03** (Phase 4 phase gate repair attempt 1, Reviewer finding S2 first half).
+`platform/telemetry-sdk/src/handles.ts`'s `recordToolCall` now routes `call.error` through
+`recorder.safety.text(call.error, 'error')`, the same mechanism `recordError` already used for
+`message`. Regression: `platform/telemetry-sdk/test/entity-emitters.spec.ts` "offers
+`tool_call.recorded`'s error to the caller redact hook at path 'error', the same as
+`error.recorded`'s message" — a secret embedded mid-sentence in `error` no longer reaches the
+wire, proven the same way the `error.recorded` precedent already was.
+
 ### The SDK screens neither `U+0000` nor lone surrogates
 
 **Source:** same re-review, cross-checking the lane against `main` @ `69eefd1`.
@@ -3441,6 +3449,22 @@ double-credits the drops. Not wrong today only because nothing populates the fie
 
 **Do:** key the increment on something replay-stable — a batch id, or the ledger. **Trigger:**
 `p4.sdk-drop-reporting`, the node that lands the producer. This becomes live the moment it does.
+
+**Addressed 2026-09-03** (Phase 4 phase gate repair attempt 1, Reviewer finding S1 —
+`p4.sdk-drop-reporting` landed at `9050756`, making this entry's trigger live, exactly as
+predicted, and unremarked until the phase gate). `IngestRequestSchema` gained an optional,
+client-generated `deliveryId` — the SDK mints one per batch in `TelemetryClient.deliverBatch`
+(`platform/telemetry-sdk/src/client.ts`) and sends the identical value on every retry of that
+batch. `TelemetryRepository.incrementDroppedCount` (`platform/api/src/telemetry/
+telemetry.repository.ts`) now folds the increment inside a transaction guarded by a synthetic
+`IngestedEvent` ledger row keyed `(runId, "drop:" + deliveryId)` — reusing the ADR 0005 §1
+ledger rather than adding a table — and skips the increment when that row already existed.
+Backward-compatible: an SDK that predates `deliveryId` sends none, and the persistence edge
+falls back to the pre-existing non-idempotent behaviour rather than rejecting the batch.
+Regression: `platform/api/test/telemetry.integration.spec.ts` replays one identical batch
+against real Postgres and asserts `Run.droppedTelemetryEventCount` is credited once, not
+twice; mutation-checked (revert → red → restore → green,
+`.artifacts/evidence/4/phase-gate/repair-1/`).
 
 ### `droppedSinceLastBatch` credits its full count to every run a batch names
 

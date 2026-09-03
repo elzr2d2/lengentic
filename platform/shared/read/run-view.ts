@@ -185,6 +185,13 @@ export const ModelCallViewSchema = z.object({
  * `completedAt` are CLIENT clocks; `durationMs` is the client's own measurement and is not
  * recomputed here — §12 forbids combining the two clock families in one duration, and the
  * only server clock in this response is on the Run.
+ *
+ * `inputBytes` / `outputBytes` are `.nullable()` (Reviewer S3, Phase 4 phase gate repair
+ * attempt 1): `null` is a call recorded with `captureToolIO: false` — nothing was measured —
+ * distinct from a real, reported `0`. `run-telemetry.ts`'s `formatByteCount` already renders
+ * `null` as `not reported`; before this the SDK could only send a manufactured `0`, and the
+ * Dashboard rendered "0 bytes lost to truncation" for a run whose tool IO was never captured
+ * at all — `CLAUDE.md` ## Product claims.
  */
 export const ToolCallViewSchema = z.object({
   id: z.string(),
@@ -195,8 +202,8 @@ export const ToolCallViewSchema = z.object({
   output: z.unknown(),
   inputTruncated: z.boolean(),
   outputTruncated: z.boolean(),
-  inputBytes: z.number().int(),
-  outputBytes: z.number().int(),
+  inputBytes: z.number().int().nullable(),
+  outputBytes: z.number().int().nullable(),
   startedAt: TimestampSchema,
   completedAt: TimestampSchema,
   durationMs: z.number().int(),
@@ -273,6 +280,27 @@ export const RunsListQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+/**
+ * `GET /v1/runs/:id/summary`'s `droppedTelemetryEventCount` field, and ONLY that field
+ * (Reviewer S5, Phase 4 phase gate repair attempt 1).
+ *
+ * Not a schema for §23's whole `RunSummary` roll-up — `platform/api/src/runs/run-summary.ts`
+ * documents at its own head why that type still lives in the API (`p4.run-summary`'s
+ * `allowed_paths` excluded `platform/shared/read/**`) and `BACKLOG.md` "§23's `RunSummary`
+ * type still lives in the API" tracks the full relocation as a separate, larger, still-open
+ * item — including the `RunSummaryView` naming collision a full move would have to resolve.
+ * This schema does not attempt that move: it validates the one field
+ * `ingestion-health-card.tsx` actually reads, replacing a hand-rolled
+ * `typeof value === 'number'` check (`lib/runs-api.ts`'s `fetchRunDroppedTelemetryEventCount`)
+ * with the same `safeParse` pattern every other response on this page uses. Extra keys on the
+ * real `RunSummary` response (`modelCallCount`, `inputTokens`, ...) are simply ignored by
+ * `z.object`'s default (non-strict) parsing — this schema does not have to enumerate them to
+ * validate the one it cares about.
+ */
+export const RunSummaryDropCountSchema = z.object({
+  droppedTelemetryEventCount: z.number().int().nullable(),
+});
+
 export type StepView = z.infer<typeof StepViewSchema>;
 export type DecisionView = z.infer<typeof DecisionViewSchema>;
 export type ModelCallView = z.infer<typeof ModelCallViewSchema>;
@@ -282,3 +310,4 @@ export type RunSummaryView = z.infer<typeof RunSummaryViewSchema>;
 export type RunDetailView = z.infer<typeof RunDetailViewSchema>;
 export type RunListView = z.infer<typeof RunListViewSchema>;
 export type RunsListQuery = z.infer<typeof RunsListQuerySchema>;
+export type RunSummaryDropCount = z.infer<typeof RunSummaryDropCountSchema>;

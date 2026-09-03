@@ -333,10 +333,17 @@ model ToolCall {
 
   /// Whether the §15 cap truncated the stored value; the *Bytes columns record the
   /// original, pre-cap sizes so truncation loses the payload, not the measurement.
+  ///
+  /// Nullable (Reviewer S3, Phase 4 phase gate repair attempt 1; previously NOT NULL —
+  /// migration 20260903120000_tool_call_bytes_nullable). `null` is "captureToolIO: false —
+  /// nothing was measured", distinct from a real, reported `0`; before this migration the
+  /// wire had nowhere to put that state and the SDK sent a manufactured `0` instead, which
+  /// the Dashboard then rendered as a genuine "0 bytes lost to truncation" — `CLAUDE.md`
+  /// ## Product claims. A present value's meaning is unchanged; only the absent state is new.
   inputTruncated  Boolean @default(false)
   outputTruncated Boolean @default(false)
-  inputBytes      Int
-  outputBytes     Int
+  inputBytes      Int?
+  outputBytes     Int?
 
   /// Client clock (§13). Required: the SDK records a tool call after it finishes, in one
   /// event — there is no start/completion pair to arrive out of order.

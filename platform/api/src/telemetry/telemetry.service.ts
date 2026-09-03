@@ -510,11 +510,15 @@ export class TelemetryService {
    * 6. `droppedSinceLastBatch` (ADR 0014 decision 2), when the caller sends one, is folded
    *    into every run this batch's events actually named — once per run, after every write
    *    above has landed, never before (a batch that aborts partway through must not credit a
-   *    drop count for work that never committed).
+   *    drop count for work that never committed). `deliveryId` (ASYNC-5, Reviewer S1; named
+   *    apart from this response's own `batchId` below, an unrelated id) rides beside it
+   *    unchanged and is what lets `TelemetryRepository.incrementDroppedCount` tell a
+   *    lost-response retry of this exact batch apart from a new one.
    */
   async ingest(
     rawEvents: readonly unknown[],
     droppedSinceLastBatch?: number,
+    deliveryId?: string,
   ): Promise<IngestResponse> {
     const results = new Array<IngestResult>(rawEvents.length);
     let accepted = 0;
@@ -540,8 +544,12 @@ export class TelemetryService {
           results[index] = classification.result;
           rejected++;
           // ADR 0014 decision 2: an event rejected AFTER parsing still named a run, and that
-          // run is still owed its share of `droppedSinceLastBatch` (see the field's own
-          // comment on `EventClassification`).
+          // run is still credited `droppedSinceLastBatch` (see the field's own comment on
+          // `EventClassification`) — the WHOLE amount, not a share of it, same as every other
+          // run this batch names (S6, Reviewer, Phase 4 phase gate repair attempt 1:
+          // `BACKLOG.md` "`droppedSinceLastBatch` credits its full count to every run a batch
+          // names" — filed, tested (`telemetry.service.spec.ts`), and deliberately left this
+          // way pending a product decision on multi-run attribution).
           if (classification.runId !== undefined) referencedRunIds.add(classification.runId);
           continue;
         }
@@ -649,8 +657,14 @@ export class TelemetryService {
     // above has either landed or the whole response has already aborted — a batch that fails
     // partway through must not have credited a drop count for work that never committed.
     if (droppedSinceLastBatch !== undefined) {
+      const receivedAtDate = new Date(receivedAt);
       for (const runId of referencedRunIds) {
-        await this.repository.incrementDroppedCount(runId, droppedSinceLastBatch);
+        await this.repository.incrementDroppedCount(
+          runId,
+          droppedSinceLastBatch,
+          deliveryId,
+          receivedAtDate,
+        );
       }
     }
 

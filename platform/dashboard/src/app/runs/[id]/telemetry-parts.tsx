@@ -131,6 +131,13 @@ export function MetaRow({ id, children }: { id: string; children?: React.ReactNo
  *
  * The body is not shortened here. Whatever survived §15's 32KB cap is what the reader is
  * shown; `.payload-body` scrolls instead, so nothing the page hides is invisible to it.
+ *
+ * `bytes: number | null` (Reviewer S3, Phase 4 phase gate repair attempt 1): `null` is a
+ * call recorded with `captureToolIO: false`, where nothing was measured at all —
+ * `formatByteCount` already renders that as "not reported" rather than a manufactured `0`.
+ * `truncated` is always `false` for such a call (`payload-safety.ts`'s `toolIO`), so the
+ * truncated branch below never actually sees a `null` `bytes`, but the type says what is
+ * true rather than what happens to hold today.
  */
 export function Payload({
   label,
@@ -140,7 +147,7 @@ export function Payload({
 }: {
   label: string;
   value: unknown;
-  bytes: number;
+  bytes: number | null;
   truncated: boolean;
 }) {
   if (value === undefined) return null;
