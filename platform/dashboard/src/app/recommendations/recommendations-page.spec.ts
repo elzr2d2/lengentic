@@ -1,0 +1,477 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { renderToStaticMarkup } from 'react-dom/server';
+import type { ReactElement } from 'react';
+import type {
+  AnalysisRunResponse,
+  EvaluatedGroup,
+  GateResults,
+  GateStatus,
+  Recommendation,
+} from '@lengentic/shared';
+import RecommendationsPage, { ANALYZE_PARAM } from './page';
+import { NOT_ATTESTED } from './format';
+
+/**
+ * The Recommendations page, rendered — §25 beats 4, 5 and 6.
+ *
+ * ## The seam
+ *
+ * `fetch`, and nothing above it — the same seam `runs-pages.spec.ts` settled on, for the same
+ * reason. The real `recommendations-api.ts` (its URLs, its `safeParse` against
+ * `@lengentic/shared`, its three failure kinds) and the real page components both run against
+ * a stubbed HTTP boundary. A test that stubbed `fetchRecommendations` itself would stay green
+ * while the page rendered an empty list over a populated API, which is exactly the regression
+ * the Phase 2 gate measured on the Run pages.
+ *
+ * ## Why the fixtures are typed and not parsed here
+ *
+ * `satisfies Recommendation` / `satisfies AnalysisRunResponse` types every fixture against the
+ * frozen wire contract at COMPILE time — the packet's whole point: the mock is typed by the
+ * shared schema, so contract drift fails a typecheck rather than surfacing at the demo. The
+ * fixtures are then handed to the stub as JSON and parsed at RUNTIME by the page's own reader,
+ * so the `superRefine` rules (§19's reporting rule, §22's `recommendationId` biconditional)
+ * are exercised by the code under test rather than by the test.
+ *
+ * Expected values below are the fixtures' own fields and §21/§25's transcribed wording. None
+ * is read back off a render.
+ */
+
+const FINGERPRINT = 'a1'.repeat(32);
+
+/** §25 beat 4's numbers, verbatim: 48 samples, 9 contexts, 47/1, 95.7% attested. */
+const RUN_TESTS: Recommendation = {
+  id: 'rec-run-tests',
+  category: 'DETERMINISTIC_CANDIDATE',
+  analyzerId: 'deterministic-candidate',
+  analyzerVersion: '1.0.0',
+  groupKey: {
+    workflowName: 'demo-workflow',
+    workflowVersion: 'a1b2c3d',
+    decisionType: 'run_tests_after_code_change',
+    contextKeyVersion: 'v1',
+  },
+  configSnapshot: {
+    minSampleCount: 30,
+    minDistinctContexts: 5,
+    dominanceThreshold: 0.9,
+    successThreshold: 0.9,
+    coverageThreshold: 0.8,
+  },
+  sourceWatermark: '2026-09-01T12:00:00.000Z',
+  fingerprint: FINGERPRINT,
+  evidence: {
+    sampleCount: 48,
+    distinctContextKeyCount: 9,
+    optionDistribution: [
+      { option: 'YES', count: 47, share: 0.979 },
+      { option: 'NO', count: 1, share: 0.021 },
+    ],
+    dominantOption: 'YES',
+    dominancePercentage: 0.979,
+    attestedCount: 46,
+    outcomeCoverage: 0.958,
+    dominantOptionAttestedSuccessRate: 0.957,
+    minorityContextConcentration: [{ contextKey: 'post_refactor_large_diff', count: 1, share: 1 }],
+    excluded: { staleRun: 2, missingContextKey: 3 },
+    gates: gates([
+      ['PASS', '48 >= 30'],
+      ['PASS', '9 >= 5'],
+      ['PASS', '97.9% >= 90.0%'],
+      ['PASS', '95.7% >= 90.0%'],
+      ['PASS', '95.8% >= 80.0%'],
+    ]),
+  },
+  counterexamples: [
+    {
+      decisionId: 'dec-8f2a',
+      runId: 'run-8f2a',
+      contextKey: 'post_refactor_large_diff',
+      selectedOption: 'NO',
+      outcome: 'SUCCESS',
+    },
+    {
+      decisionId: 'dec-c41d',
+      runId: 'run-c41d',
+      contextKey: 'post_refactor_large_diff',
+      selectedOption: 'YES',
+      outcome: 'FAILURE',
+    },
+    {
+      decisionId: 'dec-5b90',
+      runId: 'run-5b90',
+      contextKey: 'hotfix_single_file',
+      selectedOption: 'YES',
+      outcome: 'FAILURE',
+    },
+  ],
+  firstSeenAt: '2026-09-01T11:00:00.000Z',
+  lastSeenAt: '2026-09-01T12:00:00.000Z',
+  status: 'OPEN',
+  statusNote: null,
+  statusChangedAt: null,
+};
+
+/**
+ * The `N/A` case, and it is a real one rather than a contrived null.
+ *
+ * Every attested outcome here belongs to the MINORITY option, so the dominant option has none
+ * — which is precisely the situation §19 warns about when it says G4 evaluates the dominant
+ * option specifically. G4 is therefore NOT_APPLICABLE rather than FAIL, which is what lets
+ * this group still be a candidate.
+ *
+ * No field on this fixture formats to `0.0%`, so the negative assertion below means "the page
+ * did not manufacture a zero" rather than "the page happened not to print one".
+ */
+const SELECT_MODEL: Recommendation = {
+  ...RUN_TESTS,
+  id: 'rec-select-model',
+  groupKey: { ...RUN_TESTS.groupKey, decisionType: 'select_model' },
+  configSnapshot: { ...RUN_TESTS.configSnapshot, coverageThreshold: 0.4 },
+  evidence: {
+    sampleCount: 20,
+    distinctContextKeyCount: 6,
+    optionDistribution: [
+      { option: 'FAST', count: 19, share: 0.95 },
+      { option: 'SLOW', count: 1, share: 0.05 },
+    ],
+    dominantOption: 'FAST',
+    dominancePercentage: 0.95,
+    attestedCount: 10,
+    outcomeCoverage: 0.5,
+    dominantOptionAttestedSuccessRate: null,
+    minorityContextConcentration: [{ contextKey: 'cold_start', count: 1, share: 1 }],
+    excluded: { staleRun: 1, missingContextKey: 1 },
+    gates: gates([
+      ['PASS', '20 >= 30'],
+      ['PASS', '6 >= 5'],
+      ['PASS', '95.0% >= 90.0%'],
+      ['NOT_APPLICABLE', 'no attested outcome for FAST'],
+      ['PASS', '50.0% >= 40.0%'],
+    ]),
+  },
+  counterexamples: [],
+};
+
+/**
+ * §25's closing move — the low-diversity group at `SUPPRESSED / G2 context_diversity (2 < 5)`,
+ * with a second failing gate added deliberately.
+ *
+ * The second failure is the §19 reporting rule under test: "Suppressed by G2" when it also
+ * fails G4 understates the problem, and an engineer who fixes only context diversity returns
+ * to find it still suppressed. A page that named only the first failing gate would be green
+ * against a one-failure fixture.
+ */
+const SUPPRESSED_GROUP: EvaluatedGroup = {
+  groupKey: {
+    workflowName: 'demo-workflow',
+    workflowVersion: 'a1b2c3d',
+    decisionType: 'batch_iteration_size',
+    contextKeyVersion: 'v1',
+  },
+  verdict: 'SUPPRESSED',
+  failedGates: ['G2_context_diversity', 'G4_outcome_success'],
+  gates: gates([
+    ['PASS', '40 >= 30'],
+    ['FAIL', '2 < 5'],
+    ['PASS', '96.0% >= 90.0%'],
+    ['FAIL', '61.0% < 90.0%'],
+    ['PASS', '88.0% >= 80.0%'],
+  ]),
+  recommendationId: null,
+};
+
+const CANDIDATE_GROUP: EvaluatedGroup = {
+  groupKey: RUN_TESTS.groupKey,
+  verdict: 'CANDIDATE',
+  failedGates: [],
+  gates: RUN_TESTS.evidence.gates,
+  recommendationId: RUN_TESTS.id,
+};
+
+const ANALYSIS: AnalysisRunResponse = {
+  evaluatedGroups: [CANDIDATE_GROUP, SUPPRESSED_GROUP],
+};
+
+/** §19's report order is the contract; a fixture states the five statuses and comparisons. */
+function gates(rows: readonly (readonly [GateStatus, string])[]): GateResults {
+  const ids = [
+    'G1_sample_count',
+    'G2_context_diversity',
+    'G3_dominance',
+    'G4_outcome_success',
+    'G5_outcome_coverage',
+  ] as const;
+
+  return ids.map((id, index) => {
+    const row = rows[index];
+
+    if (row === undefined) throw new Error(`fixture is missing a result for ${id}`);
+
+    return { id, status: row[0], comparison: row[1] };
+  });
+}
+
+interface StubbedRoute {
+  readonly status: number;
+  readonly body: unknown;
+}
+
+/**
+ * Answers `fetch` from a table keyed by `METHOD /path`, and records what was asked for.
+ *
+ * The method is part of the key, not just the record: §22's Analyze action is a POST and the
+ * list read is a GET, and a page that fetched the analysis endpoint with a GET would otherwise
+ * match a POST stub and pass. A path with no entry is a rejected request, not a quiet 200 — a
+ * page that asked for something this test did not intend must fail loudly.
+ */
+function stubApi(routes: Readonly<Record<string, StubbedRoute>>): { readonly asked: string[] } {
+  const asked: string[] = [];
+
+  vi.stubGlobal('fetch', (input: unknown, init?: { method?: string }): Promise<Response> => {
+    const url = new URL(String(input));
+    const key = `${init?.method ?? 'GET'} ${url.pathname}${url.search}`;
+    asked.push(key);
+
+    const route = routes[key];
+    if (route === undefined) {
+      return Promise.reject(new Error(`the page requested ${key}, which this test did not stub`));
+    }
+
+    return Promise.resolve(
+      new Response(JSON.stringify(route.body), {
+        status: route.status,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+  });
+
+  return { asked };
+}
+
+function listOf(recommendations: readonly Recommendation[]): StubbedRoute {
+  return { status: 200, body: { recommendations } };
+}
+
+async function renderPage(page: Promise<ReactElement>): Promise<string> {
+  // React inserts `<!-- -->` between adjacent text children. Stripping it keeps assertions
+  // about the sentences a reader sees from depending on where JSX happened to split them.
+  return renderToStaticMarkup(await page).replaceAll('<!-- -->', '');
+}
+
+function open(params: Record<string, string> = {}): Promise<ReactElement> {
+  return RecommendationsPage({ searchParams: Promise.resolve(params) });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('§25 beat 4 — Decision History', () => {
+  it('renders every decision group the API returned, with the numbers its claim rests on', async () => {
+    const { asked } = stubApi({ 'GET /v1/recommendations': listOf([RUN_TESTS, SELECT_MODEL]) });
+
+    const markup = await renderPage(open());
+
+    // No analysis was requested, so no analysis was run. §22: explicit and on demand.
+    expect(asked).toStrictEqual(['GET /v1/recommendations']);
+    expect(markup).toContain('Decision History');
+    expect(markup).toContain('run_tests_after_code_change');
+    expect(markup).toContain('demo-workflow @ a1b2c3d');
+    expect(markup).toContain('48');
+    expect(markup).toContain('YES');
+    expect(markup).toContain('97.9%');
+    expect(markup).toContain('2.1%');
+    expect(markup).toContain('95.7%');
+    expect(markup).toContain('select_model');
+    // The paired negative: the empty state is a real state of this page (asserted below), so
+    // its absence here is what makes the assertions above mean "these groups", not "some".
+    expect(markup).not.toContain('No decision group has produced a recommendation yet');
+  });
+
+  it('says so when nothing has produced a recommendation, rather than rendering an empty table', async () => {
+    stubApi({ 'GET /v1/recommendations': listOf([]) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('No decision group has produced a recommendation yet');
+    expect(markup).not.toContain('run_tests_after_code_change');
+  });
+
+  it('reads the list whether the API sends a bare array or wraps it in `recommendations`', async () => {
+    stubApi({ 'GET /v1/recommendations': { status: 200, body: [RUN_TESTS] } });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('run_tests_after_code_change');
+    expect(markup).not.toContain('contract mismatch');
+  });
+});
+
+describe('§25 beat 5 — the recommendation, counterexamples included', () => {
+  it('renders §21 output shape: dominant option, gates, suggested action, note', async () => {
+    stubApi({ 'GET /v1/recommendations': listOf([RUN_TESTS]) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('DETERMINISTIC_CANDIDATE');
+    expect(markup).toContain('Deterministic default candidate');
+    expect(markup).toContain('Consider a deterministic default of');
+    // Every gate by name, in §19&#39;s report order — not just the ones that are interesting.
+    expect(markup).toContain('G1 sample_count');
+    expect(markup).toContain('G2 context_diversity');
+    expect(markup).toContain('G3 dominance');
+    expect(markup).toContain('G4 outcome_success');
+    expect(markup).toContain('G5 outcome_coverage');
+    expect(markup).toContain('48 &gt;= 30');
+    // §21: the thresholds in force, without which a PASS is unreadable. `≥` because the
+    // page writes `&ge;`, which is a character in the markup rather than an escape.
+    expect(markup).toContain('samples ≥ 30');
+    // §21&#39;s Note block, which is "the difference between a recommendation and an overclaim".
+    expect(markup).toContain('LenGentic observes chosen options only');
+    expect(markup).toContain('Review the counterexamples before removing the branch');
+    // §21 removed `severity`, and the page must not reintroduce it.
+    expect(markup).not.toContain('severity');
+  });
+
+  it('renders every counterexample with its contextKey, selected option and attested outcome', async () => {
+    stubApi({ 'GET /v1/recommendations': listOf([RUN_TESTS]) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('Counterexamples (3)');
+    expect(markup).toContain('run-8f2a');
+    expect(markup).toContain('run-c41d');
+    expect(markup).toContain('run-5b90');
+    expect(markup).toContain('post_refactor_large_diff');
+    expect(markup).toContain('hotfix_single_file');
+    expect(markup).toContain('SUCCESS');
+    expect(markup).toContain('FAILURE');
+    // §25&#39;s concentration line, which is where the escape-hatch condition comes from.
+    expect(markup).toContain('Concentration: 1 of 1 minority row in');
+    expect(markup).not.toContain('None found in this sample');
+  });
+
+  it('states that no counterexample was found rather than rendering nothing', async () => {
+    // `counterexamples` may be empty and is never omitted: "we found none" is a claim the page
+    // has to make out loud, or it is indistinguishable from a page that does not report them.
+    stubApi({ 'GET /v1/recommendations': listOf([SELECT_MODEL]) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('Counterexamples (0)');
+    expect(markup).toContain('None found in this sample');
+  });
+});
+
+describe('the attested success rate — N/A, never 0.0%', () => {
+  it('renders N/A when nothing has been attested for the dominant option', async () => {
+    stubApi({ 'GET /v1/recommendations': listOf([SELECT_MODEL]) });
+
+    const markup = await renderPage(open());
+
+    // Anchored on the element boundary, both ways. A bare `'0.0%'` is a substring of every
+    // `90.0%` threshold on the page and would pass while the cell said `0.0%`; `>0.0%` can
+    // only match a rendered VALUE, which is the thing under test.
+    expect(markup).toContain(`>${NOT_ATTESTED}<`);
+    // The whole point. `0.0%` would say every attested outcome failed; `null` says none was
+    // ever attested, and the two send a reader to opposite conclusions.
+    expect(markup).not.toContain('>0.0%');
+  });
+
+  it('renders the rate as a percentage when there is one', async () => {
+    stubApi({ 'GET /v1/recommendations': listOf([RUN_TESTS]) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('95.7%');
+    expect(markup).not.toContain(NOT_ATTESTED);
+  });
+});
+
+describe('§22 / §25 beat 6 — the Analyze action and the groups it refused', () => {
+  it('runs the analysis only when it is asked to, and POSTs to /v1/analysis/run', async () => {
+    const { asked } = stubApi({
+      'POST /v1/analysis/run': { status: 200, body: ANALYSIS },
+      'GET /v1/recommendations': listOf([RUN_TESTS]),
+    });
+
+    const markup = await renderPage(open({ [ANALYZE_PARAM]: '1' }));
+
+    expect(asked).toStrictEqual(['POST /v1/analysis/run', 'GET /v1/recommendations']);
+    expect(markup).toContain('2 groups evaluated');
+  });
+
+  it('renders the suppressed group with EVERY failed gate, not the first (§19)', async () => {
+    stubApi({
+      'POST /v1/analysis/run': { status: 200, body: ANALYSIS },
+      'GET /v1/recommendations': listOf([RUN_TESTS]),
+    });
+
+    const markup = await renderPage(open({ [ANALYZE_PARAM]: '1' }));
+
+    expect(markup).toContain('batch_iteration_size');
+    expect(markup).toContain('SUPPRESSED');
+    expect(markup).toContain('Failed gates');
+    expect(markup).toContain('G2 context_diversity, G4 outcome_success');
+    // The gate table under the refusal carries the comparisons §25 shows on screen.
+    expect(markup).toContain('2 &lt; 5');
+    expect(markup).toContain('61.0% &lt; 90.0%');
+  });
+
+  it('never persists a suppression: the refusal is on the page only while the response is', async () => {
+    stubApi({ 'GET /v1/recommendations': listOf([RUN_TESTS]) });
+
+    const markup = await renderPage(open());
+
+    // §22 — no suppression table, no suppression history. Without a fresh analysis response
+    // there is nothing to render, and the page must not imply otherwise.
+    expect(markup).not.toContain('SUPPRESSED');
+    expect(markup).not.toContain('batch_iteration_size');
+  });
+
+  it('reports a failed analysis as a failed analysis, not as an empty result', async () => {
+    stubApi({
+      'POST /v1/analysis/run': { status: 500, body: {} },
+      'GET /v1/recommendations': listOf([RUN_TESTS]),
+    });
+
+    const markup = await renderPage(open({ [ANALYZE_PARAM]: '1' }));
+
+    expect(markup).toContain('Analysis failed');
+    expect(markup).toContain('HTTP 500');
+    // The list read is independent and still succeeded, so it is still on the page.
+    expect(markup).toContain('run_tests_after_code_change');
+  });
+});
+
+describe('when the API cannot answer', () => {
+  it('names an unreachable API rather than rendering an empty Decision History', async () => {
+    vi.stubGlobal('fetch', () => Promise.reject(new Error('connect ECONNREFUSED')));
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('Recommendations unavailable');
+    expect(markup).toContain('unreachable');
+    expect(markup).toContain('connect ECONNREFUSED');
+    expect(markup).not.toContain('No decision group has produced a recommendation yet');
+  });
+
+  it('calls a body that is not the contract a contract mismatch, not an outage', async () => {
+    stubApi({
+      'GET /v1/recommendations': {
+        status: 200,
+        // A recommendation whose gates are out of §19 report order: parses as an object,
+        // fails the contract. Exactly the drift the shared schema exists to catch.
+        body: {
+          recommendations: [{ ...RUN_TESTS, evidence: { ...RUN_TESTS.evidence, gates: [] } }],
+        },
+      },
+    });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('contract mismatch');
+    expect(markup).toContain('@lengentic/shared');
+    expect(markup).not.toContain('run_tests_after_code_change');
+  });
+});

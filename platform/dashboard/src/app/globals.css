@@ -556,3 +556,143 @@ a {
 .placement-attestation-only {
   color: var(--orphan);
 }
+
+/* --------------------------------------------------------------------------
+   Recommendations (§19 gates, §21 output shape, §22 evaluated groups, §25).
+   -------------------------------------------------------------------------- */
+
+.section-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 1.25rem 0 0.5rem;
+}
+
+.analyze-form {
+  margin: 0.75rem 0 0;
+}
+
+.analyze-button {
+  font: inherit;
+  font-weight: 600;
+  color: var(--surface);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 0.4rem 1.1rem;
+  cursor: pointer;
+}
+
+.analyze-button:hover {
+  filter: brightness(1.08);
+}
+
+.decision-history {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.decision-history th,
+.decision-history td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.4rem 0.5rem 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.decision-history thead th {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.decision-history .numeric {
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.distribution {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Gates are read as a block, in §19's report order, so they line up: the gate name column is
+   fixed-width and the comparison sits last, which is how §21's output shape prints them. */
+.gate-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.gate-row {
+  display: grid;
+  grid-template-columns: minmax(10rem, max-content) 6rem 1fr;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+}
+
+.gate-name {
+  color: var(--text);
+}
+
+.gate-comparison {
+  color: var(--text-muted);
+}
+
+.counterexample-list,
+.group-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.counterexample,
+.group-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.75rem;
+}
+
+.counterexample + .counterexample,
+.group-row + .group-row {
+  margin-top: 0.5rem;
+}
+
+.counterexample-head,
+.group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.counterexample-run,
+.group-name {
+  font-size: 0.85rem;
+}
+
+.counterexample-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+}
+
+/* The concentration line is the escape hatch's evidence, so it is not muted into a footnote. */
+.concentration-list {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  font-size: 0.85rem;
+}

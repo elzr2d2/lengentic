@@ -23,6 +23,10 @@ export default async function StatusPage() {
           <span className="row-label">Runs</span>
           <Link href="/runs">Browse runs &rarr;</Link>
         </div>
+        <div className="row">
+          <span className="row-label">Decisions</span>
+          <Link href="/recommendations">Decision History &amp; recommendations &rarr;</Link>
+        </div>
       </section>
 
       <p className="note">
