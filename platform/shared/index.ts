@@ -86,3 +86,62 @@ export {
   MAX_NAME_LENGTH,
 } from './schema/primitives';
 export type { Metadata } from './schema/primitives';
+
+// The recommendation and analysis wire contract (§19/§21/§22). Exported from the root entry
+// rather than from the `./read` subpath: `./read` is the *run* read model, and the 5b
+// Definition of Done says `platform/shared/schema/recommendation.ts` must be "exported from
+// the package's public entry". The SDK imports this entry and none of these symbols — they
+// cost it nothing, because every one is either a type erased at compile time or a Zod
+// schema tree-shaken out of a bundle that never names it.
+export {
+  GATE_IDS,
+  GATE_STATUSES,
+  VERDICTS,
+  GateIdSchema,
+  GateStatusSchema,
+  VerdictSchema,
+  GateResultSchema,
+  RECOMMENDATION_CATEGORIES,
+  RECOMMENDATION_STATUSES,
+  RecommendationCategorySchema,
+  RecommendationStatusSchema,
+  RecommendationOutcomeSchema,
+  RecommendationGroupKeySchema,
+  AnalyzerConfigSnapshotSchema,
+  OptionCountSchema,
+  ContextConcentrationSchema,
+  CounterexampleSchema,
+  ExclusionCountsSchema,
+  RecommendationEvidenceSchema,
+  SourceWatermarkSchema,
+  FingerprintSchema,
+  MAX_STATUS_NOTE_LENGTH,
+  RecommendationSchema,
+  ANALYSIS_RUN_PATH,
+  RECOMMENDATIONS_PATH,
+  AnalysisRunRequestSchema,
+  EvaluatedGroupSchema,
+  AnalysisRunResponseSchema,
+  RecommendationStatusPatchSchema,
+} from './schema/recommendation';
+export type {
+  GateId,
+  GateStatus,
+  Verdict,
+  GateResult,
+  RecommendationCategory,
+  RecommendationStatus,
+  RecommendationOutcome,
+  RecommendationGroupKey,
+  AnalyzerConfigSnapshot,
+  OptionCount,
+  ContextConcentration,
+  Counterexample,
+  ExclusionCounts,
+  RecommendationEvidence,
+  Recommendation,
+  EvaluatedGroup,
+  AnalysisRunRequest,
+  AnalysisRunResponse,
+  RecommendationStatusPatch,
+} from './schema/recommendation';
