@@ -4325,3 +4325,131 @@ default reads "90%". A renderer that multiplies by 100 twice, or not at all, is 
 **Do:** rename to `dominanceFraction` across §19, the engine and the wire, or leave it and pin the
 unit in the schema comment. Renaming is a plan change, not a lane decision.
 **Trigger:** whoever next amends §19, or `p5.recs-ui` if it renders the number.
+
+## Flushed at the 5b wave gate, attempt 2 (2026-09-04)
+
+Findings from the second `p5.rec-persistence` gate cadence — Reviewer, Validator and Watchdog over
+the same combined diff `git diff cf937c4..HEAD`, now including the repair commit `eb6a835`. All
+three returned **zero blocking findings**, so the gate advanced and these were recorded rather than
+sent back to the lane. Reports:
+`.artifacts/evidence/5b/wave-gate/attempt-2/{reviewer,validator,watchdog}-report.md`.
+
+Three of them are tagged `this-node`. The node is DONE and its lane is closed; each is a real
+defect that no Definition-of-Done line depends on, and every trigger below fires inside the very
+next wave, which is where the code that would suffer gets written.
+
+### §19 states two verdict rules that stop agreeing once `NOT_APPLICABLE` exists
+
+**Source:** 5b wave-gate attempt 2, Reviewer R-1 (`this-node`) and R-6 (`plan`), Validator
+confirming independently. `MVP_PLAN_V3.md` §19; `platform/analysis-engine/src/gate-contract.ts:43`;
+`platform/shared/schema/recommendation.ts:326-369`.
+
+§19 line 1 says "All gates must pass." §19's Reporting rule says "Verdict is `SUPPRESSED` if any
+gate fails." A `NOT_APPLICABLE` gate did neither, and §19 never says which line governs it.
+
+The codebase has already picked, twice, in opposite directions. `gate-contract.ts:43` states in
+prose: "`'CANDIDATE'` iff every status is `'PASS'`. `'NOT_APPLICABLE'` is not `'PASS'`."
+`evaluateGates` (`gates.ts:97-101`) implements `verdict = failedGates.length === 0 ? 'CANDIDATE' :
+'SUPPRESSED'` — FAIL-only, so an unmeasured gate does not block. 5b's wire contract inherited the
+implementation's reading and now **pins** it: `EvaluatedGroupSchema`'s refinement derives the
+verdict from `FAIL` alone, and `recommendation.spec.ts:477-479` asserts that a group with G4
+`NOT_APPLICABLE` parses as a CANDIDATE.
+
+Why it matters: G4 is `NOT_APPLICABLE` exactly when `dominantOptionAttestedSuccessRate` is null
+(`gates.ts:59-64`), so the divergent state is a deterministic candidate emitted with **no attested
+success rate for the option it recommends** — the claim `CLAUDE.md` `## Product claims` exists to
+protect. It is unreachable at §19's defaults (G4 N/A forces `outcomeCoverage <= 1 -
+dominancePercentage`, and `0.9 + 0.8 > 1` means a G3 PASS implies a G5 FAIL) and reachable the
+moment `dominanceThreshold + coverageThreshold <= 1`, which §19 permits because every threshold is
+configurable. No 5a fixture discriminates: D11 carries G4 `NOT_APPLICABLE` **and** G5 FAIL
+together, so it is SUPPRESSED under either reading.
+
+**Do:** settle in §19 or an ADR whether an unmeasured G4 may produce a CANDIDATE. Until it is
+settled, correct `gate-contract.ts:43`'s comment to describe the FAIL-only rule it no longer
+describes — a stale invariant comment is the pattern R-2 below flags as the worse one, and the
+comment is the cheaper half.
+**Trigger:** whoever next amends §19 or touches `platform/analysis-engine/src/gate-contract.ts`;
+at the latest, `p5.analysis-endpoint`, which writes the mapper that produces these verdicts.
+
+### The recommendation repository validates its JSON columns on the way out, not on the way in
+
+**Source:** 5b wave-gate attempt 2, Reviewer R-2 (`this-node`, MEDIUM), reproduced by the Validator
+against the real repository. `platform/api/src/recommendations/recommendations.repository.ts:33`,
+`:108-186`.
+
+`parseColumn`'s comment asserts "the three JSON columns … are written only from values that already
+satisfied their wire schema, so the failure branch is unreachable through the supported path." That
+is no longer true. `RecommendationSighting.evidence` is `z.infer<typeof
+RecommendationEvidenceSchema>`, and `z.infer` erases `.length(5)` and the G1..G5 order refinement —
+so `gates: []` typechecks, goes through `toJsonInput` with **no parse**, and is committed. Only the
+read-back throws, `Recommendation <id> has an unreadable evidence column`, from the same call.
+
+Validator probe (`platform/api/src/recommendations/r2-scratch.spec.ts`, written, run and deleted):
+`upsert` was called once with `create.evidence` deep-equal to the invalid value, and
+`recordSighting` rejected only afterward. The bad row is committed before the throw. Secondary case
+of the same asymmetry: `statusNote` crosses the persistence edge at `:87` unparsed, into a `TEXT`
+column that is unbounded where the wire caps at `MAX_STATUS_NOTE_LENGTH`.
+
+Not urgent because the only producer does not exist yet, and the next successful sighting on the
+same fingerprint upserts over the bad row, so the state self-heals rather than poisoning.
+
+**Do:** parse before the write — `RecommendationEvidenceSchema.parse(sighting.evidence)`, and the
+same for `counterexamples` and `configSnapshot` — so the wire schema is enforced at the persistence
+edge in both directions rather than only on read.
+**Trigger:** `p5.analysis-endpoint`, the first real caller of `recordSighting`.
+
+### The contract's required-ness sweep is top-level only, and two nested schemas escape it
+
+**Source:** 5b wave-gate attempt 2, Reviewer R-3 (`this-node`, LOW); Validator mutants M17 and M18
+both SURVIVED. `platform/shared/test/contract/recommendation.spec.ts:361-377`.
+
+`expectEveryFieldRequired` was added by the repair precisely because two `.optional()` mutants had
+survived the whole suite. It iterates `Object.keys(valid)` with no recursion, and is applied to
+seven top-level schemas. `OptionCountSchema` and `ContextConcentrationSchema` are never passed to
+it and appear nowhere else in the spec by name.
+
+Verbatim: with `OptionCountSchema.share` made `.optional()`, `Test Files 7 passed (7); Tests 144
+passed (144)`. With `ContextConcentrationSchema.count` made `.optional()`, the same. That is the
+identical mutant shape as M8/M9, which the sweep does catch.
+
+**Do:** pass `OptionCountSchema` and `ContextConcentrationSchema` to the sweep, or make the sweep
+recurse into nested object schemas — the second removes the class rather than two instances.
+**Trigger:** the next change to `platform/shared/schema/recommendation.ts` or its contract spec.
+
+### The recommendation mapper's defensive-copy rationale is not applied to its deepest mutable field
+
+**Source:** 5b wave-gate attempt 2, Reviewer R-4 (`this-node`, LOW).
+`platform/api/src/recommendations/recommendations.service.ts:66`, `:80`.
+
+The comment explains that `counterexamples` is copied into a fresh array because the wire's mutable
+array would otherwise be the record's own. But `evidence: record.evidence` hands the record's own
+object straight through, carrying three mutable arrays (`optionDistribution`,
+`minorityContextConcentration`, `gates`); `groupKey` and `configSnapshot` are spread, `evidence` is
+not. Harmless today — each record is built fresh from a parse per call — but either the copy or the
+comment is wrong, and the `counterexamples` copy is in fact forced by the `readonly` type rather
+than by aliasing.
+
+**Do:** either copy `evidence` the same way, or rewrite the comment to say what actually forces the
+copy.
+**Trigger:** the next change to `recommendations.service.ts`, or the first consumer that holds a
+response object across calls.
+
+### The frozen recommendation contract imposes three constraints on a mapper that does not exist yet
+
+**Source:** 5b wave-gate attempt 2, Reviewer R-5 (`p5.analysis-endpoint`, INFO).
+`platform/shared/schema/recommendation.ts:122`, `:312-370`.
+
+Not a defect — a constraint discovered at parse time on a path nothing exercises today, recorded so
+the next lane meets it in its own tests rather than in a demo. §22 asks for an explicit
+engine-to-wire mapper "written out, not inferred, so a change on either side fails a typecheck
+rather than a demo"; these are the three things it must now do:
+
+1. The engine's `Counterexample.outcome` is `Outcome` (`SUCCESS | FAILURE | UNKNOWN`); the wire is
+   the strict subset `SUCCESS | FAILURE`. Assigning one to the other is a **type error at the
+   mapper**, to be resolved by narrowing, never by a cast.
+2. Emit exactly five gate results, in `GATE_IDS` order — `GateResultsSchema` rejects anything else.
+3. Derive `failedGates` from those results rather than copying the engine's field; the
+   `EvaluatedGroupSchema` refinement re-derives it on every parse.
+
+**Do:** nothing now. This is `p5.analysis-endpoint`'s acceptance criteria, written down early.
+**Trigger:** `p5.analysis-endpoint` dispatch.
