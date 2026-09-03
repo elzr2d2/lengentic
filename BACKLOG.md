@@ -3739,6 +3739,36 @@ widen `allowed_paths`.
 
 ## Discovered at the `p4.sdk-drop-reporting` per-node contract cadence (2026-09-03)
 
+### A delivered batch advances the SDK's drop baseline even when the server stores nothing
+
+**Source:** Reviewer S1 at the `p4.sdk-drop-reporting` per-node contract cadence.
+**Trigger:** whenever `IngestResponse` is next open for a field — or the first time a
+Dashboard drop count is observed reading LOW against a client's own `stats()`.
+
+`Client.acknowledgedDrops` advances by the whole snapshot on any `delivered` outcome, and
+that advance is irreversible. But `IngestResponse` carries `batchId`, `accepted`,
+`duplicate`, `rejected` and `results` — nothing about `droppedSinceLastBatch`. The far end
+acknowledges the BATCH; it never acknowledges the COUNT. On two paths the server returns 200,
+takes the number and stores none of it:
+
+- every event in the batch fails `parseTelemetryEvent`, so the batch names no run and
+  `TelemetryService.ingest`'s fold iterates an empty `referencedRunIds`;
+- `TelemetryRepository.incrementDroppedCount` is an `UPDATE ... WHERE id = ...` that matches
+  no row when the Run has not been created yet, and silently affects nothing.
+
+Either way the drops are reported exactly once, land nowhere, and no later batch re-reports
+them, because the client already counted them as carried. The Dashboard then reads LOW — it
+under-reports loss rather than over-reporting it, which is the safer direction but is still a
+number presented as fact that is not one. Reachable under ordinary SDK/API version skew: an
+SDK emitting an event type the deployed API does not know fails the parse for the whole batch.
+
+Not fixable inside `platform/telemetry-sdk/**`. A count is only honestly acknowledgeable if
+the response says so, so the fix is a per-count receipt on `IngestResponse` (or a rule that
+the fold must never be reached with an empty `referencedRunIds`), which is
+`platform/shared/**` plus `platform/api/**` — both forbidden paths for the SDK packet that
+found it. The comments on `acknowledgedDrops` and `TelemetryTransport.send` were corrected to
+say CARRIED rather than ACKNOWLEDGED so the code no longer claims a guarantee it does not have.
+
 ### The SDK cannot clamp `droppedSinceLastBatch` to the bound its own wire contract enforces
 
 **Source:** implementing `p4.sdk-drop-reporting`.
@@ -3747,8 +3777,11 @@ widen `allowed_paths`.
 `IngestRequestSchema.droppedSinceLastBatch` is `.max(MAX_DROPPED_SINCE_LAST_BATCH)`
 (2^31-1) and REJECTS rather than clamps, deliberately: "a clamp would store a number the
 client never reported". That makes an over-bound report a request-level rejection, which
-loses the batch's events too, identically on every retry — the same permanent-poison shape
-R1 and R4 were repairs for, one layer further out.
+loses the batch's events too, on every retry — the same permanent-poison shape R1 and R4
+were repairs for, one layer further out. It does not repeat _identically_, it AMPLIFIES: an
+undeliverable batch adds `batch.length` to `droppedUndeliverable` (`client.ts`), so the next
+snapshot is strictly larger than the one just rejected, and also over the bound. The remedy
+below is unchanged; only the severity narrative was wrong.
 
 `Client.pendingDropReport()` therefore cannot bound what it sends, because
 `MAX_DROPPED_SINCE_LAST_BATCH` is not re-exported from `platform/shared/index.ts` (only

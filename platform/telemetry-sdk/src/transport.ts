@@ -35,10 +35,14 @@ export interface TelemetryTransport {
     options: {
       readonly signal: AbortSignal;
       /**
-       * The sum of §16's five client-side drop counters NOT yet acknowledged by a
-       * successfully delivered batch. The client snapshots it once per batch and hands the
-       * same snapshot to every retry of that batch, so a transport must not try to
-       * recompute or adjust it.
+       * The sum of §16's five client-side drop counters NOT yet CARRIED BY a successfully
+       * delivered batch. The client snapshots it once per batch and hands the same snapshot
+       * to every retry of that batch, so a transport must not try to recompute or adjust it.
+       *
+       * The server folds each report as an ADDEND into a per-run running total
+       * (`TelemetryRepository.incrementDroppedCount`). A transport that splits one `send`
+       * into two requests therefore doubles the run's count while the client acknowledges
+       * the snapshot once: send it in exactly one request, or not at all.
        */
       readonly droppedSinceLastBatch?: number | undefined;
     },

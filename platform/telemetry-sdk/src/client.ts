@@ -128,12 +128,23 @@ class Client implements TelemetryClient, EventRecorder {
 
   /**
    * ADR 0014 decision 2's batch-level `droppedSinceLastBatch` is "since the LAST batch",
-   * and the only honest reading of that is "not yet acknowledged by a batch the far end
-   * actually took". This is that acknowledged baseline: it advances ONLY after a
-   * `delivered` outcome, by exactly the snapshot that batch carried. A failed attempt
-   * therefore never clears a drop, a retry re-reports the same snapshot rather than a
-   * freshly grown one, and two consecutive successful batches cannot count the same drop
-   * twice.
+   * and the only honest reading of that is "not yet CARRIED BY a batch the far end
+   * actually took". This is that delivered baseline: it advances ONLY after a `delivered`
+   * outcome, by exactly the snapshot that batch carried. A failed attempt therefore never
+   * clears a drop, a retry re-reports the same snapshot rather than a freshly grown one,
+   * and two consecutive successful batches cannot count the same drop twice.
+   *
+   * CARRIED, not ACKNOWLEDGED, and the distinction is not pedantry. `IngestResponse` has
+   * `batchId`/`accepted`/`duplicate`/`rejected`/`results` and NOTHING about
+   * `droppedSinceLastBatch`: the far end acknowledges the batch, never the count. So a 200
+   * advances this baseline irreversibly even on the two paths where the server takes the
+   * number and discards it — a batch whose every event failed `parseTelemetryEvent` names
+   * no run, so `telemetry.service.ts`'s fold iterates an empty `referencedRunIds`; and
+   * `incrementDroppedCount` is a no-op `UPDATE ... WHERE id = ...` when no Run row exists
+   * yet. Those drops are reported once, land nowhere, and no later batch re-reports them,
+   * so the Dashboard reads LOW rather than wrong-high. Reachable under ordinary SDK/API
+   * version skew. Closing it needs a per-count receipt on `IngestResponse` — a wire change,
+   * hence `platform/shared` + `platform/api`, both forbidden here. `BACKLOG.md` (2026-09-03).
    */
   private acknowledgedDrops = 0;
 
@@ -359,7 +370,8 @@ class Client implements TelemetryClient, EventRecorder {
       attempt += 1;
       const result = await this.attemptDelivery(batch, droppedSinceLastBatch);
       if (result.outcome === 'delivered') {
-        // The baseline advances here and nowhere else: the far end has the number now.
+        // The baseline advances here and nowhere else: a batch CARRYING the number was
+        // delivered. Not a receipt for the count itself — see `acknowledgedDrops`.
         this.acknowledgedDrops += droppedSinceLastBatch;
         this.counters.delivered += batch.length;
         if (result.response !== null) {
