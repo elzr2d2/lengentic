@@ -3609,8 +3609,24 @@ Redacted: `'Bearer sk-…'`, `'bearer sk-…'` (lowercase), metadata key `ApI_Ke
 | `{ endpoint: 'https://api.example.com/v1?apiKey=sk-live-FAKE-3333' }` | full secret in a URL query under an innocuous key          |
 
 A wrapped `Authorization` header in an error message is not an exotic input; it is what most HTTP
-clients produce when they stringify a failed request. Note this does **not** break Phase 4 DoD
-line 1, which is about tool _input_ and is separately proven.
+clients produce when they stringify a failed request.
+
+**Corrected 2026-09-03, Phase 4 phase gate attempt 3 (Tester finding T3-F2).** This paragraph
+previously read "Note this does **not** break Phase 4 DoD line 1, which is about tool _input_ and
+is separately proven." That was false as written, and measurably so: the anchoring and key-name
+limitations apply to tool input identically, and a live wire capture through the real SDK found
+four secret shapes transmitted in the clear **in tool input** — a bare value under a
+non-credential key, an array element, the secret used as an object key, and a bearer token not at
+index 0 (`.artifacts/evidence/4/phase-gate/attempt-3/t6-wire.json`). The table above lists none
+of them.
+
+What is actually true: DoD line 1 is bound to §15's contract (`MVP_PLAN_V3.md:776-802`), which
+ships defaults for three credential shapes and a caller `redact` hook for the rest, and the
+implementation matches that contract exactly. The line holds on that reading, which is the
+reading the gate accepted and recorded
+(`.artifacts/evidence/4/phase-gate/definition-of-done.md`). It does not hold on the DoD
+sentence read in isolation. That is a scoping fact a reader must be given, not one to infer —
+see "Shipped redaction catches three credential shapes" in the attempt-3 flush section.
 
 **Do:** decide whether the value rule should scan rather than anchor, and whether the key regex
 should normalise separators. Both directions have a real cost `payload-safety.ts` already argues
@@ -3853,3 +3869,258 @@ the SDK's own counters are the only source. The fix is one line in `platform/sha
 exporting the constant, then `Math.min` in `pendingDropReport()` acknowledging only what was
 actually sent so the clamped remainder stays pending for a later batch rather than being
 silently forgotten.
+
+## Flushed at the Phase 4 phase gate, attempt 3 — Tester and Reviewer over `1e45516` (2026-09-03)
+
+Batched in `.artifacts/backlog/pending.md` during repair attempts 1 and 2 and at the attempt-3
+gate, flushed here in one edit per the `update-backlog` skill. Two entries below close or
+re-date an item this same flush found stale — the ledger rule is "never deleted", so a closed
+item carries its evidence line rather than vanishing.
+
+### The SDK screens neither `U+0000` nor lone surrogates, and its stated trigger has fired
+
+**Source:** `p4.sdk-entity-emitters` re-review, re-filed at the Phase 4 phase gate repair
+attempt 1 (Reviewer finding S2, second half).
+
+`p4.sdk-drop-reporting` landed at `9050756`, so this entry's original trigger has fired with no
+successor node to re-point it at. Still reachable exactly as filed: `error.recorded`'s `message`
+and `tool_call.recorded`'s `error` are caller-controlled free text the SDK ships without a
+Postgres-representability screen, while `platform/api/src/telemetry/wire-sanitize.ts:52`'s
+`containsUnsafeUnicode` rejects both server-side. A caller handing either field a lone surrogate
+gets a server-side `REJECTED`, not a client-side drop the SDK's own `stats()` can see and count —
+the SDK's contract is to drop _knowingly_, and this drop is invisible to it.
+
+Explicitly scoped "re-file, do not fix" at the gate: screening client-side is a new structural
+walk in `payload-safety.ts`, outside a gate repair's smallest-safe-change bound (ADR 0011
+charter preference 7).
+
+**Do:** add the same `containsUnsafeUnicode`-shaped screen to `payload-safety.ts`'s `text()`,
+ahead of the size cap — ideally by factoring the predicate into `platform/shared/**` so client
+and server share one implementation instead of two that can drift.
+**Trigger:** the next node that touches `platform/telemetry-sdk/src/payload-safety.ts`'s `text()`,
+or the first security review of the SDK.
+
+### A truncation flag with a present-but-impossible byte count still renders "0 bytes lost"
+
+**Source:** Phase 4 phase gate attempt-3 Tester finding T3-F1, `1e45516`. Probe and captured
+wire: `.artifacts/evidence/4/phase-gate/attempt-3/t1-truncation.cjs`, `tester-report.md`.
+
+`ToolCallRecordedPayloadSchema`'s `superRefine` (`platform/shared/schema/tool-call-events.ts:78-107`)
+tests **presence** (`payload.inputBytes == null`), never **coherence**. `inputTruncated: true`
+with `inputBytes: 0` is self-contradictory — a 0-byte original cannot have been truncated — and
+is accepted, stored, and rendered. Measured: ingest `{"accepted":3,"rejected":0}`, read back
+`{"inputTruncated":true,"inputBytes":0}`, dashboard health
+`{"toolInputsTruncated":1,"truncatedOriginalBytes":0}` — so the Ingestion Health card reads
+"1 tool input truncated" beside "0 bytes lost to truncation".
+
+That is the exact rendering `CLAUDE.md` ## Product claims forbids and that `1e45516` exists to
+prevent; the absent-count case it names _is_ correctly rejected. Caller-constructible only — the
+SDK cannot emit it, since `payload-safety.ts` reports the measured original size. Same reach
+class as repair-1 findings F4/B2, which this gate treated as legitimate.
+
+**Do:** extend the `superRefine` from presence to coherence — reject a true truncation flag with
+a byte count of `0`. Add the case to `platform/shared/test/parse/phase4-events.spec.ts`, whose
+two current tests assert only the absent case (honest and incomplete; nothing pins coherence).
+**Trigger:** the next change to `ToolCallRecordedPayloadSchema` or to the Ingestion Health card.
+
+### Shipped redaction catches three credential shapes; four more reach the wire in tool input
+
+**Source:** Phase 4 phase gate attempt-3 Tester finding T3-F2, `1e45516`. Fifteen fake keys
+through the real SDK, wire captured by a forwarding proxy:
+`.artifacts/evidence/4/phase-gate/attempt-3/t6-payload.cjs`, `t6-wire.json`.
+
+`MVP_PLAN_V3.md:776-802` (§15) scopes the shipped defaults to "Authorization headers,
+`/api[_-]?key/i`, bearer tokens" plus a caller `redact` hook, and
+`platform/telemetry-sdk/src/payload-safety.ts:135-142` implements exactly those three. Measured
+as transmitted **in tool input**, four shapes ship in the clear:
+
+| shape                                                                    | on the wire |
+| ------------------------------------------------------------------------ | ----------- |
+| bare value under a non-credential key (`plain`)                          | full secret |
+| array element (`arr[1]`)                                                 | full secret |
+| the secret used as an object **key**                                     | full secret |
+| bearer token not at index 0 ("please use Bearer sk-live-… when calling") | full secret |
+
+Plus one in tool **output**. Three of the four are cleanly outside the three shapes §15 names.
+The fourth — the unanchored bearer token — is the open product/security judgement already filed
+under "the value rule is anchored at string start"; `BEARER_VALUE` is `/^\s*bearer\s+\S/i`.
+
+**This does not fail Phase 4 DoD line 1**, which is bound to §15's contract in the same document
+(`.artifacts/evidence/4/phase-gate/definition-of-done.md`, line 1). It does mean the shipped
+default set is narrower than the DoD sentence reads on its own, and a reader must be told so
+rather than left to infer it.
+
+**Do:** decide, as a product/security call, whether the value rule should scan rather than
+anchor, whether the key regex should normalise separators, and whether any value-shape rule
+belongs in the defaults at all — `payload-safety.ts`'s own header argues against, because a false
+positive costs a run a developer can no longer reconstruct. Whatever is decided, state the
+shipped boundary in `platform/telemetry-sdk/README.md` as a contract rather than a note.
+**Trigger:** the first security review of the SDK, or any real deployment shipping tool I/O off a
+developer machine. Read this entry and the anchoring entry together.
+
+### The per-run dropped-event count is not attributable when one batch spans two runs
+
+**Source:** Phase 4 phase gate attempt-3 Tester finding T3-F3, `1e45516`. Previously filed and
+held; **its own documented trigger — "the first batch observed spanning two runs" — has now
+fired.** Live measurement: `.artifacts/evidence/4/phase-gate/attempt-3/tester-report.md`.
+
+Real SDK, one client, two runs, one transient 503: 8 real drops all belonging to run A were
+stored as 8 on run A **and** 8 on run B. The SDK reports one `droppedSinceLastBatch` per batch,
+not per run, so `TelemetryService.ingest` folds the same amount into every run the batch
+references. The Dashboard then shows both numbers as fact.
+
+Bears directly on DoD line 6 and on `CLAUDE.md` ## Product claims: a visible wrong number is
+worse than an absent one. DoD line 6 asks that the count be _visible_, and it is — the
+never-reported / reported-zero boundary holds and is pinned by tests. Attribution is the part
+that does not hold, and it is now measured rather than theorised.
+
+**Do:** decide where attribution belongs — a per-run breakdown on the wire (an SDK change, since
+the client currently cannot say which run a dropped event belonged to), or a documented
+batch-level semantic with the card relabelled so it stops claiming per-run precision it does not
+have. The second is much cheaper and may be the honest answer.
+**Trigger:** now fired. Take it at the start of 5b or at the first ingest-path work, ahead of the
+other drop-counter entries in this section.
+
+### `IngestedEvent`'s "every accepted event is recorded here" is false for the five entity types
+
+**Source:** Phase 4 phase gate attempt-3 Tester finding T3-F4, `1e45516`.
+
+`platform/database/prisma/schema.prisma:184` says every accepted event is recorded in the
+idempotency ledger. The ledger holds Run and Step only; all five Phase 4 entity types re-read
+`ACCEPTED` on an exact replay, forever. Entity **state** is genuinely idempotent — the writes are
+upserts and tokens are not doubled — so this is a divergence between the comment and the code,
+not a data defect.
+
+**Do:** correct the comment to describe what the ledger actually covers and why the entity types
+are idempotent by a different mechanism, or extend the ledger. The comment is the cheaper and
+probably the right fix.
+**Trigger:** the next change to `IngestedEvent` or to the idempotency path.
+
+### An attestation posted under a second run mutates the first run's decision and leaves no trace
+
+**Source:** Phase 4 phase gate attempt-3 Tester finding T3-F5, `1e45516`.
+
+An attestation posted under run B correctly mutates run A's decision — last-write-wins per §14,
+which is the specified behaviour — but run B's Run Explorer page shows nothing at all. The
+mutation is per spec; the missing trace is not. Touches the DoD preamble's "reconstruct what the
+agent did", weakly: nothing is wrong, something is invisible.
+
+**Do:** show attestations posted under a run on that run's page, even when the decision they
+attest lives elsewhere.
+**Trigger:** the first Run Explorer work in 5b or Phase 6.
+
+### No test spans the seam between the SDK's `deliveryId` reuse and the server's replay skip
+
+**Source:** Phase 4 phase gate attempt-3 Reviewer finding S-A1 (MEDIUM, non-blocking), `1e45516`.
+
+`client.ts`'s `pendingDeliveryId` reuse is correct only because
+`TelemetryRepository.incrementDroppedCount` skips the whole increment on a lost insert race, and
+that skip is safe only because the client reuses the id. One invariant, two halves, no test that
+can see both: `drop-reporting.spec.ts` uses a fake transport and never reaches a server;
+`telemetry.integration.spec.ts` posts raw HTTP and never runs the SDK. Change the server to
+credit a delta instead of skipping and every test stays green while the product double-counts.
+The only end-to-end proof is a hand-run probe
+(`.artifacts/evidence/4/phase-gate/repair-2/tester-rerun/p-sdk-4-rerun.log`), not a test.
+
+The Reviewer named this the one coupling in `1e45516` that will hurt.
+
+**Do:** one integration case that drives the built SDK against the real API through an
+abandonment, or an explicit cross-package contract test.
+**Trigger:** the next change to `incrementDroppedCount`'s replay guard or to `deliverBatch`'s
+`deliveryId` lifecycle.
+
+### The post-commit fold's "never throws" guarantee lives in the caller, not in the contract
+
+**Source:** Phase 4 phase gate attempt-3 Reviewer findings S-A2 and S-A3 (LOW, non-blocking),
+`1e45516`.
+
+`telemetry.service.ts:671-688` wraps `incrementDroppedCount` in a per-run try/catch — the third
+patch of one class (R1, R4, S1). `incrementDroppedCount` is still `Promise<void>` and says
+nothing about who owns its failure, so a fourth post-commit step added after line 688 inherits
+nothing and no test fails when it is added. The catch also does not classify: a transient
+connection failure, a poisoned key and a future `TypeError` all produce one `warn`, while the
+analogous path at line 635 classifies and logs at `error` — so a **permanent, never-re-derivable**
+counter loss is logged one level below a merely _retryable_ persistence failure. The resulting
+accepted-loss path was documented in `client.ts` and `telemetry.service.ts` but not here.
+
+**Do:** log at `error`; consider moving containment into the repository method so the guarantee
+is a property of the contract rather than of one caller; and record the fold-failure loss beside
+the `pendingDeliveryId` trade in this file.
+**Trigger:** the next post-commit step added to `TelemetryService.ingest`, or the first
+production sighting of the WARN.
+
+### The per-run drop-fold containment test passes for the wrong reason if run order flips
+
+**Source:** Phase 4 phase gate attempt-3 Reviewer finding S-A4 (LOW, non-blocking), `1e45516`.
+
+`telemetry.service.spec.ts:829-845` fails `run-a` and asserts `run-b` still folded. It pins
+per-run rather than per-batch containment only because `referencedRunIds` happens to yield
+`run-a` first; a batch-level `try` with the order reversed would pass it.
+
+**Do:** fail the LAST run instead of the first, or add a third run.
+**Trigger:** the next change to `telemetry.service.spec.ts`'s drop-fold suite.
+
+### The `ToolCall` byte-count migration is applied by the integration suite but never exercised
+
+**Source:** Phase 4 phase gate repair-1 re-review, non-blocking finding N2. **Re-dated at the
+attempt-3 flush: its trigger fired inside `1e45516` and was not honoured** (Reviewer finding
+Sc-2 — the trigger mechanism failing in its own designed moment).
+
+`20260903120000_tool_call_bytes_nullable` drops `NOT NULL` on `ToolCall.inputBytes`/`outputBytes`.
+`platform/api/test/telemetry.integration.spec.ts` runs `prisma migrate deploy`, so the migration
+is proven to apply — but no integration test writes a `NULL` byte count. The only coverage is
+`tool-call.repository.spec.ts`, against a mocked Prisma client, which cannot see a column
+constraint. The one part of S3 that can fail in a deployed environment is the one part with no
+real-database evidence.
+
+**Do:** post one `tool_call.recorded` with `inputBytes`/`outputBytes` omitted in
+`telemetry.integration.spec.ts` and read the row back as `null`, beside the existing
+`inputBytes: 2_147_483_647` boundary case.
+**Trigger:** re-dated 2026-09-03 to the _next_ change to
+`platform/api/test/telemetry.integration.spec.ts`. A trigger that fires and is not honoured must
+be re-dated or closed at the flush, never left to fire silently a second time.
+
+### `transport.ts` says `deliveryId` rides "only alongside" `droppedSinceLastBatch`; the code sends them independently
+
+**Source:** Phase 4 phase gate repair-1 re-review, non-blocking finding N3.
+
+`platform/telemetry-sdk/src/transport.ts:48-56`'s serialization comment reads "`deliveryId` rides
+beside it the same way, and only alongside it". The block beneath it uses two independent `if`s,
+so a caller supplying `deliveryId` without `droppedSinceLastBatch` gets it serialized alone. True
+as a description of what `Client` does, not of what this function does.
+
+**Do:** reword to describe the client's usage, or make the serialization conditional on the pair.
+**Trigger:** the next change to `platform/telemetry-sdk/src/transport.ts`.
+
+### Superseded session handoffs sit unconsumed beside the live one
+
+**Source:** Coordinator observation while writing the Phase 4 phase-gate handoff, 2026-09-03.
+
+`.artifacts/handoffs/session/` holds several briefs; most are superseded and point at finished or
+abandoned work, including a stale Phase 4 gate brief bound to `df25475`. `consumed/` exists and
+is where a spent brief belongs.
+
+Not currently harmful — the SessionStart hook picked the newest correctly. The hazard is that the
+selection rule is undocumented: if it is ever anything but newest-wins, a fresh session resumes a
+finished phase with full confidence and a plausible brief.
+
+**Do:** move the superseded briefs to `consumed/`, and state the selection rule where a reader of
+the `session-handoff` skill will find it.
+**Trigger:** the next session-handoff write, or the first time a session resumes from a brief that
+does not match `pnpm flow next`.
+
+### Addressed 2026-09-03 — every batch paid for the drop-count replay guard, including zero-drop ones
+
+**Source:** Phase 4 phase gate repair-1 re-review, non-blocking finding N1. Closed by `1e45516`
+before this flush reached the ledger; recorded here rather than dropped, per the never-deleted
+rule.
+
+The guard opened a `$transaction` and inserted a synthetic `IngestedEvent` row for every batch,
+including the universal zero report — write amplification on the highest-volume path, all to
+make `+ 0` idempotent.
+
+**Addressed 2026-09-03:** `platform/api/src/telemetry/telemetry.repository.ts:281-284` now
+short-circuits on `amount === 0`, verbatim what the **Do:** asked for. Proved by the F5
+integration case and by the live probe ending `ledger drop: rows = 0`
+(`.artifacts/evidence/4/phase-gate/repair-2/tester-rerun/p-sdk-4-rerun.log`). Confirmed closed by
+the attempt-3 Reviewer (finding Sc-1).
