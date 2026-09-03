@@ -4209,3 +4209,119 @@ The reasoning should be in both.
 **Do:** promote the `fingerprint.ts` header into `docs/decisions/` if it survives review
 unchanged, or record the amendment there if it does not.
 **Trigger:** the `p5.rec-persistence` per-node review, whose change class is `contract`.
+
+**Trigger fired 2026-09-04 at the 5b wave gate.** The `contract`-class review ran and the
+Reviewer's verdict on the substance is that the `fingerprint.ts:8-61` reasoning **survives
+unchanged** — the input set is the reading §21's own update rule forces, both exclusions are
+argued, and the reversal cost is stated correctly. So the first branch of the **Do:** applies:
+promote it verbatim, no amendment owed. Reviewer has no `Write` tool and does not author ADRs;
+the builder's handoff assigned this to "the `p5.rec-persistence` reviewer"
+(`.artifacts/handoffs/5-p5.rec-persistence-builder.json:120`), which is not a role that can hold
+it. **Re-owned to:** whoever next holds `docs/decisions/**` — the Coordinator, or
+`p5.analysis-endpoint`.
+
+---
+
+## Flushed at the 5b wave gate (2026-09-04)
+
+Findings from the `p5.rec-persistence` wave-gate cadence (Reviewer, Validator, Watchdog over
+`git diff cf937c4..HEAD`) that are **not** `this-node`. The `this-node` findings are not here —
+they held the gate RED and went back to the lane. Reports:
+`.artifacts/evidence/5b/wave-gate/{reviewer,validator,watchdog}-report.md`.
+
+### `pnpm typecheck` resolves `@lengentic/shared` through a `dist` it never rebuilds
+
+**Source:** 5b wave-gate Reviewer, finding A-2 (`plan`), `package.json:23`.
+
+`"typecheck": "pnpm --filter @lengentic/database build && tsc --noEmit && pnpm -r typecheck"`
+force-rebuilds `@lengentic/database` and nothing else. `@lengentic/api` has no `paths` mapping
+(`tsconfig.base.json` declares none), so it typechecks against `platform/shared/dist/*.d.ts`
+through the workspace link. `pnpm build` does rebuild shared — but it runs _after_ `typecheck`
+and `test` inside `pnpm gates`.
+
+Both directions are live. The Reviewer hit the stale-**restrictive** direction three times in one
+session: `dist` carried `decisionType: z.ZodOptional<z.ZodString>` while the committed source had
+`decisionType: NameSchema`, and `pnpm gates` returned `EXIT=1` / `EXIT=2` on a clean tree until
+`pnpm --filter @lengentic/shared build` cleared it. The stale-**permissive** direction is the one
+that matters: `platform/api/src/**` typechecking and testing green against a wire contract that no
+longer exists in `platform/shared/schema/**` is a green that lies, and `p5.rec-persistence` is the
+first node to put new shared types on `platform/api/**`'s compile path.
+
+`BACKLOG.md:1760` records the `@lengentic/database` analogue. This is the `@lengentic/shared` one,
+and it is newly load-bearing.
+
+**Do:** force-rebuild `@lengentic/shared` in `typecheck` and `test` the way `@lengentic/database`
+already is, or add a `paths` mapping in `tsconfig.base.json` so source is resolved directly and
+`dist` staleness cannot decide a gate. The second is the reversible one and removes the class of
+bug rather than one instance.
+**Trigger:** the next node that touches `platform/shared/schema/**` — `p5.analysis-endpoint` is
+the first that will.
+
+### A group that flips CANDIDATE → SUPPRESSED on re-analysis leaves a stale `OPEN` row
+
+**Source:** 5b wave-gate Validator, `plan` finding.
+
+§21, §22 and the 5b Definition of Done all say what happens when a CANDIDATE is re-analysed
+(`upsert`, update the evidence, never touch `status`) and none of them says what happens when the
+same group stops being a CANDIDATE. Today: nothing. `recordSighting` is only called for CANDIDATE
+groups, so the previously persisted row keeps `status = OPEN` with its old evidence and an old
+`lastSeenAt`, forever, and the response's `evaluatedGroups` entry carries
+`verdict: "SUPPRESSED"` with `recommendationId: null` — no wire signal ties the two together.
+
+A recommendation that the data no longer supports, still rendered as OPEN, is the overclaim §19
+and `CLAUDE.md` ## Product claims exist to prevent. Not a defect in `p5.rec-persistence`: it
+implemented every clause it was given, and the clause that would decide this was never written.
+
+**Do:** settle it before the endpoint computes anything — the candidates are (a) leave it and let
+staleness be readable from `lastSeenAt`, (b) return `recommendationId` on SUPPRESSED groups too so
+the row and the refusal are linked, (c) a third status. (b) is additive to the wire and the
+cheapest to reverse.
+**Trigger:** `p5.analysis-endpoint`, which is the first node that can produce a re-analysis at all.
+
+### §21's `Note` block and suggested action have no home in the wire contract
+
+**Source:** 5b wave-gate Reviewer, finding B-4 (`p5.recs-ui`).
+
+§21: "The `Note` block is not boilerplate. It is the difference between a recommendation and an
+overclaim." `RecommendationSchema` carries no field for it and none for the suggested action —
+a faithful reading, since §21 lists both under required OUTPUT SHAPE (rendering) rather than under
+persisted fields, and the Reviewer did not fault the contract for it.
+
+The consequence is that the renderer becomes the only artifact that can keep the promise. UI copy
+that no test asserts on is UI copy a later refactor drops.
+
+**Do:** test `p5.recs-ui` on the Note block and the escape hatch directly — the rendered
+recommendation must carry the counterevidence and the "default, not replacement" framing, and that
+assertion must fail if the copy is removed.
+**Trigger:** `p5.recs-ui`.
+
+### `BACKLOG.md` is in no node's `allowed_paths`, and the split-commit workaround is ungated
+
+**Source:** 5b wave-gate Reviewer, finding B-3 (`plan`); Watchdog, sole out-of-path hit.
+
+`CLAUDE.md` requires every lane to record discovered-but-out-of-scope work in `BACKLOG.md`, and
+`BACKLOG.md` appears in neither `allowed_paths` nor `forbidden_paths` for any node. Lanes resolve
+the tension by splitting the commit — code in one, `BACKLOG.md` alone in the next (`c7c0cf4` /
+`9d9278a`, and `cf937c4` before it). That is prevailing practice, not an evasion.
+
+But `pnpm lanes check <id>` gates the working tree, so at `HEAD` it reports "no changed files
+against HEAD — nothing to gate" and neither commit was gated at the fixed point; re-running it with
+`--base cf937c4` exits 1 with `BACKLOG.md` as the sole hit. The convention is therefore enforced by
+nobody and flagged by the one tool that looks.
+
+**Do:** either add `BACKLOG.md` to every node's `allowed_paths` in `scripts/oracle/graph.json`, or
+give `lanes check` an explicit always-allowed list so the rule and the tool agree. Prefer the
+second — one place, not one per node.
+**Trigger:** the next edit to `scripts/oracle/graph.json` or `scripts/lanes.ts`.
+
+### `dominancePercentage` holds a fraction
+
+**Source:** 5b wave-gate Reviewer, finding A-5 (`plan`, nit).
+`platform/shared/schema/recommendation.ts:176-177` — `z.number().min(0).max(1)`, compared against
+`dominanceThreshold`, also `0..1`. Internally consistent, consistent with
+`platform/analysis-engine/src/types.ts:97`, and inherited verbatim from §19's field name, whose
+default reads "90%". A renderer that multiplies by 100 twice, or not at all, is the failure mode.
+
+**Do:** rename to `dominanceFraction` across §19, the engine and the wire, or leave it and pin the
+unit in the schema comment. Renaming is a plan change, not a lane decision.
+**Trigger:** whoever next amends §19, or `p5.recs-ui` if it renders the number.
