@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
+import { AnalysisModule } from './analysis/analysis.module';
 import { validateEnv, type Env } from './config/env.schema';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -65,6 +66,11 @@ import { TelemetryModule } from './telemetry/telemetry.module';
     // besides `TelemetryService` needs those services today, so they are not re-listed here.
     TelemetryModule,
     RunsModule,
+    // §22's `POST /v1/analysis/run`, and — through its own import of `RecommendationsModule`
+    // — §21's `PATCH /v1/recommendations/:id/status`. Analysis is registered here and nowhere
+    // else: `TelemetryModule` has no edge to it, which is what makes "analysis never runs
+    // inline with ingestion" a property of this graph rather than a convention.
+    AnalysisModule,
   ],
 })
 export class AppModule {}
