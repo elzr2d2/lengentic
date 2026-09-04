@@ -4513,3 +4513,73 @@ variation, so the abstraction is earned.
 **Do:** fold both into one `platform/dashboard/src/lib/api-request.ts`, with the failure union and
 the issue-message formatter.
 **Trigger:** the next change to either reader.
+
+## Flushed at the 5b wave gate, repair attempt 1 (2026-09-04)
+
+Reviewer and Validator over `f8c7e94..23b110d`; repair `a4589a6` closed every `this-node`
+finding (12/12 mutants caught, `pnpm gates` exit 0, 16/16 integration against real Postgres).
+Reports: `.artifacts/evidence/5b/wave-gate-{reviewer,validator}.md`,
+`.artifacts/evidence/5b/repair1-mutants/summary.json`. The two entries above this section came
+from `.artifacts/backlog/pending.md` and are already written; what follows is the rest.
+
+### `kill-mid-run.integration.spec.ts` flakes under full-suite load on win32
+
+**Source:** 5b wave-gate repair attempt 1. `pnpm --filter @lengentic/api test:integration` gave
+`Test Files 1 failed | 6 passed (7)` on the first run and `7 passed (7) / 80 passed (80)` on the
+second, same clean tree `a4589a6`. Verbatim:
+`AssertionError: host exit was not a forced termination: {"code":0,"signal":null}: expected +0 not to be +0`
+— the spawned host process exited cleanly before the SIGKILL landed.
+
+Ruled **non-blocking for the 5b wave gate** by the Coordinator: the spec imports only
+`src/prisma`, `src/common` and `@lengentic/shared/read`, none of which `a4589a6` touches, and it
+passes 2/2 in isolation. The attribution rests on the import graph and the isolation pass, not
+on the second green — a second green does not erase a first red.
+
+It is still a real defect and it is nobody's. `pnpm lanes handoff` refuses any `DONE` whose
+reruns disagree, so **this will block every future lane handoff that runs the full integration
+suite.** The repair Builder correctly declined to delete the observed failure from its
+`validation.results` to obtain a green checker.
+
+**Do:** own the race — the kill must be ordered against the host's readiness signal rather than
+against wall-clock. **Trigger:** the next lane handoff refused by `pnpm lanes handoff` on
+disagreeing reruns, or the next full integration run in CI.
+
+### `RecommendationListViewSchema` is a wire contract written during a repair
+
+**Source:** 5b wave-gate repair attempt 1, Builder `risks[1]`. `GET /v1/recommendations` and its
+frozen envelope were built under Coordinator authorization outside any lane (precedent
+`ab453de`), because no graph node owns the route and the wave gate could not go GREEN without
+it. The envelope is additive and mirrors `RunListViewSchema`, and `BACKLOG.md:4457` had already
+asked for one — but the pagination shape (`limit`/`offset`/`hasMore`, 50 default / 200 max,
+reject rather than clamp) is transcribed from API-4 and the runs precedent, **not** from a plan
+line, and no Reviewer has looked at the envelope choice.
+
+Reversible in the safe direction: narrowing the contract later is safe, adding pagination later
+would have broken consumers. **Do:** put the envelope in front of Reviewer.
+**Trigger:** the Phase 5 phase gate — this is the first thing Reviewer should read.
+
+### The work in `a4589a6` belongs to no graph node
+
+**Source:** 5b wave-gate repair attempt 1, Builder `risks[0]`. The commit spans
+`platform/shared/**`, `platform/api/src/recommendations/**`, `platform/api/src/analysis/**`,
+`platform/api/test/**` and `platform/dashboard/**` — at least three nodes' `allowed_paths`, and
+`p5.analysis-endpoint` lists `platform/api/src/recommendations/**` as _forbidden_. So neither
+`pnpm lanes check` nor the ownership half of `pnpm lanes handoff` can be satisfied by any honest
+`task_id`. Widening a lane is never the answer and none was widened; the work was taken outside
+the lane system instead.
+
+**Do:** decide whether coordinator-owned repair commits need a representation in
+`scripts/oracle/graph.json`, or whether the lane checkers should recognise a coordinator scope.
+Second occurrence of the same shape (`ab453de` was the first). **Trigger:** the third one.
+
+### `spike/README.md` and `CLAUDE.md` both still say `spike/` gets deleted
+
+**Source:** 5b wave gate, Coordinator, while checking the Phase 5 DoD. `p5.spike-deleted` was cut
+on 2026-09-03 into §27 post-MVP (`MVP_PLAN_V3.md:1909`), so `spike/` surviving the MVP is
+correct. But `spike/README.md:3` still says "deleted at the end of Phase 5 (`MVP_PLAN.md` §75)"
+— citing v2, which is `[HISTORICAL]` — and `CLAUDE.md` `## Current state` still says 5b "owns
+deleting `spike/` (`MVP_PLAN_V3.md:2236`)", a line number that now points at package-2 fixture
+prose. Two documents telling a fresh session to delete evidence the plan decided to keep.
+
+**Do:** correct both citations. **Trigger:** the next edit to either file, or the first session
+that proposes deleting `spike/`.
