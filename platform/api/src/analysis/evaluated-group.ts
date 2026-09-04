@@ -230,6 +230,14 @@ export function toWireEvidence(
  * entity for it. `EvaluatedGroupSchema` holds the biconditional — a CANDIDATE with a null id,
  * or a SUPPRESSED group with a non-null one, fails to parse.
  *
+ * `dominantOptionAttestedSuccessRate` is the one evidence number that crosses onto a group
+ * that was never persisted, and it crosses as `null`, never `?? 0`, for the same reason
+ * `toWireEvidence` refuses the coercion. It is here because the SUPPRESSED group is the ONLY
+ * place the null is producible: a persisted row is a CANDIDATE by construction, and a null
+ * rate forces G4 NOT_APPLICABLE → coverage ≤ 1 - dominance ≤ 10% → G5 FAIL → SUPPRESSED. So
+ * without this field the Dashboard's `N/A` had no live path at all (Tester, 5b phase gate,
+ * FINDING 3: `N/A` rendered 0 times against the real API).
+ *
  * `verdict` and `failedGates` are copied from the engine's evaluation rather than recomputed.
  * Recomputing them would let this mapper and the engine disagree about §19's reporting rule
  * while both looked correct in isolation; copying makes the engine the single producer, and
@@ -246,6 +254,7 @@ export function toEvaluatedGroup(
     verdict: toWireVerdict(evaluation.verdict),
     failedGates: evaluation.failedGates.map(toWireGateId),
     gates: toWireGates(evaluation.gates),
+    dominantOptionAttestedSuccessRate: aggregate.dominantOptionAttestedSuccessRate,
     recommendationId,
   };
 }

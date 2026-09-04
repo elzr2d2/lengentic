@@ -112,41 +112,48 @@ const RUN_TESTS: Recommendation = {
 };
 
 /**
- * The `N/A` case, and it is a real one rather than a contrived null.
+ * The empty-counterexamples case — a CANDIDATE whose minority block is the ONLY minority
+ * evidence on the page.
  *
- * Every attested outcome here belongs to the MINORITY option, so the dominant option has none
- * — which is precisely the situation §19 warns about when it says G4 evaluates the dominant
- * option specifically. G4 is therefore NOT_APPLICABLE rather than FAIL, which is what lets
- * this group still be a candidate.
+ * 47 `FAST` over seven context keys, every one attested SUCCESS, plus 3 `SLOW` in
+ * `cold_start`, none of them attested. §20.1 finds nothing: the dominant option never failed,
+ * and no minority row succeeded. §18's minority population is nevertheless three rows, all in
+ * one context — the two are different populations and neither is computed from the other
+ * (`MVP_PLAN_V3.md:967`). Every §19 gate passes at the shipped thresholds: 50 >= 30, 8 >= 5,
+ * 94.0% >= 90.0%, 100.0% >= 90.0%, 94.0% >= 80.0%.
  *
- * No field on this fixture formats to `0.0%`, so the negative assertion below means "the page
- * did not manufacture a zero" rather than "the page happened not to print one".
+ * The previous version of this fixture declared `sampleCount: 20` against a `minSampleCount`
+ * of 30 while its G1 read `['PASS', '20 >= 30']`, and a `coverageThreshold` of 0.4 that no
+ * deployment can set (`analyzer-config.provider.ts` pins `DEFAULT_CONFIG`; "No environment
+ * variable is read"). `GateResultsSchema` does not read `comparison`, so it parsed — and a
+ * fixture no producer can emit binds nothing (Tester, 5b phase gate, FINDING 3). These
+ * numbers are the shape Tester drove through the real ingest path and read back off the live
+ * wire instead.
  */
 const SELECT_MODEL: Recommendation = {
   ...RUN_TESTS,
   id: 'rec-select-model',
   groupKey: { ...RUN_TESTS.groupKey, decisionType: 'select_model' },
-  configSnapshot: { ...RUN_TESTS.configSnapshot, coverageThreshold: 0.4 },
   evidence: {
-    sampleCount: 20,
-    distinctContextKeyCount: 6,
+    sampleCount: 50,
+    distinctContextKeyCount: 8,
     optionDistribution: [
-      { option: 'FAST', count: 19, share: 0.95 },
-      { option: 'SLOW', count: 1, share: 0.05 },
+      { option: 'FAST', count: 47, share: 0.94 },
+      { option: 'SLOW', count: 3, share: 0.06 },
     ],
     dominantOption: 'FAST',
-    dominancePercentage: 0.95,
-    attestedCount: 10,
-    outcomeCoverage: 0.5,
-    dominantOptionAttestedSuccessRate: null,
-    minorityContextConcentration: [{ contextKey: 'cold_start', count: 1, share: 1 }],
+    dominancePercentage: 0.94,
+    attestedCount: 47,
+    outcomeCoverage: 0.94,
+    dominantOptionAttestedSuccessRate: 1,
+    minorityContextConcentration: [{ contextKey: 'cold_start', count: 3, share: 1 }],
     excluded: { staleRun: 1, missingContextKey: 1 },
     gates: gates([
-      ['PASS', '20 >= 30'],
-      ['PASS', '6 >= 5'],
-      ['PASS', '95.0% >= 90.0%'],
-      ['NOT_APPLICABLE', 'no attested outcome for FAST'],
-      ['PASS', '50.0% >= 40.0%'],
+      ['PASS', '50 >= 30'],
+      ['PASS', '8 >= 5'],
+      ['PASS', '94.0% >= 90.0%'],
+      ['PASS', '100.0% >= 90.0%'],
+      ['PASS', '94.0% >= 80.0%'],
     ]),
   },
   counterexamples: [],
@@ -170,13 +177,45 @@ const SUPPRESSED_GROUP: EvaluatedGroup = {
   },
   verdict: 'SUPPRESSED',
   failedGates: ['G2_context_diversity', 'G4_outcome_success'],
+  // `X >= Y` on a FAIL as well as on a PASS: `ratioGate`/`countGate` in
+  // `analysis-engine/src/gates.ts:115,123` build one string for both statuses, so the `2 < 5`
+  // this fixture used to carry was a comparison no producer emits.
   gates: gates([
     ['PASS', '40 >= 30'],
-    ['FAIL', '2 < 5'],
+    ['FAIL', '2 >= 5'],
     ['PASS', '96.0% >= 90.0%'],
-    ['FAIL', '61.0% < 90.0%'],
+    ['FAIL', '61.0% >= 90.0%'],
     ['PASS', '88.0% >= 80.0%'],
   ]),
+  dominantOptionAttestedSuccessRate: 0.61,
+  recommendationId: null,
+};
+
+/**
+ * The `N/A` case, and the only place the product can produce one.
+ *
+ * 36 dominant `YES`, none of them attested, plus 4 minority `NO` all attested SUCCESS, over 8
+ * contexts — Tester's own construction against the live API (5b phase gate, FINDING 3). G4 is
+ * NOT_APPLICABLE because nothing is attested for the dominant option, which is exactly what
+ * makes the rate `null`; coverage is then capped at the minority share, so G5 fails and the
+ * group is SUPPRESSED. A SUPPRESSED group persists no row, which is why the null never
+ * reaches the recommendation card and why `EvaluatedGroupSchema` now carries the field.
+ *
+ * No field on this fixture formats to `0.0%`, so the negative assertion against it means "the
+ * page did not manufacture a zero" rather than "the page happened not to print one".
+ */
+const NOTHING_ATTESTED_GROUP: EvaluatedGroup = {
+  groupKey: { ...RUN_TESTS.groupKey, decisionType: 'nothing_attested' },
+  verdict: 'SUPPRESSED',
+  failedGates: ['G5_outcome_coverage'],
+  gates: gates([
+    ['PASS', '40 >= 30'],
+    ['PASS', '8 >= 5'],
+    ['PASS', '90.0% >= 90.0%'],
+    ['NOT_APPLICABLE', 'no attested outcomes for the dominant option (threshold 90.0%)'],
+    ['FAIL', '10.0% >= 80.0%'],
+  ]),
+  dominantOptionAttestedSuccessRate: null,
   recommendationId: null,
 };
 
@@ -185,6 +224,7 @@ const CANDIDATE_GROUP: EvaluatedGroup = {
   verdict: 'CANDIDATE',
   failedGates: [],
   gates: RUN_TESTS.evidence.gates,
+  dominantOptionAttestedSuccessRate: RUN_TESTS.evidence.dominantOptionAttestedSuccessRate,
   recommendationId: RUN_TESTS.id,
 };
 
@@ -388,14 +428,47 @@ describe('§25 beat 5 — the recommendation, counterexamples included', () => {
     expect(markup).toContain('Counterexamples (0)');
     expect(markup).toContain('None found in this sample');
   });
-});
 
-describe('the attested success rate — N/A, never 0.0%', () => {
-  it('renders N/A when nothing has been attested for the dominant option', async () => {
+  it('renders the minority concentration even when there is no counterexample at all', async () => {
+    // The two arrays are DIFFERENT populations and neither is computed from the other
+    // (`MVP_PLAN_V3.md:967`; `analysis-engine/src/aggregate.ts:158-169`). This fixture is the
+    // case that separates them: dominant option never failed, minority rows never attested,
+    // so §20.1 finds nothing while §18's minority block has three rows in one context — the
+    // one number the escape hatch is built from, and the only minority evidence on the page.
+    //
+    // It fails against the shipped `Counterexamples` early return, which returned the "none
+    // found" paragraph before `<Concentration>` was ever reached (Reviewer S1, Tester
+    // FINDING 2). The suite's only positive concentration assertion ran against RUN_TESTS,
+    // whose three counterexamples take the other branch, so deleting `<Concentration>`
+    // outright left the suite green.
     stubApi({ 'GET /v1/recommendations': listOf([SELECT_MODEL]) });
 
     const markup = await renderPage(open());
 
+    expect(markup).toContain('Counterexamples (0)');
+    expect(markup).toContain('Concentration: 3 of 3 minority rows in');
+    expect(markup).toContain('cold_start');
+  });
+});
+
+describe('the attested success rate — N/A, never 0.0%', () => {
+  it('renders N/A on the group whose dominant option has nothing attested', async () => {
+    // The analysis response, not the list read: a null rate forces G4 NOT_APPLICABLE, which
+    // caps coverage at the minority share, which fails G5 and suppresses the group — and a
+    // SUPPRESSED group persists no row for the recommendation card to render. The suppressed
+    // group IS the N/A case, and before this repair the field was not on it at all, so `N/A`
+    // rendered 0 times against the real API (Tester, 5b phase gate, FINDING 3).
+    stubApi({
+      'POST /v1/analysis/run': {
+        status: 200,
+        body: { evaluatedGroups: [NOTHING_ATTESTED_GROUP] },
+      },
+      'GET /v1/recommendations': listOf([]),
+    });
+
+    const markup = await renderPage(open({ [ANALYZE_PARAM]: '1' }));
+
+    expect(markup).toContain('nothing_attested');
     // Anchored on the element boundary, both ways. A bare `'0.0%'` is a substring of every
     // `90.0%` threshold on the page and would pass while the cell said `0.0%`; `>0.0%` can
     // only match a rendered VALUE, which is the thing under test.
@@ -441,8 +514,8 @@ describe('§22 / §25 beat 6 — the Analyze action and the groups it refused', 
     expect(markup).toContain('Failed gates');
     expect(markup).toContain('G2 context_diversity, G4 outcome_success');
     // The gate table under the refusal carries the comparisons §25 shows on screen.
-    expect(markup).toContain('2 &lt; 5');
-    expect(markup).toContain('61.0% &lt; 90.0%');
+    expect(markup).toContain('2 &gt;= 5');
+    expect(markup).toContain('61.0% &gt;= 90.0%');
   });
 
   it('never persists a suppression: the refusal is on the page only while the response is', async () => {

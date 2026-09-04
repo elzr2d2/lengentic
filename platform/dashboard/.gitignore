@@ -2,3 +2,13 @@
 next-env.d.ts
 out/
 tsconfig.tsbuildinfo
+
+# Written into this directory by `next dev` itself, from
+# node_modules/next/dist/server/lib/generate-agent-files.js (Next 16.3.1), and re-added on
+# every dev-server start. `CLAUDE.md` here contains only `@AGENTS.md`.
+#
+# Ignored rather than committed: under Claude Code semantics a directory-scoped CLAUDE.md is
+# loaded as project instructions, so a build tool that writes one is injecting instructions
+# nobody in this repository reviewed. The root CLAUDE.md is untouched by it and stays tracked.
+AGENTS.md
+CLAUDE.md

@@ -297,6 +297,8 @@ describe('toEvaluatedGroup', () => {
     expect(group.failedGates).toStrictEqual([]);
     expect(group.recommendationId).toBe('rec-1');
     expect(group.groupKey).toStrictEqual(GROUP_KEY);
+    // Copied off the aggregate, not recomputed and not rounded.
+    expect(group.dominantOptionAttestedSuccessRate).toBe(0.96);
     expect(group.gates.map((gate) => gate.id)).toStrictEqual([
       'G1_sample_count',
       'G2_context_diversity',
@@ -345,6 +347,10 @@ describe('toEvaluatedGroup', () => {
 
     expect(group.failedGates).toStrictEqual(['G5_outcome_coverage']);
     expect(group.gates[3]?.status).toBe('NOT_APPLICABLE');
+    // The null crosses as null, never `?? 0`. This group is the ONLY shape that can carry it
+    // — a persisted row is a CANDIDATE by construction — so it is also the only path by which
+    // the Dashboard's `N/A` is reachable at all.
+    expect(group.dominantOptionAttestedSuccessRate).toBeNull();
     expect(() => EvaluatedGroupSchema.parse(group)).not.toThrow();
   });
 

@@ -154,6 +154,69 @@ function upsertOver(rows: Map<string, Record<string, unknown>>) {
   };
 }
 
+interface ManyArgs {
+  readonly where: { readonly fingerprint: string; readonly status?: { readonly not: string } };
+  readonly data?: Record<string, unknown>;
+}
+
+/**
+ * The whole model, faked over ONE in-memory table so a seed and a withdrawal can be observed
+ * against the same rows.
+ *
+ * `deleteMany` and `updateMany` are implemented from Prisma's documented semantics — match
+ * every row satisfying `where`, apply the operation, return `{ count }` — and the `where`
+ * reader below understands `{ not: ... }` because that is Prisma's filter syntax, not this
+ * repository's invention. Written this way so "a DISMISSED row survives the delete" is
+ * OBSERVED against a table rather than asserted about an argument the implementation chose.
+ */
+function tableVerbs(rows: Map<string, Record<string, unknown>>): {
+  prisma: PrismaService;
+  recommendation: {
+    findUnique: ReturnType<typeof vi.fn>;
+    findFirst: ReturnType<typeof vi.fn>;
+    findMany: ReturnType<typeof vi.fn>;
+    create: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
+    deleteMany: ReturnType<typeof vi.fn>;
+    updateMany: ReturnType<typeof vi.fn>;
+    updateManyAndReturn: ReturnType<typeof vi.fn>;
+    upsert: ReturnType<typeof vi.fn>;
+  };
+} {
+  const matching = (args: ManyArgs): string[] =>
+    [...rows.entries()]
+      .filter(([fingerprint, row]) => {
+        if (fingerprint !== args.where.fingerprint) return false;
+        const notStatus = args.where.status?.not;
+        return notStatus === undefined || row['status'] !== notStatus;
+      })
+      .map(([fingerprint]) => fingerprint);
+
+  const recommendation = {
+    findUnique: vi.fn(),
+    findFirst: vi.fn(),
+    findMany: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+    deleteMany: vi.fn((args: ManyArgs) => {
+      const keys = matching(args);
+      for (const key of keys) rows.delete(key);
+      return Promise.resolve({ count: keys.length });
+    }),
+    updateMany: vi.fn((args: ManyArgs) => {
+      const keys = matching(args);
+      for (const key of keys) rows.set(key, { ...rows.get(key), ...args.data });
+      return Promise.resolve({ count: keys.length });
+    }),
+    updateManyAndReturn: vi.fn(() => Promise.resolve([])),
+    upsert: vi.fn(upsertOver(rows)),
+  };
+
+  return { prisma: { client: { recommendation } } as unknown as PrismaService, recommendation };
+}
+
 describe('RecommendationsRepository.recordSighting — the query it sends', () => {
   it('keys the upsert on the fingerprint of the analyzer and the group key, not on an id', async () => {
     const { prisma, recommendation } = verbs(upsertOver(new Map()));
@@ -222,6 +285,141 @@ describe('RecommendationsRepository.recordSighting — the query it sends', () =
     expect(args.create.decisionType).toBe('run_tests_after_code_change');
     expect(args.create.contextKeyVersion).toBe('v1');
     expect(args.create.id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+});
+
+describe('RecommendationsRepository.withdrawOnSuppression — §22, a suppression is not an entity', () => {
+  it('removes the row a group left behind when it was still a CANDIDATE', async () => {
+    // The 5b phase gate's FINDING 1, at this seam: the group answered SUPPRESSED on the wire
+    // while the table still held its OPEN row, its 50-sample evidence and its G3 PASS, and
+    // `GET /v1/recommendations` served that. Refusing to WRITE a row is not the same statement
+    // as no row existing.
+    const rows = new Map<string, Record<string, unknown>>();
+    const { prisma } = tableVerbs(rows);
+    const repository = new RecommendationsRepository(prisma);
+
+    await repository.recordSighting(sighting());
+    expect(rows.size).toBe(1);
+
+    const result = await repository.withdrawOnSuppression(sighting({ observedAt: RE_OBSERVED_AT }));
+
+    expect(result).toBe('DELETED');
+    expect(rows.size).toBe(0);
+  });
+
+  it('keeps a DISMISSED row as a tombstone and refreshes its evidence to the suppressing run', async () => {
+    // `docs/decisions/0015`. Deleting it would lose §21's "DISMISSED stays DISMISSED" across a
+    // suppression excursion — dismissed, suppressed, candidate again would come back as a
+    // fresh OPEN row. Keeping it FROZEN would leave the row serving evidence its own gates no
+    // longer support, which is the defect being repaired.
+    const rows = new Map<string, Record<string, unknown>>();
+    const { prisma } = tableVerbs(rows);
+    const repository = new RecommendationsRepository(prisma);
+
+    await repository.recordSighting(sighting());
+    const [fingerprint] = [...rows.keys()];
+    rows.set(fingerprint ?? '', {
+      ...rows.get(fingerprint ?? ''),
+      status: 'DISMISSED',
+      statusNote: 'known trade-off',
+    });
+
+    const suppressing = sighting({
+      observedAt: RE_OBSERVED_AT,
+      evidence: { ...sighting().evidence, sampleCount: 80, dominancePercentage: 0.6 },
+    });
+    const result = await repository.withdrawOnSuppression(suppressing);
+
+    expect(result).toBe('KEPT_DISMISSED');
+    expect(rows.size).toBe(1);
+
+    const kept = rows.get(fingerprint ?? '');
+    expect(kept?.['status']).toBe('DISMISSED');
+    expect(kept?.['statusNote']).toBe('known trade-off');
+    expect((kept?.['evidence'] as { sampleCount: number }).sampleCount).toBe(80);
+    expect((kept?.['evidence'] as { dominancePercentage: number }).dominancePercentage).toBe(0.6);
+    expect(kept?.['lastSeenAt']).toStrictEqual(RE_OBSERVED_AT);
+    // The tombstone is not re-dated as a human act: an analysis run has no opinion about one.
+    expect(kept?.['firstSeenAt']).toStrictEqual(OBSERVED_AT);
+  });
+
+  it('says ABSENT when the group never had a row, without writing one', async () => {
+    // The ordinary case: most suppressed groups were never candidates. A withdrawal that
+    // inserted anything here would create the suppression entity §22 forbids.
+    const rows = new Map<string, Record<string, unknown>>();
+    const { prisma, recommendation } = tableVerbs(rows);
+
+    const result = await new RecommendationsRepository(prisma).withdrawOnSuppression(sighting());
+
+    expect(result).toBe('ABSENT');
+    expect(rows.size).toBe(0);
+    expect(recommendation.upsert).not.toHaveBeenCalled();
+    expect(recommendation.create).not.toHaveBeenCalled();
+  });
+
+  it('scopes the delete to this group by fingerprint, and exempts DISMISSED in the statement itself', async () => {
+    // Query shape, not state — the same distinction this file draws for `recordSighting`. A
+    // find-then-delete would reach the same table state while reopening the race the UNIQUE
+    // fingerprint exists to close, and a state-only assertion cannot tell the two apart.
+    const rows = new Map<string, Record<string, unknown>>();
+    const { prisma, recommendation } = tableVerbs(rows);
+    const write = sighting();
+
+    await new RecommendationsRepository(prisma).withdrawOnSuppression(write);
+
+    expect(recommendation.deleteMany).toHaveBeenCalledTimes(1);
+    expect((recommendation.deleteMany.mock.calls[0]?.[0] as ManyArgs).where).toStrictEqual({
+      fingerprint: recommendationFingerprint({
+        analyzerId: write.analyzerId,
+        analyzerVersion: write.analyzerVersion,
+        groupKey: write.groupKey,
+      }),
+      status: { not: 'DISMISSED' },
+    });
+    expect(recommendation.findUnique).not.toHaveBeenCalled();
+    expect(recommendation.findFirst).not.toHaveBeenCalled();
+    expect(recommendation.delete).not.toHaveBeenCalled();
+  });
+
+  it('does not touch a DIFFERENT group row — the fingerprint is the whole scope', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const { prisma } = tableVerbs(rows);
+    const repository = new RecommendationsRepository(prisma);
+    const other = sighting({
+      groupKey: { ...sighting().groupKey, decisionType: 'select_model' },
+    });
+
+    await repository.recordSighting(sighting());
+    await repository.recordSighting(other);
+
+    await repository.withdrawOnSuppression(sighting());
+
+    expect(rows.size).toBe(1);
+    expect([...rows.values()][0]?.['decisionType']).toBe('select_model');
+  });
+
+  it('refreshes the tombstone with the same five columns a re-sighting writes, and no others', async () => {
+    // §21's lifecycle is the omissions. A refresh that carried `status`, `firstSeenAt`,
+    // `statusNote` or `statusChangedAt` would let an analysis run overwrite a human act.
+    const rows = new Map<string, Record<string, unknown>>();
+    const { prisma, recommendation } = tableVerbs(rows);
+    const repository = new RecommendationsRepository(prisma);
+
+    await repository.recordSighting(sighting());
+    const [fingerprint] = [...rows.keys()];
+    rows.set(fingerprint ?? '', { ...rows.get(fingerprint ?? ''), status: 'DISMISSED' });
+
+    await repository.withdrawOnSuppression(sighting({ observedAt: RE_OBSERVED_AT }));
+
+    const data = (recommendation.updateMany.mock.calls[0]?.[0] as ManyArgs).data ?? {};
+
+    expect(Object.keys(data).sort()).toStrictEqual([
+      'configSnapshot',
+      'counterexamples',
+      'evidence',
+      'lastSeenAt',
+      'sourceWatermark',
+    ]);
   });
 });
 

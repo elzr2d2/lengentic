@@ -74,7 +74,7 @@ export class AnalysisService {
     // failure mode is a deadlock rather than a result.
     for (const aggregate of aggregateAll(records)) {
       const evaluation = evaluateGates(aggregate, this.config);
-      const recommendationId = await this.persistIfCandidate(
+      const recommendationId = await this.persistOrWithdraw(
         aggregate,
         evaluation,
         sourceWatermark,
@@ -95,19 +95,27 @@ export class AnalysisService {
   }
 
   /**
-   * §22: only a CANDIDATE becomes a persisted row. A SUPPRESSED group is returned in the
-   * response and never persisted — there is no suppression table and no suppression history in
-   * the MVP — so this returns `null` for one and writes nothing.
+   * §22: only a CANDIDATE becomes a persisted row, and a SUPPRESSED group is not an entity.
+   *
+   * The second half of that sentence is a statement about the TABLE, not only about this
+   * run's writes. "Do not write a row" and "no row exists" are different claims, and the 5b
+   * phase gate found daylight between them: a group persisted while it was a CANDIDATE and
+   * later suppressed kept its row, its OPEN status and the superseded evidence of the run
+   * that emitted it, and `GET /v1/recommendations` went on serving the claim the analyzer had
+   * just refused to make (Tester FINDING 1). So a suppression withdraws the row rather than
+   * merely declining to write one — with the DISMISSED tombstone as the single exception
+   * (`docs/decisions/0015`).
+   *
+   * Either way this returns `null`: §22's biconditional says a SUPPRESSED group names no row,
+   * and `EvaluatedGroupSchema` refuses the response if it ever did.
    */
-  private async persistIfCandidate(
+  private async persistOrWithdraw(
     aggregate: DecisionAggregate,
     evaluation: GateEvaluation,
     sourceWatermark: Date,
     observedAt: Date,
   ): Promise<string | null> {
-    if (evaluation.verdict !== 'CANDIDATE') return null;
-
-    const recommendation = await this.recommendations.recordSighting({
+    const sighting = {
       category: DETERMINISTIC_CANDIDATE_ANALYZER.category,
       analyzerId: DETERMINISTIC_CANDIDATE_ANALYZER.id,
       analyzerVersion: DETERMINISTIC_CANDIDATE_ANALYZER.version,
@@ -117,7 +125,14 @@ export class AnalysisService {
       evidence: toWireEvidence(aggregate, evaluation.gates),
       counterexamples: toWireCounterexamples(aggregate.counterexamples),
       observedAt,
-    });
+    };
+
+    if (evaluation.verdict !== 'CANDIDATE') {
+      await this.recommendations.withdrawOnSuppression(sighting);
+      return null;
+    }
+
+    const recommendation = await this.recommendations.recordSighting(sighting);
 
     return recommendation.id;
   }

@@ -53,12 +53,18 @@ const GROUP_KEY = {
   contextKeyVersion: 'v1',
 };
 
-/** Two gates FAIL. Anything that reports fewer is the understated report §19 forbids. */
+/**
+ * Two gates FAIL. Anything that reports fewer is the understated report §19 forbids.
+ *
+ * `X >= Y` on a FAIL as well as a PASS: `countGate` and `ratioGate`
+ * (`analysis-engine/src/gates.ts:115,123`) build one string for both statuses, so a `2 < 5`
+ * here would be a comparison no producer can emit.
+ */
 const TWO_FAILURES: GateResults = [
   { id: 'G1_sample_count', status: 'PASS', comparison: '40 >= 30' },
-  { id: 'G2_context_diversity', status: 'FAIL', comparison: '2 < 5' },
+  { id: 'G2_context_diversity', status: 'FAIL', comparison: '2 >= 5' },
   { id: 'G3_dominance', status: 'PASS', comparison: '96.0% >= 90.0%' },
-  { id: 'G4_outcome_success', status: 'FAIL', comparison: '61.0% < 90.0%' },
+  { id: 'G4_outcome_success', status: 'FAIL', comparison: '61.0% >= 90.0%' },
   { id: 'G5_outcome_coverage', status: 'PASS', comparison: '88.0% >= 80.0%' },
 ];
 
@@ -89,6 +95,9 @@ function service(): AnalysisService {
 
   const recommendations = {
     recordSighting: () => Promise.resolve({ id: 'rec-1' } as unknown as Recommendation),
+    // A SUPPRESSED group withdraws whatever row it left behind (§22, and `docs/decisions/0015`
+    // for the DISMISSED tombstone). Every fixture here suppresses, so the run reaches this.
+    withdrawOnSuppression: () => Promise.resolve('ABSENT' as const),
   } as unknown as RecommendationsService;
 
   const clock: Clock = { now: () => OBSERVED_AT };
@@ -106,6 +115,7 @@ describe('AnalysisService.run parses its own output before returning it', () => 
       // forbidding, and a shape a consumer cannot tell from an honest one.
       failedGates: ['G2_context_diversity'],
       gates: TWO_FAILURES,
+      dominantOptionAttestedSuccessRate: 0.61,
       recommendationId: null,
     });
 
@@ -120,6 +130,7 @@ describe('AnalysisService.run parses its own output before returning it', () => 
       verdict: 'CANDIDATE',
       failedGates: [],
       gates: TWO_FAILURES.map((gate) => ({ ...gate, status: 'PASS' as const })),
+      dominantOptionAttestedSuccessRate: 0.61,
       // A recommendation nothing can link to. The response would render a claim with no row
       // behind it.
       recommendationId: null,

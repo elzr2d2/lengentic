@@ -47,6 +47,24 @@ export interface RecommendationRecord {
  * `observedAt` is the analysis run's single server-clock reading — one reading for the whole
  * run, so two recommendations emitted by one analysis cannot disagree about when it happened.
  */
+/**
+ * What happened to the persisted row of a group an analysis run has just SUPPRESSED.
+ *
+ * - `DELETED` — the row existed and was removed. §22: suppression is not an entity, and a
+ *   claim the analyzer has withdrawn must not stay in the table consumers read.
+ * - `KEPT_DISMISSED` — a human had dismissed it, so the row is kept as a tombstone with its
+ *   evidence refreshed to the suppressing run's (`docs/decisions/0015`). §21's "DISMISSED
+ *   stays DISMISSED" survives a suppression excursion; a DISMISSED row asserts no
+ *   recommendation, so keeping it does not make suppression an entity.
+ * - `ABSENT` — there was nothing to withdraw, which is the ordinary case: most suppressed
+ *   groups were never candidates.
+ *
+ * Three values rather than a boolean or a void: "nothing was there" and "something was kept
+ * on purpose" are different facts about the same call, and a caller that could not tell them
+ * apart could not report either.
+ */
+export type WithdrawalResult = 'DELETED' | 'KEPT_DISMISSED' | 'ABSENT';
+
 export interface RecommendationSighting {
   readonly category: RecommendationCategory;
   readonly analyzerId: string;

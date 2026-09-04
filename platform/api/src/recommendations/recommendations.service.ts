@@ -7,7 +7,11 @@ import type {
 } from '@lengentic/shared';
 
 import { CLOCK, type Clock } from '../common/clock';
-import type { RecommendationRecord, RecommendationSighting } from './recommendation-record';
+import type {
+  RecommendationRecord,
+  RecommendationSighting,
+  WithdrawalResult,
+} from './recommendation-record';
 import { RecommendationsRepository } from './recommendations.repository';
 
 /**
@@ -38,6 +42,24 @@ export class RecommendationsService {
    */
   async recordSighting(sighting: RecommendationSighting): Promise<Recommendation> {
     return toRecommendation(await this.repository.recordSighting(sighting));
+  }
+
+  /**
+   * One SUPPRESSED group from one analysis run — the same payload `recordSighting` takes,
+   * because the group key it identifies the row by is the same, and because a kept tombstone
+   * has to be refreshed with the run's own evidence.
+   *
+   * Named for what it does to a CLAIM, not for what it stores: nothing here writes a
+   * suppression. It withdraws a recommendation the analyzer no longer stands behind, and the
+   * one row it does not remove is a DISMISSED tombstone, which asserts no recommendation
+   * either (`docs/decisions/0015`, and `withdrawOnSuppression` in the repository for why).
+   *
+   * No `Recommendation` comes back. A withdrawn row is not a recommendation to return, and a
+   * tombstone is not one either; the analysis response names `recommendationId: null` for
+   * this group whatever happened here, and `EvaluatedGroupSchema` refuses anything else.
+   */
+  async withdrawOnSuppression(sighting: RecommendationSighting): Promise<WithdrawalResult> {
+    return this.repository.withdrawOnSuppression(sighting);
   }
 
   /**

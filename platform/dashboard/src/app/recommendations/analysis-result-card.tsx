@@ -1,6 +1,6 @@
 import type { AnalysisRunResponse, EvaluatedGroup } from '@lengentic/shared';
 import { FailedGateList, GateTable } from './gate-table';
-import { workflowLabel } from './format';
+import { percentOrNotAttested, workflowLabel } from './format';
 
 /**
  * §22's analysis response, and §25's **closing move**.
@@ -80,6 +80,21 @@ function EvaluatedGroupRow({ group }: { group: EvaluatedGroup }) {
       <div className="row">
         <span className="row-label">Workflow</span>
         <span className="value">{workflowLabel(group.groupKey)}</span>
+      </div>
+
+      {/*
+        `N/A`, never `0.0%`, and this row is the only place on the product where a reader can
+        actually see it: a null rate forces G4 NOT_APPLICABLE, which caps outcome coverage
+        below G5's threshold, which suppresses the group — and a suppressed group has no
+        persisted row for the recommendation card to render from. "We were told nothing" and
+        "we were told it always failed" send a reader to opposite conclusions, so the refusal
+        has to be legible on the refusal itself.
+      */}
+      <div className="row">
+        <span className="row-label">Attested success (dominant option)</span>
+        <span className="value">
+          {percentOrNotAttested(group.dominantOptionAttestedSuccessRate)}
+        </span>
       </div>
 
       {suppressed ? (

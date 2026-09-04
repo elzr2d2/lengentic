@@ -131,6 +131,7 @@ function suppressedCorpus(): AnalysisDecisionSource[] {
 interface Harness {
   readonly service: AnalysisService;
   readonly recordSighting: ReturnType<typeof vi.fn>;
+  readonly withdrawOnSuppression: ReturnType<typeof vi.fn>;
 }
 
 function serviceOver(
@@ -147,6 +148,8 @@ function serviceOver(
     } as unknown as Recommendation);
   });
 
+  const withdrawOnSuppression = vi.fn(() => Promise.resolve('ABSENT' as const));
+
   const repository = {
     listDecisionsForAnalysis: () => Promise.resolve([...sources]),
   } as unknown as AnalysisRepository;
@@ -154,12 +157,13 @@ function serviceOver(
   return {
     service: new AnalysisService(
       repository,
-      { recordSighting } as unknown as RecommendationsService,
+      { recordSighting, withdrawOnSuppression } as unknown as RecommendationsService,
       clock,
       STALE_THRESHOLD_MS,
       config,
     ),
     recordSighting,
+    withdrawOnSuppression,
   };
 }
 
@@ -233,6 +237,55 @@ describe('AnalysisService.run — a SUPPRESSED group persists no Recommendation 
 
     expect(byVerdict.get('CANDIDATE')?.recommendationId).toBe('rec-1');
     expect(byVerdict.get('SUPPRESSED')?.recommendationId).toBeNull();
+  });
+
+  it('withdraws the row a suppressed group may already have — not writing one is not the same as none existing', async () => {
+    // "Do not write a row" and "no row exists" are different claims, and the 5b phase gate
+    // found daylight between them: a group that was a CANDIDATE last run and is SUPPRESSED
+    // this run kept its row, its OPEN status and the superseded evidence, and the list read
+    // went on serving it (Tester FINDING 1). §22's line is about the table, so the suppressed
+    // branch has to ASK about the row rather than silently skip it.
+    const { service, recordSighting, withdrawOnSuppression } = serviceOver(suppressedCorpus());
+
+    await service.run();
+
+    expect(recordSighting.mock.calls).toStrictEqual([]);
+    expect(withdrawOnSuppression).toHaveBeenCalledTimes(1);
+    expect(
+      (withdrawOnSuppression.mock.calls[0]?.[0] as RecommendationSighting).groupKey.decisionType,
+    ).toBe('batch_iteration_size');
+  });
+
+  it('hands the withdrawal THIS run evidence, so a kept tombstone cannot serve the superseded claim', async () => {
+    // The DISMISSED row that survives a suppression is refreshed rather than frozen
+    // (`docs/decisions/0015`). It can only be refreshed if the suppressing run's own evidence
+    // reaches the write — the defect being repaired is a row whose evidence its gates no
+    // longer support, and a stale tombstone is that defect with a different status column.
+    const { service, withdrawOnSuppression } = serviceOver(suppressedCorpus());
+
+    await service.run();
+
+    const withdrawn = withdrawOnSuppression.mock.calls[0]?.[0] as RecommendationSighting;
+
+    expect(withdrawn.evidence.sampleCount).toBe(3);
+    expect(withdrawn.evidence.gates.map((gate) => gate.status)).toStrictEqual([
+      'FAIL',
+      'FAIL',
+      'PASS',
+      'NOT_APPLICABLE',
+      'FAIL',
+    ]);
+    expect(withdrawn.observedAt).toStrictEqual(OBSERVED_AT);
+  });
+
+  it('never withdraws a row for a group it has just persisted', async () => {
+    // The paired negative. A withdrawal on the CANDIDATE path would delete the recommendation
+    // the same run just wrote, and the response would name an id with no row behind it.
+    const { service, withdrawOnSuppression } = serviceOver(candidateCorpus());
+
+    await service.run();
+
+    expect(withdrawOnSuppression.mock.calls).toStrictEqual([]);
   });
 });
 

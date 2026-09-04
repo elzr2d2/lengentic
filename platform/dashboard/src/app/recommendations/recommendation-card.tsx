@@ -65,10 +65,16 @@ export function RecommendationCard({ recommendation }: { recommendation: Recomme
       <h3 className="section-title">
         Counterexamples ({String(recommendation.counterexamples.length)})
       </h3>
-      <Counterexamples
-        counterexamples={recommendation.counterexamples}
-        concentration={evidence.minorityContextConcentration}
-      />
+      {/*
+        Two components, not one, because they render two DIFFERENT populations
+        (`MVP_PLAN_V3.md:967`, `analysis-engine/src/aggregate.ts:158-169` — "Do not compute one
+        from the other"). `<Concentration>` used to sit inside the non-empty branch of
+        `<Counterexamples>`, which silently dropped the concentration line for every group
+        whose minority rows all failed or went unattested — the case where the minority is the
+        only minority evidence there is (Reviewer S1 / Tester FINDING 2, 5b phase gate).
+      */}
+      <Counterexamples counterexamples={recommendation.counterexamples} />
+      <Concentration concentration={evidence.minorityContextConcentration} />
 
       <h3 className="section-title">Note</h3>
       <p className="note">
@@ -186,13 +192,7 @@ function SuggestedAction({ dominantOption }: { dominantOption: string | null }) 
  * to make out loud; rendering nothing would be indistinguishable from a page that does not
  * report counterevidence at all.
  */
-function Counterexamples({
-  counterexamples,
-  concentration,
-}: {
-  counterexamples: readonly Counterexample[];
-  concentration: readonly ContextConcentration[];
-}) {
+function Counterexamples({ counterexamples }: { counterexamples: readonly Counterexample[] }) {
   if (counterexamples.length === 0) {
     return (
       <p className="note-inline">
@@ -203,15 +203,11 @@ function Counterexamples({
   }
 
   return (
-    <>
-      <ul className="counterexample-list">
-        {counterexamples.map((counterexample) => (
-          <CounterexampleRow key={counterexample.decisionId} counterexample={counterexample} />
-        ))}
-      </ul>
-
-      <Concentration concentration={concentration} />
-    </>
+    <ul className="counterexample-list">
+      {counterexamples.map((counterexample) => (
+        <CounterexampleRow key={counterexample.decisionId} counterexample={counterexample} />
+      ))}
+    </ul>
   );
 }
 
@@ -246,6 +242,15 @@ function CounterexampleRow({ counterexample }: { counterexample: Counterexample 
  * counterexamples also include dominant-option failures, and those are not minority rows.
  * Dividing by the wrong denominator would understate exactly how concentrated the minority is,
  * which is the one number the escape hatch is built from.
+ *
+ * For the same reason it is rendered independently of whether there are any counterexamples
+ * at all. A group whose dominant option never failed and whose minority rows are all FAILURE
+ * or UNKNOWN has an empty counterexample list and a non-empty concentration, and that is the
+ * case where §18's minority block is the ONLY minority evidence on the page.
+ *
+ * `null` on an empty array, not a "none" sentence: unlike `counterexamples`, an absent
+ * concentration is not a claim the page has to make out loud — a group with no minority rows
+ * has nothing to concentrate, which its own distribution already says.
  */
 function Concentration({ concentration }: { concentration: readonly ContextConcentration[] }) {
   if (concentration.length === 0) return null;

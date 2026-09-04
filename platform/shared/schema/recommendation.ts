@@ -344,8 +344,16 @@ export const RECOMMENDATIONS_PATH = '/v1/recommendations';
  * configuration and are recorded on each row as `configSnapshot`. The schema exists so the
  * endpoint has something to validate against and so "the body carries no parameters" is a
  * checkable statement rather than an omission.
+ *
+ * `.default({})` is what makes "no parameters" true of the REQUEST and not only of the body:
+ * an endpoint documented as taking none must accept `curl -X POST /v1/analysis/run` with no
+ * `content-type` and no body at all, which is the plainest invocation there is and the one a
+ * demo or a shell script reaches for. Without the default that call arrives as `undefined`
+ * and `z.object({})` rejects it — a 400 on the documented invocation (Tester, 5b phase gate,
+ * FINDING 4). The default applies to `undefined` alone, so an array, a string or any other
+ * non-object body is still a 400.
  */
-export const AnalysisRunRequestSchema = z.object({});
+export const AnalysisRunRequestSchema = z.object({}).default({});
 
 /**
  * One group the engine looked at — emitted or not.
@@ -371,6 +379,28 @@ export const EvaluatedGroupSchema = z
     failedGates: z.array(GateIdSchema),
     /** One entry per `GATE_IDS` member, in `GATE_IDS` order, whatever the verdict. */
     gates: GateResultsSchema,
+    /**
+     * 0..1, or `null` when nothing has been attested for the dominant option — the same
+     * field, with the same meaning, as `RecommendationEvidence`'s.
+     *
+     * The one evidence number that is carried on an otherwise evidence-free row, and it is
+     * here because the Definition-of-Done line above it ("renders `N/A`, never `0.0%`, when
+     * no outcomes are attested") is otherwise **unreachable through the running product**.
+     * The null case implies G4 is NOT_APPLICABLE, which implies every attested row belongs
+     * to a minority option, which caps `outcomeCoverage` at `1 - dominancePercentage` — at
+     * most 10% wherever G3 passes at its 90% default — so G5 always fails and the group is
+     * always SUPPRESSED. A SUPPRESSED group persists no row, and a persisted row is a
+     * CANDIDATE by construction, so no persisted recommendation can ever carry the null the
+     * renderer exists to refuse. Tester measured exactly that at the 5b phase gate: `N/A`
+     * rendered 0 times against the real API, and `dominantOptionAttestedSuccessRate`
+     * appeared 0 times in the live analysis response (FINDING 3).
+     *
+     * Carried on **every** evaluated group, SUPPRESSED ones included, for that reason: the
+     * SUPPRESSED group is the only place the null is producible, so excluding it would leave
+     * the field decorative. Additive — a consumer written against the previous shape still
+     * parses.
+     */
+    dominantOptionAttestedSuccessRate: z.number().min(0).max(1).nullable(),
     /** The persisted row's id for a CANDIDATE; null for a SUPPRESSED group. */
     recommendationId: IdSchema.nullable(),
   })

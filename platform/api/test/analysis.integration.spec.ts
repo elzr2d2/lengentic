@@ -149,6 +149,26 @@ function candidateEvents(decisionType: string, prefix: string, runId: string = R
   return events;
 }
 
+/**
+ * 30 further NO decisions in an existing group, every one attested SUCCESS: the world changing
+ * under a recommendation that was already emitted. Against `candidateEvents`' 38 YES / 2 NO it
+ * takes dominance from 95.0% to 54.3% and fails G3 alone — coverage stays at 100% and the
+ * dominant option's own success rate does not move, so the verdict flips on one gate and
+ * nothing else.
+ */
+function flipEvents(decisionType: string, prefix: string, runId: string = RUN_ID): Event[] {
+  const events: Event[] = [];
+
+  for (let i = 0; i < 30; i += 1) {
+    events.push(
+      decision(`${prefix}-${String(i)}`, decisionType, `ctx_${String(i % 8)}`, 'NO', runId),
+    );
+    events.push(attest(`${prefix}-${String(i)}`, 'SUCCESS', runId));
+  }
+
+  return events;
+}
+
 describe('POST /v1/analysis/run and GET /v1/recommendations against a real Postgres', () => {
   let container: StartedPostgreSqlContainer;
   let app: NestExpressApplication;
@@ -438,6 +458,170 @@ describe('POST /v1/analysis/run and GET /v1/recommendations against a real Postg
     );
     expect(await prisma.client.recommendation.count()).toBe(1);
     expect((await list()).body.recommendations).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // CANDIDATE -> SUPPRESSED. The transition, against the table.
+  // -------------------------------------------------------------------------
+
+  it('deletes the row a group left behind once its own evidence suppresses it', async () => {
+    // The 5b phase gate's FINDING 1, reproduced through the real ingest path. The world
+    // changes — 30 further NO decisions arrive in the same §18 group — and the group that was
+    // a CANDIDATE is now refused on G3. Before this repair the row survived with the previous
+    // run's evidence (OPEN, 40 samples, G3 PASS) while the response said SUPPRESSED, and
+    // `GET /v1/recommendations` went on serving the superseded claim.
+    await ingest([
+      runStarted(RUN_ID, 'demo-workflow', 'a1b2c3d'),
+      runCompleted(RUN_ID),
+      ...candidateEvents('transition_type', 'd-tr'),
+    ]);
+
+    const first = await analyze();
+    expect(first.body.evaluatedGroups[0]!.verdict).toBe('CANDIDATE');
+    expect(await prisma.client.recommendation.count()).toBe(1);
+
+    await ingest(flipEvents('transition_type', 'd-tr-flip'));
+
+    const second = await analyze();
+    const group = second.body.evaluatedGroups[0]!;
+
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    // 38 YES against 32 NO: 54.3% dominance, and nothing else moved.
+    expect(group.verdict).toBe('SUPPRESSED');
+    expect(group.failedGates).toStrictEqual(['G3_dominance']);
+    expect(group.recommendationId).toBeNull();
+
+    // The claim is gone from the table, not merely absent from this run's writes.
+    expect(await prisma.client.recommendation.count()).toBe(0);
+    expect((await list()).body.recommendations).toStrictEqual([]);
+  });
+
+  it('keeps a DISMISSED row as a tombstone, carrying the suppressing run evidence rather than the stale one', async () => {
+    // `docs/decisions/0015`. Deleting it would lose §21's "DISMISSED stays DISMISSED" across a
+    // suppression excursion; freezing it would leave a row serving evidence its own gates no
+    // longer support, which is the defect this repair exists to remove.
+    await ingest([
+      runStarted(RUN_ID, 'demo-workflow', 'a1b2c3d'),
+      runCompleted(RUN_ID),
+      ...candidateEvents('tombstone_type', 'd-tomb'),
+    ]);
+
+    const first = await analyze();
+    const id = first.body.evaluatedGroups[0]!.recommendationId!;
+
+    const patched = await request(httpServer(app))
+      .patch(`/v1/recommendations/${id}/status`)
+      .send({ status: 'DISMISSED', note: 'known trade-off' });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+
+    const dismissed = await prisma.client.recommendation.findUniqueOrThrow({ where: { id } });
+
+    await ingest(flipEvents('tombstone_type', 'd-tomb-flip'));
+
+    const second = await analyze();
+    expect(second.body.evaluatedGroups[0]!.verdict).toBe('SUPPRESSED');
+    expect(second.body.evaluatedGroups[0]!.recommendationId).toBeNull();
+
+    const kept = await prisma.client.recommendation.findUnique({ where: { id } });
+    expect(
+      kept,
+      'the dismissal was deleted by an analysis run that has no opinion about it',
+    ).not.toBeNull();
+    expect(kept!.status).toBe('DISMISSED');
+    expect(kept!.statusNote).toBe('known trade-off');
+    expect(kept!.statusChangedAt).toStrictEqual(dismissed.statusChangedAt);
+    expect(kept!.firstSeenAt).toStrictEqual(dismissed.firstSeenAt);
+
+    // The refresh: 70 samples and a FAILING G3, not the 40 samples and the PASS it was
+    // dismissed over. A tombstone still serving the old evidence is the same defect with a
+    // different status column.
+    const evidence = kept!.evidence as {
+      sampleCount: number;
+      dominancePercentage: number;
+      gates: { id: string; status: string }[];
+    };
+    expect(evidence.sampleCount).toBe(70);
+    expect(evidence.dominancePercentage).toBeLessThan(0.9);
+    expect(evidence.gates.find((gate) => gate.id === 'G3_dominance')?.status).toBe('FAIL');
+
+    // And on the wire, where §25 beat 4 renders it. The row is still listed — hiding it would
+    // hide the counterevidence it was dismissed over.
+    const page = await list();
+    expect(page.body.recommendations).toHaveLength(1);
+    expect(page.body.recommendations[0]?.status).toBe('DISMISSED');
+    expect(page.body.recommendations[0]?.evidence.sampleCount).toBe(70);
+  });
+
+  // -------------------------------------------------------------------------
+  // The wire fields §25 renders off the analysis response.
+  // -------------------------------------------------------------------------
+
+  it('carries dominantOptionAttestedSuccessRate as null when nothing is attested for the dominant option', async () => {
+    // The `N/A` Definition-of-Done line has no other live path: the null forces G4
+    // NOT_APPLICABLE, which caps coverage at the minority share, which fails G5 and suppresses
+    // the group — and a SUPPRESSED group persists no row. 36 unattested YES over seven
+    // contexts plus 4 attested NO in `cold_start`, which is Tester's own construction.
+    const events: Event[] = [runStarted(RUN_ID, 'demo-workflow', 'a1b2c3d'), runCompleted(RUN_ID)];
+    for (let i = 0; i < 36; i += 1) {
+      events.push(
+        decision(`d-na-yes-${String(i)}`, 'nothing_attested', `ctx_${String(i % 7)}`, 'YES'),
+      );
+    }
+    for (let i = 0; i < 4; i += 1) {
+      events.push(decision(`d-na-no-${String(i)}`, 'nothing_attested', 'cold_start', 'NO'));
+      events.push(attest(`d-na-no-${String(i)}`, 'SUCCESS'));
+    }
+    await ingest(events);
+
+    const { status, body } = await analyze();
+    const group = body.evaluatedGroups[0]!;
+
+    expect(status, JSON.stringify(body)).toBe(200);
+    expect(group.verdict).toBe('SUPPRESSED');
+    expect(group.failedGates).toStrictEqual(['G5_outcome_coverage']);
+    expect(group.gates.find((gate) => gate.id === 'G4_outcome_success')?.status).toBe(
+      'NOT_APPLICABLE',
+    );
+    // The field itself: 0 occurrences in the live analysis response before this repair.
+    expect(group.dominantOptionAttestedSuccessRate).toBeNull();
+    expect(await prisma.client.recommendation.count()).toBe(0);
+  });
+
+  it('carries the rate as a number when the dominant option does have attested outcomes', async () => {
+    await ingest([
+      runStarted(RUN_ID, 'demo-workflow', 'a1b2c3d'),
+      runCompleted(RUN_ID),
+      ...candidateEvents('rate_type', 'd-rate'),
+    ]);
+
+    const { body } = await analyze();
+
+    // 36 of 38 dominant-option outcomes attested SUCCESS — the same number G4 compares.
+    expect(body.evaluatedGroups[0]!.dominantOptionAttestedSuccessRate).toBeCloseTo(36 / 38, 10);
+  });
+
+  // -------------------------------------------------------------------------
+  // §22 takes no parameters — including no body at all.
+  // -------------------------------------------------------------------------
+
+  it('accepts a parameterless POST — no content-type, no body — as §22 documents it', async () => {
+    // `curl -X POST http://localhost:3011/v1/analysis/run`, the plainest invocation of an
+    // endpoint documented as taking no parameters, answered 400 before this repair (Tester,
+    // FINDING 4). The Dashboard was unaffected because it sends `{}` with a JSON content-type,
+    // so nothing on the UI path could have caught it.
+    const response = await request(httpServer(app)).post('/v1/analysis/run');
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((response.body as AnalysisRunResponse).evaluatedGroups).toStrictEqual([]);
+  });
+
+  it('still refuses a body that is not an object — "no parameters" is not "anything goes"', async () => {
+    const array = await request(httpServer(app))
+      .post('/v1/analysis/run')
+      .set('content-type', 'application/json')
+      .send('[]');
+
+    expect(array.status).toBe(400);
   });
 
   it('reaches §21 PATCH through the module graph AnalysisModule imports', async () => {

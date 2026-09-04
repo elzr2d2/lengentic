@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ANALYSIS_RUN_PATH,
+  AnalysisRunRequestSchema,
   AnalysisRunResponseSchema,
   AnalyzerConfigSnapshotSchema,
   CounterexampleSchema,
@@ -266,6 +267,7 @@ describe('§22 analysis response — every evaluated group, not only the emitted
         { id: 'G4_outcome_success', status: 'PASS', comparison: '93.3% >= 90.0%' },
         { id: 'G5_outcome_coverage', status: 'PASS', comparison: '96.8% >= 80.0%' },
       ],
+      dominantOptionAttestedSuccessRate: 0.933,
       recommendationId: null,
     });
 
@@ -284,6 +286,7 @@ describe('§22 analysis response — every evaluated group, not only the emitted
           ? { ...gate, status: 'FAIL' }
           : gate,
       ),
+      dominantOptionAttestedSuccessRate: 0.61,
       recommendationId: null,
     });
 
@@ -297,8 +300,55 @@ describe('§22 analysis response — every evaluated group, not only the emitted
         verdict: 'SUPPRESSED',
         failedGates: ['G2_context_diversity'],
         gates: PASSING_GATES,
+        dominantOptionAttestedSuccessRate: 0.96,
       }).success,
     ).toBe(false);
+  });
+
+  it('carries the attested success rate on every group, SUPPRESSED included, and admits its null', () => {
+    // The N/A Definition-of-Done line (`MVP_PLAN_V3.md:2318`) has no other live path. A null
+    // rate means G4 is NOT_APPLICABLE, which caps `outcomeCoverage` at `1 - dominance` — at
+    // most 10% wherever G3 passes at 90% — so G5 fails, the verdict is SUPPRESSED, and no row
+    // is persisted. Tester measured `N/A` rendered 0 times against the real API for exactly
+    // that reason (5b phase gate, FINDING 3). The SUPPRESSED group is where the null lives.
+    const suppressed = EvaluatedGroupSchema.parse(
+      evaluatedGroup({
+        verdict: 'SUPPRESSED',
+        failedGates: ['G5_outcome_coverage'],
+        gates: PASSING_GATES.map((gate) =>
+          gate.id === 'G4_outcome_success'
+            ? { ...gate, status: 'NOT_APPLICABLE', comparison: 'no attested outcome for YES' }
+            : gate.id === 'G5_outcome_coverage'
+              ? { ...gate, status: 'FAIL', comparison: '10.0% >= 80.0%' }
+              : gate,
+        ),
+        dominantOptionAttestedSuccessRate: null,
+        recommendationId: null,
+      }),
+    );
+
+    expect(suppressed.dominantOptionAttestedSuccessRate).toBeNull();
+  });
+
+  it('refuses a rate outside 0..1 — a share is not a percentage', () => {
+    expect(
+      EvaluatedGroupSchema.safeParse(evaluatedGroup({ dominantOptionAttestedSuccessRate: 96 }))
+        .success,
+    ).toBe(false);
+  });
+
+  it('accepts a request with no body at all — §22 says the endpoint takes no parameters', () => {
+    // `curl -X POST /v1/analysis/run`, with no `content-type` and no body, is the plainest
+    // invocation of an endpoint documented as taking none (`MVP_PLAN_V3.md:1215`). It arrives
+    // at the pipe as `undefined`; before the default it was a 400 (Tester, FINDING 4).
+    expect(AnalysisRunRequestSchema.parse(undefined)).toStrictEqual({});
+    expect(AnalysisRunRequestSchema.parse({})).toStrictEqual({});
+  });
+
+  it('still refuses a body that is not an object — "no parameters" is not "anything goes"', () => {
+    expect(AnalysisRunRequestSchema.safeParse([]).success).toBe(false);
+    expect(AnalysisRunRequestSchema.safeParse('x').success).toBe(false);
+    expect(AnalysisRunRequestSchema.safeParse(null).success).toBe(false);
   });
 
   it('the response requires `evaluatedGroups`, and an empty analysis is an empty array', () => {
@@ -409,6 +459,7 @@ function evaluatedGroup(overrides: Record<string, unknown> = {}): Record<string,
     verdict: 'CANDIDATE',
     failedGates: [],
     gates: PASSING_GATES,
+    dominantOptionAttestedSuccessRate: 0.96,
     recommendationId: 'rec-1',
     ...overrides,
   };

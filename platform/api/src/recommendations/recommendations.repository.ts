@@ -15,7 +15,11 @@ import type { PrismaClient } from '@lengentic/database';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { recommendationFingerprint } from './fingerprint';
-import type { RecommendationRecord, RecommendationSighting } from './recommendation-record';
+import type {
+  RecommendationRecord,
+  RecommendationSighting,
+  WithdrawalResult,
+} from './recommendation-record';
 
 // Row and JSON-input shapes recovered structurally from `PrismaClient` itself — the same
 // technique `runs.repository.ts` and `decisions.repository.ts` use, and for the same reason:
@@ -112,6 +116,26 @@ function toJsonInput(
 }
 
 /**
+ * The five columns an analysis run re-states about a group it has just looked at, and the
+ * only five — `status`, `firstSeenAt`, `statusNote`, `statusChangedAt` and the six identity
+ * columns are absent, and each absence is a §21 rule (see `recordSighting`).
+ *
+ * One definition rather than two because both writes that re-state a sighting use it:
+ * `recordSighting`'s `update` branch, and the DISMISSED tombstone `withdrawOnSuppression`
+ * refreshes. A sixth column added to one and not the other would be a row whose evidence
+ * agrees with its gates on one path and not the other.
+ */
+function resightedColumns(sighting: RecommendationSighting) {
+  return {
+    configSnapshot: toJsonInput(sighting.configSnapshot),
+    sourceWatermark: sighting.sourceWatermark,
+    evidence: toJsonInput(sighting.evidence),
+    counterexamples: toJsonInput(sighting.counterexamples),
+    lastSeenAt: sighting.observedAt,
+  };
+}
+
+/**
  * Newest discovery first, tie-broken on `id`.
  *
  * `firstSeenAt` and not `lastSeenAt`, deliberately. An analysis run stamps every row it
@@ -190,13 +214,7 @@ export class RecommendationsRepository {
       groupKey: sighting.groupKey,
     });
 
-    const resighted = {
-      configSnapshot: toJsonInput(sighting.configSnapshot),
-      sourceWatermark: sighting.sourceWatermark,
-      evidence: toJsonInput(sighting.evidence),
-      counterexamples: toJsonInput(sighting.counterexamples),
-      lastSeenAt: sighting.observedAt,
-    };
+    const resighted = resightedColumns(sighting);
 
     const row = await this.prisma.client.recommendation.upsert({
       where: { fingerprint },
@@ -217,6 +235,58 @@ export class RecommendationsRepository {
     });
 
     return toRecommendationRecord(row);
+  }
+
+  /**
+   * The other half of §22's "a SUPPRESSED group is not an entity": a group that USED to be a
+   * CANDIDATE and no longer is must not keep the row its last candidacy wrote.
+   *
+   * `recordSighting` says "do not write one"; it never said "remove the one that is there",
+   * and the two are not the same statement. Tester measured the gap at the 5b phase gate
+   * (FINDING 1): a group answered `SUPPRESSED | failedGates ["G3_dominance"]` on the wire
+   * while the table held `OPEN | 50 samples | 0.96 dominance | G3 PASS` for the same group at
+   * the same instant, and `GET /v1/recommendations` served it. The page then printed the
+   * refusal and the superseded claim one above the other.
+   *
+   * **DISMISSED is the one exception, and it is kept as a tombstone** (human decision,
+   * `docs/decisions/0015`). §21's "DISMISSED stays DISMISSED" would otherwise be lost across
+   * a suppression excursion — dismissed, suppressed, candidate again would resurrect as a
+   * fresh `OPEN` row, and the human's dismissal would have been deleted by an analysis run
+   * that has no opinion about it. A DISMISSED row asserts no recommendation, so keeping it
+   * does not make suppression an entity.
+   *
+   * The tombstone's evidence is REFRESHED to the suppressing run's rather than left frozen:
+   * the defect being repaired is a row serving evidence its own gates no longer support, and
+   * a stale tombstone is that defect with a different status column. The refreshed row shows
+   * the failing gate that suppressed it. Excluding it from the list read instead was
+   * rejected — `listRecommendations` returns DISMISSED rows deliberately, so the reader can
+   * see the counterevidence they dismissed it over, and hiding it would trade one silent
+   * omission for another (§19: an understated report is the defect).
+   *
+   * Two statements, each atomic, and no read-then-branch: `deleteMany` removes the row only
+   * when it is not DISMISSED, and the `updateMany` that follows can only reach a row the
+   * delete deliberately left behind. A find-then-write would reopen exactly the race the
+   * UNIQUE fingerprint exists to close.
+   */
+  async withdrawOnSuppression(sighting: RecommendationSighting): Promise<WithdrawalResult> {
+    const fingerprint = recommendationFingerprint({
+      analyzerId: sighting.analyzerId,
+      analyzerVersion: sighting.analyzerVersion,
+      groupKey: sighting.groupKey,
+    });
+
+    const deleted = await this.prisma.client.recommendation.deleteMany({
+      where: { fingerprint, status: { not: 'DISMISSED' } },
+    });
+
+    if (deleted.count > 0) return 'DELETED';
+
+    const kept = await this.prisma.client.recommendation.updateMany({
+      where: { fingerprint },
+      data: resightedColumns(sighting),
+    });
+
+    return kept.count > 0 ? 'KEPT_DISMISSED' : 'ABSENT';
   }
 
   /**

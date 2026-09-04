@@ -12,10 +12,10 @@ import { RecommendationsService } from './recommendations.service';
  * endpoint (`p5.analysis-endpoint`) needs to record what a run saw, and handing it the
  * repository instead would push the wire mapping and the clock reading into the caller.
  *
- * Not yet imported by `AppModule` — `platform/api/src/app.module.ts` is outside this lane's
- * `allowed_paths` and belongs to `p5.analysis-endpoint`, which registers this module
- * alongside its own `POST /v1/analysis/run`. Until then the PATCH route is unrouted: every
- * unit below exists and is tested, and nothing serves HTTP.
+ * Reached from `AppModule` through `AnalysisModule`, which imports this module alongside its
+ * own `POST /v1/analysis/run` (`23b110d`). Both routes therefore serve HTTP, and
+ * `analysis.integration.spec.ts` — "reaches §21 PATCH through the module graph AnalysisModule
+ * imports" — is what says so against a real server rather than against this comment.
  *
  * `PrismaService` arrives through the `@Global` `PrismaModule`, which is why nothing is
  * imported here.
