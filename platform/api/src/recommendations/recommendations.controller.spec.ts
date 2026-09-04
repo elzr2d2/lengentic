@@ -1,6 +1,6 @@
 import { NotFoundException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
-import type { Recommendation } from '@lengentic/shared';
+import type { Recommendation, RecommendationListView } from '@lengentic/shared';
 
 import { RecommendationsController } from './recommendations.controller';
 import type { RecommendationsService } from './recommendations.service';
@@ -54,5 +54,29 @@ describe('RecommendationsController', () => {
     await expect(controller.setStatus('nope', { status: 'DISMISSED' })).rejects.toThrow(
       'Recommendation not found',
     );
+  });
+});
+
+describe('RecommendationsController.list', () => {
+  const PAGE = {
+    recommendations: [DISMISSED],
+    limit: 50,
+    offset: 0,
+    hasMore: false,
+  } as RecommendationListView;
+
+  it('returns the page the service produced, unchanged', async () => {
+    const controller = controllerOver({ list: () => Promise.resolve(PAGE) });
+
+    await expect(controller.list({ limit: 50, offset: 0 })).resolves.toStrictEqual(PAGE);
+  });
+
+  it('passes the parsed window through rather than substituting a default of its own', async () => {
+    const list = vi.fn(() => Promise.resolve(PAGE));
+    const controller = controllerOver({ list });
+
+    await controller.list({ limit: 10, offset: 40 });
+
+    expect(list).toHaveBeenCalledWith({ limit: 10, offset: 40 });
   });
 });

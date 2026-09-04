@@ -248,8 +248,13 @@ function stubApi(routes: Readonly<Record<string, StubbedRoute>>): { readonly ask
   return { asked };
 }
 
-function listOf(recommendations: readonly Recommendation[]): StubbedRoute {
-  return { status: 200, body: { recommendations } };
+/**
+ * One page of `GET /v1/recommendations`, in the envelope
+ * `platform/shared/schema/recommendation.ts` now freezes. The four fields are written out
+ * rather than spread from a default so that a change to the envelope fails here.
+ */
+function listOf(recommendations: readonly Recommendation[], hasMore = false): StubbedRoute {
+  return { status: 200, body: { recommendations, limit: 50, offset: 0, hasMore } };
 }
 
 async function renderPage(page: Promise<ReactElement>): Promise<string> {
@@ -297,13 +302,35 @@ describe('§25 beat 4 — Decision History', () => {
     expect(markup).not.toContain('run_tests_after_code_change');
   });
 
-  it('reads the list whether the API sends a bare array or wraps it in `recommendations`', async () => {
+  it('calls a bare array contract drift now that the envelope is frozen', async () => {
+    // The tolerance this replaces existed because no producer existed: `GET
+    // /v1/recommendations` 404ed, and `platform/shared` was outside `p5.recs-ui`'s
+    // allowed_paths, so the reader accepted both plausible shapes. One shape is frozen now,
+    // and a second one is drift the reader has to name rather than quietly absorb.
     stubApi({ 'GET /v1/recommendations': { status: 200, body: [RUN_TESTS] } });
 
     const markup = await renderPage(open());
 
-    expect(markup).toContain('run_tests_after_code_change');
-    expect(markup).not.toContain('contract mismatch');
+    expect(markup).toContain('contract mismatch');
+    expect(markup).not.toContain('run_tests_after_code_change');
+  });
+
+  it('says the page is a sample when the API reports more recommendations than it sent', async () => {
+    // API-4 paginates this read, so a Decision History rendered from one page is a sample.
+    // Saying so is the same rule §19 applies to gates: an understated report is the defect.
+    stubApi({ 'GET /v1/recommendations': listOf([RUN_TESTS], true) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('More recommendations exist than this page shows');
+  });
+
+  it('does not claim a further page when the API says there is none', async () => {
+    stubApi({ 'GET /v1/recommendations': listOf([RUN_TESTS], false) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).not.toContain('More recommendations exist than this page shows');
   });
 });
 
@@ -427,6 +454,37 @@ describe('§22 / §25 beat 6 — the Analyze action and the groups it refused', 
     // there is nothing to render, and the page must not imply otherwise.
     expect(markup).not.toContain('SUPPRESSED');
     expect(markup).not.toContain('batch_iteration_size');
+  });
+
+  it('calls an analysis body that is not the contract a contract mismatch, not a result', async () => {
+    // D06, 5b wave gate: every `POST /v1/analysis/run` fixture here used to be valid or a
+    // 500, so `runAnalysis`'s `safeParse` could be replaced with a blind pass-through and the
+    // whole suite stayed green. The list read had this test; the analysis read did not.
+    //
+    // The body below is drift a producer could really ship: a group that names ONE failing
+    // gate while its `gates` array carries two FAILs — §19's understated report, which
+    // `EvaluatedGroupSchema.superRefine` re-derives and refuses on every parse. A blind
+    // pass-through would render "Failed gates: G2 context_diversity" and hide G4.
+    stubApi({
+      'POST /v1/analysis/run': {
+        status: 200,
+        body: {
+          evaluatedGroups: [{ ...SUPPRESSED_GROUP, failedGates: ['G2_context_diversity'] }],
+        },
+      },
+      'GET /v1/recommendations': listOf([RUN_TESTS]),
+    });
+
+    const markup = await renderPage(open({ [ANALYZE_PARAM]: '1' }));
+
+    expect(markup).toContain('Analysis failed');
+    expect(markup).toContain('contract mismatch');
+    expect(markup).toContain('@lengentic/shared');
+    // The refusal must not also be rendered as a result: a page showing both would let a
+    // reader take the understated gate list as the answer.
+    expect(markup).not.toContain('batch_iteration_size');
+    // The list read is independent and still succeeded.
+    expect(markup).toContain('run_tests_after_code_change');
   });
 
   it('reports a failed analysis as a failed analysis, not as an empty result', async () => {

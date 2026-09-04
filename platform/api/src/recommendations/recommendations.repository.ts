@@ -112,6 +112,22 @@ function toJsonInput(
 }
 
 /**
+ * Newest discovery first, tie-broken on `id`.
+ *
+ * `firstSeenAt` and not `lastSeenAt`, deliberately. An analysis run stamps every row it
+ * touches with ONE `observedAt` reading (`analysis.service.ts` — "one clock reading for the
+ * whole run"), so ordering on `lastSeenAt` would give every row on the page an identical key
+ * and re-shuffle the entire list on each re-analysis, while `firstSeenAt` is written once and
+ * never updated (`recordSighting`'s `update` branch omits it). The reader sees the same order
+ * twice unless something new was actually found.
+ *
+ * That same single reading is why the `id` tie-break is required rather than decorative: two
+ * recommendations first seen by one run collide exactly, and leaving the tie to Postgres would
+ * let page 2 repeat or skip a row page 1 already showed — the defect `RUN_LIST_ORDER` names.
+ */
+const RECOMMENDATION_LIST_ORDER = [{ firstSeenAt: 'desc' }, { id: 'desc' }] as const;
+
+/**
  * The `Recommendation` table — §21's entity and its lifecycle.
  *
  * No Prisma type crosses this file outward (`CLAUDE.md` ## Types): every public method takes
@@ -120,6 +136,24 @@ function toJsonInput(
 @Injectable()
 export class RecommendationsRepository {
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * One page of recommendations, every status included.
+   *
+   * DISMISSED rows are returned rather than filtered out: §21 keeps a dismissal so a
+   * re-analysis cannot resurrect it, and a list that hid them would make a dismissed
+   * recommendation indistinguishable from one that was never found — the reader would have no
+   * way to see the counterevidence they dismissed it over.
+   */
+  async listRecommendations(take: number, skip: number): Promise<RecommendationRecord[]> {
+    const rows = await this.prisma.client.recommendation.findMany({
+      orderBy: [...RECOMMENDATION_LIST_ORDER],
+      take,
+      skip,
+    });
+
+    return rows.map(toRecommendationRecord);
+  }
 
   /**
    * §21's re-analysis rule, in one statement: "re-analysis with the same fingerprint UPDATES

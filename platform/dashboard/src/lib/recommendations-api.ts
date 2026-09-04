@@ -2,7 +2,7 @@ import {
   ANALYSIS_RUN_PATH,
   AnalysisRunResponseSchema,
   RECOMMENDATIONS_PATH,
-  RecommendationSchema,
+  RecommendationListViewSchema,
   type AnalysisRunResponse,
   type Recommendation,
 } from '@lengentic/shared';
@@ -21,16 +21,16 @@ import { resolveApiBaseUrl } from './api';
  * older than this page" into a rendered, named state instead of a `TypeError` thrown deep
  * inside a component.
  *
- * ## The one shape that is not frozen
+ * ## The envelope, now frozen
  *
- * §22 froze `AnalysisRunResponseSchema`, and §21 froze `RecommendationSchema`. Neither §21
- * nor §22 specifies the **envelope** of the list read, and `platform/shared/schema/**` is
- * outside this packet's `allowed_paths`, so this file cannot freeze one either. It therefore
- * reads the array in both of the two shapes a producer could plausibly send — bare, or under
- * a `recommendations` key like `RunListViewSchema`'s `runs` — and validates the ELEMENTS
- * against the frozen `RecommendationSchema` in both cases. The elements are the contract that
- * matters here; the envelope is one key. `BACKLOG.md` carries the item to freeze
- * `RecommendationListViewSchema` in `platform/shared` and delete the tolerance.
+ * This file used to accept the list in either of the two shapes a producer could plausibly
+ * send — a bare array, or an array under a `recommendations` key — because §21 and §22 froze
+ * the entity and the analysis response but neither specified the list read's **envelope**,
+ * and `platform/shared/schema/**` was outside `p5.recs-ui`'s `allowed_paths`. The 5b wave
+ * gate found the reason there was no agreement to reach: `GET /v1/recommendations` did not
+ * exist at all, so there was no producer to agree with. `RecommendationListViewSchema` is now
+ * the frozen envelope and the tolerance is gone — one shape, and a second one is contract
+ * drift the reader is told about.
  */
 
 export type RecommendationsFetchFailure =
@@ -42,12 +42,16 @@ export type RecommendationsFetchFailure =
   | { kind: 'invalid'; reason: string; endpoint: string };
 
 export type RecommendationListResult =
-  { kind: 'ok'; recommendations: Recommendation[] } | RecommendationsFetchFailure;
+  /**
+   * `hasMore` travels with the page rather than being dropped here. The list is paginated
+   * (API-4) and this page asks for the default window, so a reader looking at 50 of 120
+   * decision groups has to be told — an understated Decision History is the same failure §19
+   * forbids one level up.
+   */
+  { kind: 'ok'; recommendations: Recommendation[]; hasMore: boolean } | RecommendationsFetchFailure;
 
 export type AnalysisRunResult =
   { kind: 'ok'; response: AnalysisRunResponse } | RecommendationsFetchFailure;
-
-const RecommendationArraySchema = RecommendationSchema.array();
 
 export async function fetchRecommendations(): Promise<RecommendationListResult> {
   const endpoint = `${resolveApiBaseUrl()}${RECOMMENDATIONS_PATH}`;
@@ -56,10 +60,10 @@ export async function fetchRecommendations(): Promise<RecommendationListResult> 
   if (raw.kind === 'unreachable') return raw;
   if (raw.kind === 'status') return { kind: 'http-error', httpStatus: raw.httpStatus, endpoint };
 
-  const parsed = RecommendationArraySchema.safeParse(unwrapList(raw.body));
+  const parsed = RecommendationListViewSchema.safeParse(raw.body);
 
   return parsed.success
-    ? { kind: 'ok', recommendations: parsed.data }
+    ? { kind: 'ok', recommendations: parsed.data.recommendations, hasMore: parsed.data.hasMore }
     : { kind: 'invalid', reason: describe(parsed.error), endpoint };
 }
 
@@ -83,19 +87,6 @@ export async function runAnalysis(): Promise<AnalysisRunResult> {
   return parsed.success
     ? { kind: 'ok', response: parsed.data }
     : { kind: 'invalid', reason: describe(parsed.error), endpoint };
-}
-
-/**
- * A bare array, or the array under `recommendations`. Anything else is handed on unchanged so
- * that `RecommendationArraySchema` — not this function — is what reports the mismatch, and
- * the reader gets Zod's issue list rather than a message this file invented.
- */
-function unwrapList(body: unknown): unknown {
-  if (body !== null && typeof body === 'object' && 'recommendations' in body) {
-    return body.recommendations;
-  }
-
-  return body;
 }
 
 type RawResponse =

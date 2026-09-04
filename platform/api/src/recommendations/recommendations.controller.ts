@@ -1,9 +1,12 @@
-import { Body, Controller, NotFoundException, Param, Patch } from '@nestjs/common';
+import { Body, Controller, Get, NotFoundException, Param, Patch, Query } from '@nestjs/common';
 import {
   IdSchema,
   RecommendationStatusPatchSchema,
+  RecommendationsListQuerySchema,
   type Recommendation,
+  type RecommendationListView,
   type RecommendationStatusPatch,
+  type RecommendationsListQuery,
 } from '@lengentic/shared';
 
 import { ZodValidationPipe, zodBody } from '../common/zod-validation.pipe';
@@ -13,10 +16,12 @@ import { RecommendationsService } from './recommendations.service';
  * §21's `PATCH /v1/recommendations/:id/status`. `main.ts` sets the global prefix `v1`, so
  * this controller's own path is `recommendations`.
  *
- * One route, deliberately. §21 specifies exactly this endpoint on the recommendation
- * resource; the list and detail reads the Dashboard needs are `p5.recs-ui`'s consumers and
- * `p5.analysis-endpoint`'s to expose, and a GET added here speculatively would be a second
- * lane's contract written by this one.
+ * Two routes. §21 specifies the PATCH; the GET is §25 beats 4 and 5's only content path —
+ * `evidence`, `minorityContextConcentration`, the attested rate and every counterexample live
+ * on the persisted recommendation and nowhere else, and §22's analysis response carries none
+ * of them. `RECOMMENDATIONS_PATH` was frozen in `platform/shared` before either lane ran; the
+ * route was decided and simply never built, which the 5b wave gate found as a 404 behind the
+ * whole Recommendations page.
  *
  * Transport only (`docs/ENGINEERING_STANDARDS.md` API-5): parse, call the service, turn "no
  * such recommendation" into a status code.
@@ -24,6 +29,18 @@ import { RecommendationsService } from './recommendations.service';
 @Controller('recommendations')
 export class RecommendationsController {
   constructor(private readonly recommendations: RecommendationsService) {}
+
+  /**
+   * `GET /v1/recommendations`. Paginated (API-4), and the query is parsed rather than read:
+   * an over-large `limit` is a 400 saying the page would have been short, not a silently
+   * clamped page of evidence.
+   */
+  @Get()
+  async list(
+    @Query(new ZodValidationPipe(RecommendationsListQuerySchema)) query: RecommendationsListQuery,
+  ): Promise<RecommendationListView> {
+    return this.recommendations.list(query);
+  }
 
   /**
    * `IdSchema` on the parameter for the same reason `RunsController` uses it: an over-long id

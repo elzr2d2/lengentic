@@ -14,8 +14,12 @@ import { AnalysisService } from './analysis.service';
  *
  * The two halves are kept honest by `analysis.controller.spec.ts`, which asserts that
  * `/v1/${CONTROLLER_PATH}/${RUN_ROUTE}` is exactly `ANALYSIS_RUN_PATH` from
- * `@lengentic/shared` — the same constant the Dashboard builds its URL from. A rename on
- * either side then fails a test rather than a demo.
+ * `@lengentic/shared` — the same constant the Dashboard builds its URL from — and pins both
+ * literals against §22. A rename on either side then fails a test rather than a demo.
+ *
+ * That spec did not exist when this comment was first written, and the 5b wave gate proved
+ * the cost: `CONTROLLER_PATH = 'analyses'` passed every test in the repository and 404ed the
+ * endpoint. The claim is now true.
  */
 export const CONTROLLER_PATH = 'analysis';
 export const RUN_ROUTE = 'run';

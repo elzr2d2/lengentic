@@ -281,6 +281,57 @@ export const RecommendationSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// The list read — `GET /v1/recommendations`
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /v1/recommendations` is an unbounded collection and is therefore paginated
+ * (`docs/ENGINEERING_STANDARDS.md` API-4). The cap is enforced by REJECTING an oversized
+ * `limit` rather than silently clamping it, exactly as `RunsListQuerySchema` does: a caller
+ * that asks for 5000 and receives 200 without being told has no way to know its page is
+ * short — and a short page of recommendations is a page of evidence that quietly went
+ * missing.
+ *
+ * The two bounds are `GET /v1/runs`' bounds. A second pair of numbers for the same question
+ * would be a difference a reader has to explain.
+ */
+export const RECOMMENDATIONS_LIST_DEFAULT_LIMIT = 50;
+export const RECOMMENDATIONS_LIST_MAX_LIMIT = 200;
+
+export const RecommendationsListQuerySchema = z.object({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(RECOMMENDATIONS_LIST_MAX_LIMIT)
+    .default(RECOMMENDATIONS_LIST_DEFAULT_LIMIT),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+/**
+ * The list read's envelope, frozen.
+ *
+ * §21 specifies the entity and its PATCH; §22 specifies the analysis run. Neither names the
+ * list read, yet §25 beats 4 and 5 can only be rendered from one: `evidence`,
+ * `minorityContextConcentration`, the attested rate and **every counterexample** live on the
+ * persisted recommendation and nowhere else — §22's analysis response carries gates and a
+ * verdict and no evidence at all. The endpoint was decided (`RECOMMENDATIONS_PATH` has been
+ * in this file since `p5.rec-persistence`) and never built, and the Dashboard read it in two
+ * shapes at once because there was nothing here to read.
+ *
+ * An object rather than a bare array, and the same four fields `RunListViewSchema` uses:
+ * pagination has nowhere to live on a bare array, and "did the page end here" is not a
+ * question a consumer can answer from the array's own length.
+ */
+export const RecommendationListViewSchema = z.object({
+  recommendations: z.array(RecommendationSchema),
+  limit: z.number().int(),
+  offset: z.number().int(),
+  /** True when at least one more recommendation exists past this page. */
+  hasMore: z.boolean(),
+});
+
+// ---------------------------------------------------------------------------
 // §22 — the analysis trigger and its response
 // ---------------------------------------------------------------------------
 
@@ -407,6 +458,8 @@ export type Counterexample = z.infer<typeof CounterexampleSchema>;
 export type ExclusionCounts = z.infer<typeof ExclusionCountsSchema>;
 export type RecommendationEvidence = z.infer<typeof RecommendationEvidenceSchema>;
 export type Recommendation = z.infer<typeof RecommendationSchema>;
+export type RecommendationsListQuery = z.infer<typeof RecommendationsListQuerySchema>;
+export type RecommendationListView = z.infer<typeof RecommendationListViewSchema>;
 export type EvaluatedGroup = z.infer<typeof EvaluatedGroupSchema>;
 export type AnalysisRunRequest = z.infer<typeof AnalysisRunRequestSchema>;
 export type AnalysisRunResponse = z.infer<typeof AnalysisRunResponseSchema>;

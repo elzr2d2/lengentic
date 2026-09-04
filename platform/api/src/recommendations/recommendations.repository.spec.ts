@@ -396,3 +396,114 @@ describe('RecommendationsRepository.setStatus', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+/**
+ * One stored row, in the column shape Postgres hands back. The three JSON columns are
+ * already the wire's own shapes (`toJsonInput` writes them that way), so this is what
+ * `toRecommendationRecord` reads on the way out.
+ */
+function storedRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const write = sighting();
+
+  return {
+    id: 'rec-1',
+    category: write.category,
+    analyzerId: write.analyzerId,
+    analyzerVersion: write.analyzerVersion,
+    workflowName: write.groupKey.workflowName,
+    workflowVersion: write.groupKey.workflowVersion,
+    decisionType: write.groupKey.decisionType,
+    contextKeyVersion: write.groupKey.contextKeyVersion,
+    configSnapshot: write.configSnapshot,
+    sourceWatermark: write.sourceWatermark,
+    fingerprint: 'd'.repeat(64),
+    evidence: write.evidence,
+    counterexamples: [...write.counterexamples],
+    firstSeenAt: OBSERVED_AT,
+    lastSeenAt: OBSERVED_AT,
+    status: 'OPEN',
+    statusNote: null,
+    statusChangedAt: null,
+    ...overrides,
+  };
+}
+
+interface FindManyArgs {
+  readonly orderBy: readonly Record<string, string>[];
+  readonly take: number;
+  readonly skip: number;
+}
+
+function listVerbs(rows: readonly Record<string, unknown>[]): {
+  prisma: PrismaService;
+  findMany: ReturnType<typeof vi.fn>;
+} {
+  const findMany = vi.fn(() => Promise.resolve([...rows]));
+
+  return {
+    prisma: { client: { recommendation: { findMany } } } as unknown as PrismaService,
+    findMany,
+  };
+}
+
+describe('RecommendationsRepository.listRecommendations', () => {
+  it('asks for a total order — newest discovery first, tie-broken on id', async () => {
+    // `firstSeenAt` alone is not a total order: one analysis run stamps every row it creates
+    // with a single `observedAt` reading, so rows found together collide exactly. Without the
+    // `id` tie-break Postgres is free to order them differently on each read, and page 2 can
+    // repeat or skip a row page 1 already showed.
+    const { prisma, findMany } = listVerbs([]);
+
+    await new RecommendationsRepository(prisma).listRecommendations(51, 0);
+
+    const args = findMany.mock.calls[0]?.[0] as FindManyArgs;
+
+    expect(args.orderBy).toStrictEqual([{ firstSeenAt: 'desc' }, { id: 'desc' }]);
+  });
+
+  it('passes the page window through untouched, so the caller owns limit + 1', async () => {
+    const { prisma, findMany } = listVerbs([]);
+
+    await new RecommendationsRepository(prisma).listRecommendations(11, 20);
+
+    const args = findMany.mock.calls[0]?.[0] as FindManyArgs;
+
+    expect(args.take).toBe(11);
+    expect(args.skip).toBe(20);
+  });
+
+  it('reports an empty page as empty rather than as an absence', async () => {
+    const { prisma } = listVerbs([]);
+
+    await expect(
+      new RecommendationsRepository(prisma).listRecommendations(51, 0),
+    ).resolves.toStrictEqual([]);
+  });
+
+  it('maps every row across the persistence edge, JSON columns parsed', async () => {
+    const { prisma } = listVerbs([storedRow(), storedRow({ id: 'rec-2' })]);
+
+    const records = await new RecommendationsRepository(prisma).listRecommendations(51, 0);
+
+    expect(records.map((record) => record.id)).toStrictEqual(['rec-1', 'rec-2']);
+    // The four group-key columns are flat on the row and nested on the record: proof the edge
+    // ran rather than the row being handed out unchanged.
+    expect(records[0]?.groupKey).toStrictEqual(sighting().groupKey);
+    expect(records[0]?.evidence.gates.map((gate) => gate.id)).toStrictEqual([
+      'G1_sample_count',
+      'G2_context_diversity',
+      'G3_dominance',
+      'G4_outcome_success',
+      'G5_outcome_coverage',
+    ]);
+    expect(records[0]?.counterexamples).toStrictEqual([...sighting().counterexamples]);
+  });
+
+  it('refuses to hand out a row whose evidence column is unreadable, rather than a claim with no evidence behind it', async () => {
+    const { prisma } = listVerbs([storedRow({ evidence: { sampleCount: 'fifty' } })]);
+
+    await expect(new RecommendationsRepository(prisma).listRecommendations(51, 0)).rejects.toThrow(
+      'unreadable evidence column',
+    );
+  });
+});

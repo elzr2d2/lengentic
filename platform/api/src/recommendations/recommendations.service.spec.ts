@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { RecommendationSchema } from '@lengentic/shared';
+import { RecommendationListViewSchema, RecommendationSchema } from '@lengentic/shared';
 
 import { RecommendationsService, toRecommendation } from './recommendations.service';
 import type { RecommendationRecord } from './recommendation-record';
@@ -163,5 +163,84 @@ describe('RecommendationsService', () => {
     const service = serviceOver({ setStatus: () => Promise.resolve(undefined) });
 
     await expect(service.setStatus('nope', { status: 'DISMISSED' })).resolves.toBeUndefined();
+  });
+});
+
+describe('RecommendationsService.list — §25 beats 4 and 5 only content path', () => {
+  function pageOf(records: readonly RecommendationRecord[]): {
+    service: RecommendationsService;
+    listRecommendations: ReturnType<typeof vi.fn>;
+  } {
+    const listRecommendations = vi.fn(() => Promise.resolve([...records]));
+
+    return { service: serviceOver({ listRecommendations }), listRecommendations };
+  }
+
+  function rows(count: number): RecommendationRecord[] {
+    return Array.from({ length: count }, (_, index) => ({ ...RECORD, id: `rec-${String(index)}` }));
+  }
+
+  it('reads one row past the page, so hasMore is a fact rather than a second COUNT(*)', async () => {
+    const { service, listRecommendations } = pageOf([]);
+
+    await service.list({ limit: 50, offset: 20 });
+
+    expect(listRecommendations).toHaveBeenCalledWith(51, 20);
+  });
+
+  it('reports hasMore false on the EXACT last page — the case records.length === limit gets wrong', async () => {
+    // 50 rows exist and 50 were asked for: the repository returns 50 of the 51 it was asked
+    // for, and there is no page 2. An implementation that compared the returned length to the
+    // limit would promise one.
+    const { service } = pageOf(rows(50));
+
+    const page = await service.list({ limit: 50, offset: 0 });
+
+    expect(page.recommendations).toHaveLength(50);
+    expect(page.hasMore).toBe(false);
+  });
+
+  it('reports hasMore true and drops the probe row it was never asked to show', async () => {
+    const { service } = pageOf(rows(51));
+
+    const page = await service.list({ limit: 50, offset: 0 });
+
+    expect(page.recommendations).toHaveLength(50);
+    expect(page.recommendations.at(-1)?.id).toBe('rec-49');
+    expect(page.hasMore).toBe(true);
+  });
+
+  it('echoes the window the caller asked for, so a page can say where it sits', async () => {
+    const { service } = pageOf(rows(3));
+
+    const page = await service.list({ limit: 10, offset: 40 });
+
+    expect(page.limit).toBe(10);
+    expect(page.offset).toBe(40);
+    expect(page.hasMore).toBe(false);
+  });
+
+  it('produces a page the frozen envelope accepts, counterexamples and all', async () => {
+    const { service } = pageOf(rows(1));
+
+    const page = await service.list({ limit: 50, offset: 0 });
+
+    const parsed = RecommendationListViewSchema.safeParse(page);
+
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    expect(page.recommendations[0]?.counterexamples).toStrictEqual([...RECORD.counterexamples]);
+    // Instants crossed as ISO strings, the same edge `toRecommendation` owns for the PATCH.
+    expect(page.recommendations[0]?.firstSeenAt).toBe('2026-09-04T09:00:00.000Z');
+  });
+
+  it('reports an empty page rather than an absence — nothing found is a claim the page makes', async () => {
+    const { service } = pageOf([]);
+
+    await expect(service.list({ limit: 50, offset: 0 })).resolves.toStrictEqual({
+      recommendations: [],
+      limit: 50,
+      offset: 0,
+      hasMore: false,
+    });
   });
 });

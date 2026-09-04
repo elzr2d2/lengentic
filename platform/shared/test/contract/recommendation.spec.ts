@@ -13,11 +13,15 @@ import {
   GateResultsSchema,
   RECOMMENDATION_CATEGORIES,
   RECOMMENDATION_STATUSES,
+  RECOMMENDATIONS_LIST_DEFAULT_LIMIT,
+  RECOMMENDATIONS_LIST_MAX_LIMIT,
   RECOMMENDATIONS_PATH,
   RecommendationEvidenceSchema,
   RecommendationGroupKeySchema,
+  RecommendationListViewSchema,
   RecommendationSchema,
   RecommendationStatusPatchSchema,
+  RecommendationsListQuerySchema,
   VERDICTS,
 } from '../../index';
 import type { EvaluatedGroup, Recommendation } from '../../index';
@@ -57,6 +61,24 @@ const PASSING_GATES = [
   { id: 'G5_outcome_coverage', status: 'PASS', comparison: '94.0% >= 80.0%' },
 ];
 
+/** §21's `evidence`, as data. Hoisted so a test can drift one field without a cast. */
+const EVIDENCE = {
+  sampleCount: 50,
+  distinctContextKeyCount: 12,
+  optionDistribution: [
+    { option: 'YES', count: 49, share: 0.98 },
+    { option: 'NO', count: 1, share: 0.02 },
+  ],
+  dominantOption: 'YES',
+  dominancePercentage: 0.98,
+  attestedCount: 47,
+  outcomeCoverage: 0.94,
+  dominantOptionAttestedSuccessRate: 0.96,
+  minorityContextConcentration: [{ contextKey: 'post_refactor_large_diff', count: 1, share: 1 }],
+  excluded: { staleRun: 0, missingContextKey: 0 },
+  gates: PASSING_GATES,
+};
+
 /** The §21 "Required output shape" worked example, as data. */
 function recommendation(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -68,24 +90,7 @@ function recommendation(overrides: Record<string, unknown> = {}): Record<string,
     configSnapshot: DEFAULT_THRESHOLDS,
     sourceWatermark: '2026-09-04T10:00:00.000Z',
     fingerprint: 'a'.repeat(64),
-    evidence: {
-      sampleCount: 50,
-      distinctContextKeyCount: 12,
-      optionDistribution: [
-        { option: 'YES', count: 49, share: 0.98 },
-        { option: 'NO', count: 1, share: 0.02 },
-      ],
-      dominantOption: 'YES',
-      dominancePercentage: 0.98,
-      attestedCount: 47,
-      outcomeCoverage: 0.94,
-      dominantOptionAttestedSuccessRate: 0.96,
-      minorityContextConcentration: [
-        { contextKey: 'post_refactor_large_diff', count: 1, share: 1 },
-      ],
-      excluded: { staleRun: 0, missingContextKey: 0 },
-      gates: PASSING_GATES,
-    },
+    evidence: EVIDENCE,
     counterexamples: [
       {
         decisionId: 'dec-8f2a',
@@ -102,6 +107,11 @@ function recommendation(overrides: Record<string, unknown> = {}): Record<string,
     statusChangedAt: null,
     ...overrides,
   };
+}
+
+/** One page of `GET /v1/recommendations`, as data. Empty by default; a page is a page. */
+function listView(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { recommendations: [], limit: 50, offset: 0, hasMore: false, ...overrides };
 }
 
 describe('§19 gate vocabulary on the wire', () => {
@@ -295,6 +305,67 @@ describe('§22 analysis response — every evaluated group, not only the emitted
     expect(AnalysisRunResponseSchema.safeParse({}).success).toBe(false);
     expect(AnalysisRunResponseSchema.parse({ evaluatedGroups: [] })).toStrictEqual({
       evaluatedGroups: [],
+    });
+  });
+});
+
+describe('GET /v1/recommendations — the list envelope, frozen', () => {
+  // Negative first. Every shape below is one a producer could plausibly send and a consumer
+  // could plausibly render; each one has to be refused by name, or the envelope is a
+  // suggestion rather than a contract.
+
+  it('refuses a bare array — the shape the Dashboard used to tolerate for want of a contract', () => {
+    expect(RecommendationListViewSchema.safeParse([recommendation()]).success).toBe(false);
+  });
+
+  it('refuses a page that omits `hasMore` — "did the page end here" is not answerable from the array', () => {
+    // A short page and a last page are indistinguishable without it, and a reader who cannot
+    // tell them apart has silently lost evidence.
+    const { hasMore, ...withoutHasMore } = listView();
+
+    expect(hasMore).toBe(false);
+    expect(RecommendationListViewSchema.safeParse(withoutHasMore).success).toBe(false);
+  });
+
+  it('refuses an element that is not a §21 recommendation — the elements are the contract', () => {
+    const gatesOutOfOrder = recommendation({ evidence: { ...EVIDENCE, gates: [] } });
+
+    expect(
+      RecommendationListViewSchema.safeParse(listView({ recommendations: [gatesOutOfOrder] }))
+        .success,
+    ).toBe(false);
+  });
+
+  it('carries the page a consumer asked for, and every recommendation in it', () => {
+    const parsed = RecommendationListViewSchema.parse(
+      listView({ recommendations: [recommendation()], limit: 50, offset: 0, hasMore: true }),
+    );
+
+    expect(parsed.recommendations).toHaveLength(1);
+    // §20.1's counterevidence survives the envelope. A list read that dropped it would leave
+    // §25 beat 5 with nothing to render, since it exists on no other surface.
+    expect(parsed.recommendations[0]?.counterexamples).toHaveLength(1);
+    expect(parsed.limit).toBe(50);
+    expect(parsed.offset).toBe(0);
+    expect(parsed.hasMore).toBe(true);
+  });
+
+  it('is paginated with the bounds GET /v1/runs already uses (API-4)', () => {
+    expect(RECOMMENDATIONS_LIST_DEFAULT_LIMIT).toBe(50);
+    expect(RECOMMENDATIONS_LIST_MAX_LIMIT).toBe(200);
+    expect(RecommendationsListQuerySchema.parse({})).toStrictEqual({ limit: 50, offset: 0 });
+  });
+
+  it('REJECTS an oversized limit rather than clamping it — a short page nobody was told about', () => {
+    expect(RecommendationsListQuerySchema.safeParse({ limit: 5000 }).success).toBe(false);
+    expect(RecommendationsListQuerySchema.safeParse({ limit: 0 }).success).toBe(false);
+    expect(RecommendationsListQuerySchema.safeParse({ offset: -1 }).success).toBe(false);
+  });
+
+  it('coerces the two query values, which arrive from a URL as strings', () => {
+    expect(RecommendationsListQuerySchema.parse({ limit: '10', offset: '20' })).toStrictEqual({
+      limit: 10,
+      offset: 20,
     });
   });
 });

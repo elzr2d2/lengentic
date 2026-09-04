@@ -1,5 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { Recommendation, RecommendationStatusPatch } from '@lengentic/shared';
+import type {
+  Recommendation,
+  RecommendationListView,
+  RecommendationStatusPatch,
+  RecommendationsListQuery,
+} from '@lengentic/shared';
 
 import { CLOCK, type Clock } from '../common/clock';
 import type { RecommendationRecord, RecommendationSighting } from './recommendation-record';
@@ -35,12 +40,31 @@ export class RecommendationsService {
     return toRecommendation(await this.repository.recordSighting(sighting));
   }
 
-  /*
-   * There is deliberately no read method here. The list and detail reads the Dashboard needs
-   * are `p5.recs-ui`'s consumers and `p5.analysis-endpoint`'s to expose; adding one against
-   * no caller would be this lane writing a signature the next lane did not choose, and no
-   * packet line asks for it.
+  /**
+   * §25 beats 4 and 5's read: one page of recommendations, evidence and counterexamples
+   * included.
+   *
+   * This method did not exist when `p5.rec-persistence` shipped — §21 specifies only the
+   * PATCH, so writing a read against no caller would have been this lane choosing the next
+   * lane's signature. The caller now exists and the envelope is frozen
+   * (`RecommendationListViewSchema`), which is what changed.
+   *
+   * `limit + 1` rows are read and the extra is dropped, the same trick `runs.service.ts`
+   * uses: `hasMore` is then a fact about rows that came back rather than a second
+   * `COUNT(*)` scan, and `records.length === limit` — which is simply wrong on the exact
+   * last page — is never asked.
    */
+  async list(query: RecommendationsListQuery): Promise<RecommendationListView> {
+    const records = await this.repository.listRecommendations(query.limit + 1, query.offset);
+    const page = records.slice(0, query.limit);
+
+    return {
+      recommendations: page.map(toRecommendation),
+      limit: query.limit,
+      offset: query.offset,
+      hasMore: records.length > query.limit,
+    };
+  }
 
   async setStatus(
     id: string,

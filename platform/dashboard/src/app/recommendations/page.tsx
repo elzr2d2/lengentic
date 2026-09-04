@@ -100,6 +100,12 @@ export default async function RecommendationsPage({
           {list.recommendations.map((recommendation) => (
             <RecommendationCard key={recommendation.id} recommendation={recommendation} />
           ))}
+          {list.hasMore ? (
+            <p className="note-inline">
+              More recommendations exist than this page shows. Decision History above is the first
+              page only &mdash; read it as a sample, not as the whole record.
+            </p>
+          ) : null}
         </>
       ) : (
         <RecommendationsFailureCard title="Recommendations unavailable" failure={list} />
