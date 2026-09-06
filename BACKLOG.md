@@ -4879,3 +4879,28 @@ already holds and it is folded into the 5b phase-gate repair attempt 3 rather th
   the remaining directory-form path probes in `scripts/oracle/graph.json` the same way.
   **Source:** Phase 6 wave gate, 2026-09-06, `.artifacts/evidence/6/wave-gate/wave-gate.md` §2.
   **Trigger:** the next `check:probes` change, or the Phase 7 frame — whichever comes first.
+- **The deny floor makes the mandated outcome envelope unwritable, so a clean worker is
+  recorded FAILED — and BLOCKED is unreachable.** Every supervised worker is told to write
+  `.autopilot/handoffs/<workerId>.json` last, and that "if this file is missing or invalid when
+  you exit, the supervisor records FAILED — including after a clean exit, and including when the
+  work actually succeeded." But `.claude/autopilot-permissions.json:78-79` denies
+  `Edit(./.autopilot/**)` and `Write(./.autopilot/**)`, and a Bash redirect into the same
+  directory is refused too. Observed at the Phase 6 wave gate of 2026-09-06: the gate ran to
+  completion, produced commit `5935d47` and four evidence artifacts, and could not write its
+  envelope. The sharp edge is that **BLOCKED is reported through the same file**, so a worker
+  that hits a denied operation cannot take the escape hatch the floor's own comment prescribes
+  ("A worker that needs a denied operation has hit trigger 1 or trigger 4 and must report
+  BLOCKED") — the escalation channel is inside the denied surface. This is a candidate cause
+  for the six "exited without an outcome envelope" failures on this wave, alongside or instead
+  of the HTTP 429 already filed above; the two are indistinguishable from the supervisor's side,
+  which sees only a missing file. Group 4's intent is a worker that cannot rewrite the run's
+  bounds, forge a gate record, or grant itself permissions — the gate-record half is already
+  covered by the separate `.artifacts/gates/**` and `Bash(pnpm flow record:*)` denials, so the
+  envelope is caught by breadth, not by design. **Do:** narrow the deny to the supervisor state
+  the floor actually means to protect (e.g. `.autopilot/*.md`, `.autopilot/sessions/**`) and
+  allow `Write(./.autopilot/handoffs/**)`, which is the worker's own mandated output and is
+  named after its own workerId; or have the supervisor accept an envelope written to
+  `.artifacts/evidence/**` as a fallback. Until then a worker's only recourse is to leave the
+  envelope elsewhere and hope it is found. **Source:** Phase 6 wave gate, 2026-09-06 —
+  envelope content preserved at `.artifacts/evidence/6/wave-gate/worker-outcome.json`.
+  **Trigger:** before the next unattended `pnpm autopilot` run.
