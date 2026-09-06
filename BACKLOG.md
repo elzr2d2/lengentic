@@ -4860,3 +4860,22 @@ already holds and it is folded into the 5b phase-gate repair attempt 3 rather th
   call — must be retried or surfaced as an infrastructure stop, never counted against the repair
   bound. Evidence: `.autopilot/sessions/repair-p6.scenario3-*/stdout.log`, checkpoint entry
   2026-09-06.
+- **A `kind: "path"` probe pointing at a directory measures that someone started, not that
+  anything was delivered.** `runProbe` resolves `path` to bare `existsSync`
+  (`scripts/oracle.ts:149`), so any node whose path probe names a _directory_ reports satisfied
+  the moment a worker creates it — including a worker that then dies. Observed live at the
+  Phase 6 wave gate: `p6.scenario2` reported `DONE` with `pnpm playground:repeated-failure`
+  exiting 1 (`ERR_MODULE_NOT_FOUND`), because a rate-limited builder left one untracked
+  `scenario.ts` in `playground/scenarios/repeated-failure/` and no `main.ts`. Its second probe,
+  `script`, was satisfied by the 2026-09-03 framing commit that registered the command _ahead of
+  dispatch_. The lie was load-bearing on progression, not just on reporting: `pnpm flow next`
+  returned `WAVE_GATE` instead of `DISPATCH`, so the supervisor would have re-dispatched
+  wave-gate repair workers against a packet the oracle insisted was finished. That one node was
+  fixed in place (probe tightened to `.../main.ts`); the class was not. `pnpm check:probes`
+  passed throughout and was right to — its rule is that a probe may only look inside its own
+  node's surface, and this one did. The uncovered rule is different: **existence is not
+  delivery.** **Do:** extend `check:probes` to fail, or at minimum WARN, when a `kind: "path"`
+  probe resolves to a directory rather than to a file the deliverable must contain — and audit
+  the remaining directory-form path probes in `scripts/oracle/graph.json` the same way.
+  **Source:** Phase 6 wave gate, 2026-09-06, `.artifacts/evidence/6/wave-gate/wave-gate.md` §2.
+  **Trigger:** the next `check:probes` change, or the Phase 7 frame — whichever comes first.

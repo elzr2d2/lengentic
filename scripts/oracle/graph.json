@@ -1446,7 +1446,7 @@
       "probes": [
         {
           "kind": "path",
-          "path": "playground/scenarios/repeated-failure"
+          "path": "playground/scenarios/repeated-failure/main.ts"
         },
         {
           "kind": "script",
@@ -1459,7 +1459,7 @@
       "validate": ["pnpm playground:repeated-failure", "pnpm gates"],
       "risk": "medium",
       "changeClass": "behavior",
-      "note": "Root package.json is a declared shared write surface, so this packet does NOT register its own command. `playground:repeated-failure` was registered ahead of dispatch in the Phase 6 framing commit of 2026-09-03, pointing at playground/scenarios/repeated-failure/main.ts. The probe requires BOTH the root script AND this packet's own directory: a package script alone must never mark a scenario DONE - that is exactly how the retired p6.scenario1 reported DONE off p3.cli's deliverable. Distinct lane and disjoint directory from p6.scenario3 so the two run in parallel."
+      "note": "Root package.json is a declared shared write surface, so this packet does NOT register its own command. `playground:repeated-failure` was registered ahead of dispatch in the Phase 6 framing commit of 2026-09-03, pointing at playground/scenarios/repeated-failure/main.ts. The probe requires BOTH the root script AND this packet's own entry point: a package script alone must never mark a scenario DONE - that is exactly how the retired p6.scenario1 reported DONE off p3.cli's deliverable. PROBE TIGHTENED DIRECTORY -> main.ts at the Phase 6 wave gate of 2026-09-06: the directory form was satisfied by a bare directory, and a FAILED builder left one orphan scenario.ts in it with no main.ts, so the node reported DONE while `pnpm playground:repeated-failure` exited 1 with ERR_MODULE_NOT_FOUND. `path` is existsSync (scripts/oracle.ts:149), so a directory probe measures that someone started, never that anything was delivered. main.ts is the file the package script actually resolves, which is what the note above always meant by 'this packet's own directory'. Evidence: .artifacts/evidence/6/wave-gate/wave-gate.md. Distinct lane and disjoint directory from p6.scenario3 so the two run in parallel."
     },
     {
       "id": "p6.scenario3",
