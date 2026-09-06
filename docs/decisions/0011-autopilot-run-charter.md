@@ -135,3 +135,30 @@ binding.
 
 - **The bound was ignored.** If the supervisor records a Phase 6 packet as DONE, the stop was
   never issued and this addendum's objective was read as the standing one.
+
+## Addendum — 2026-09-06: the bound at Phase 5 is lifted; the run goes to `COMPLETE`
+
+The human reopened the run with `/goal read the current status of the roadmap, plan, then
+finish this project until completion, only engage of fanning the subagents and workflows, do
+not do the work by yourself`. Two constraints, nothing else changes; preferences (1)-(8) stay
+binding.
+
+- **Stop condition.** The 2026-09-03 addendum's bound (Phase 5 gate GREEN, Phases 6–7 out of
+  scope) is superseded. The stop condition is the standing one from the `goal` skill:
+  `pnpm flow next` returns `COMPLETE` (Phase 7 gate GREEN). Phases 6 and 7 are in scope.
+- **Delegation.** The Coordinator dispatches and monitors only. Implementation, tests, fixes,
+  reviews and gate evidence are produced by workers (`pnpm autopilot`) or dispatched agents,
+  never by the main session's own edits. Charter and checkpoint edits by the Coordinator are the
+  one exception, because they are the record of the run itself.
+- **State on reopening.** Phase 5b phase gate RED on tester T1 at `350730a`; repair attempt 3
+  of 3 planned in `.claude/autopilot.local.md` (newest entry) and not yet dispatched. The
+  supervisor's ESCALATED record of 2026-09-04 counts two attempts against the standing bound of
+  two; under preference (2) the bound is three, so `--max-repairs 3 --charter` naming this
+  record is passed and the escalation is cleared by `resume --note`.
+
+### Detection (addendum, 2026-09-06)
+
+- **The old bound was applied.** A stop issued at the Phase 5 gate, or Phase 6 work reverted as
+  out of scope, means the 2026-09-03 addendum was read instead of this one.
+- **The Coordinator did the work.** A code or test change authored in the main session rather
+  than by a worker or agent breaks the delegation constraint.
