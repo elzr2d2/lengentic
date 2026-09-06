@@ -60,7 +60,10 @@ export function RecommendationCard({ recommendation }: { recommendation: Recomme
       <GateTable gates={evidence.gates} />
 
       <h3 className="section-title">Suggested action</h3>
-      <SuggestedAction dominantOption={evidence.dominantOption} />
+      <SuggestedAction
+        dominantOption={evidence.dominantOption}
+        hasFailingGate={evidence.gates.some((gate) => gate.status === 'FAIL')}
+      />
 
       <h3 className="section-title">
         Counterexamples ({String(recommendation.counterexamples.length)})
@@ -150,22 +153,56 @@ function distributionLine(evidence: RecommendationEvidence): string {
  * something different from one produced under 50, and without the snapshot the difference is
  * invisible." The thresholds are printed beside the gate results for exactly that reason — a
  * PASS is only readable against the bar it cleared.
+ *
+ * Worded against "the evidence above", never "when this was produced": ADR 0015's tombstone
+ * refreshes `configSnapshot` together with `evidence` on every re-sighting
+ * (`recommendations.repository.ts`, `resightedColumns`), so on a DISMISSED row the snapshot
+ * shown is the suppressing run's, not the run that first produced the row. "When this was
+ * produced" is false there; "the evidence above" is true of both a fresh row and a refreshed
+ * tombstone because the two are always written together — no conditional needed.
  */
 function ThresholdNote({ recommendation }: { recommendation: Recommendation }) {
   const config = recommendation.configSnapshot;
 
   return (
     <p className="note-inline">
-      Thresholds in force when this was produced: samples &ge; {String(config.minSampleCount)},
-      distinct contexts &ge; {String(config.minDistinctContexts)}, dominance &ge;{' '}
-      {percent(config.dominanceThreshold)}, attested success &ge; {percent(config.successThreshold)}
-      , outcome coverage &ge; {percent(config.coverageThreshold)}.
+      Thresholds the evidence above was evaluated against: samples &ge;{' '}
+      {String(config.minSampleCount)}, distinct contexts &ge; {String(config.minDistinctContexts)},
+      dominance &ge; {percent(config.dominanceThreshold)}, attested success &ge;{' '}
+      {percent(config.successThreshold)}, outcome coverage &ge; {percent(config.coverageThreshold)}.
     </p>
   );
 }
 
-/** §21's suggested-action wording, with the dominant option substituted in. */
-function SuggestedAction({ dominantOption }: { dominantOption: string | null }) {
+/**
+ * §21's suggested-action wording, with the dominant option substituted in — unless the gate
+ * table above no longer supports it.
+ *
+ * `hasFailingGate` reads `evidence.gates` directly rather than `recommendation.status`: the
+ * defect this repairs (Reviewer R1, 5b phase gate) is a contradiction inside one rendered
+ * card, so the guard has to be true of what the card is showing, not of a column the card
+ * does not print. ADR 0015 keeps a DISMISSED row as a tombstone with its evidence refreshed
+ * to a SUPPRESSED run's — `dominantOption` can still be non-null there (the ADR's own
+ * `flipEvents` scenario: YES, 38 of 70) while `G3_dominance` reads FAIL. Suggesting a default
+ * off gates that FAIL is the exact assertion `CLAUDE.md` `## Product claims` forbids:
+ * "Recommendations are hypotheses with counterevidence, never assertions."
+ */
+function SuggestedAction({
+  dominantOption,
+  hasFailingGate,
+}: {
+  dominantOption: string | null;
+  hasFailingGate: boolean;
+}) {
+  if (hasFailingGate) {
+    return (
+      <p className="note-inline">
+        A gate above now fails this evidence, so no default is suggested here. Whatever this row's
+        Status shows, its evidence no longer supports a recommendation.
+      </p>
+    );
+  }
+
   if (dominantOption === null) {
     return (
       <p className="note-inline">

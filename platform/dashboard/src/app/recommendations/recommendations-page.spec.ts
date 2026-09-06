@@ -112,6 +112,71 @@ const RUN_TESTS: Recommendation = {
 };
 
 /**
+ * `docs/decisions/0015`'s own `flipEvents` shape, persisted: a DISMISSED tombstone whose
+ * evidence was refreshed to a SUPPRESSED run's. `dominantOption` is still `YES` — 38 of 70,
+ * 54.3% dominance — and `G3_dominance` is the one gate that FAILs
+ * (`platform/api/test/analysis.integration.spec.ts:489`, "38 YES against 32 NO: 54.3%
+ * dominance, and nothing else moved"). `configSnapshot`, `sourceWatermark`, `evidence` and
+ * `lastSeenAt` carry the suppressing run's numbers; `status`, `firstSeenAt`, `statusNote` and
+ * `statusChangedAt` are the human's dismissal and are untouched by the refresh
+ * (`resightedColumns`, `recommendations.repository.ts`) — which is why `statusChangedAt`
+ * predates `lastSeenAt` here.
+ *
+ * This is the fixture Reviewer's R1 (5b phase gate) says the suite is missing: before this
+ * repair, `recommendations-page.spec.ts` had zero occurrences of `DISMISSED` and zero
+ * persisted-row-with-a-failing-gate fixtures.
+ */
+const DISMISSED_TOMBSTONE: Recommendation = {
+  id: 'rec-tombstone',
+  category: 'DETERMINISTIC_CANDIDATE',
+  analyzerId: 'deterministic-candidate',
+  analyzerVersion: '1.0.0',
+  groupKey: {
+    workflowName: 'demo-workflow',
+    workflowVersion: 'a1b2c3d',
+    decisionType: 'promote_release_candidate',
+    contextKeyVersion: 'v1',
+  },
+  configSnapshot: {
+    minSampleCount: 30,
+    minDistinctContexts: 5,
+    dominanceThreshold: 0.9,
+    successThreshold: 0.9,
+    coverageThreshold: 0.8,
+  },
+  sourceWatermark: '2026-09-05T09:00:00.000Z',
+  fingerprint: 'b2'.repeat(32),
+  evidence: {
+    sampleCount: 70,
+    distinctContextKeyCount: 8,
+    optionDistribution: [
+      { option: 'YES', count: 38, share: 0.543 },
+      { option: 'NO', count: 32, share: 0.457 },
+    ],
+    dominantOption: 'YES',
+    dominancePercentage: 0.543,
+    attestedCount: 70,
+    outcomeCoverage: 1,
+    dominantOptionAttestedSuccessRate: 0.947,
+    minorityContextConcentration: [],
+    excluded: { staleRun: 0, missingContextKey: 0 },
+    gates: gates([
+      ['PASS', '70 >= 30'],
+      ['PASS', '8 >= 5'],
+      ['FAIL', '54.3% >= 90.0%'],
+      ['PASS', '94.7% >= 90.0%'],
+      ['PASS', '100.0% >= 80.0%'],
+    ]),
+  },
+  counterexamples: [],
+  firstSeenAt: '2026-09-01T09:00:00.000Z',
+  lastSeenAt: '2026-09-05T09:00:00.000Z',
+  status: 'DISMISSED',
+  statusNote: 'known trade-off',
+  statusChangedAt: '2026-09-03T10:00:00.000Z',
+};
+
+/**
  * The empty-counterexamples case — a CANDIDATE whose minority block is the ONLY minority
  * evidence on the page.
  *
@@ -398,6 +463,50 @@ describe('§25 beat 5 — the recommendation, counterexamples included', () => {
     expect(markup).toContain('Review the counterexamples before removing the branch');
     // §21 removed `severity`, and the page must not reintroduce it.
     expect(markup).not.toContain('severity');
+  });
+
+  it('does not suggest a deterministic default off a DISMISSED tombstone whose gates now fail', async () => {
+    // Reviewer R1, 5b phase gate. ADR 0015 keeps a DISMISSED row as a tombstone with its
+    // evidence refreshed to a SUPPRESSED run's — the gate table can say FAIL while
+    // `dominantOption` is still non-null, and the card must not print a suggested action off
+    // gates it is itself showing as failed (`CLAUDE.md` `## Product claims`).
+    stubApi({ 'GET /v1/recommendations': listOf([DISMISSED_TOMBSTONE]) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('promote_release_candidate');
+    expect(markup).toContain('DISMISSED');
+    expect(markup).toContain('G3 dominance');
+    expect(markup).toContain('54.3% &gt;= 90.0%');
+    // The defect, byte for byte: this sentence must not render beside a FAILing gate table.
+    expect(markup).not.toContain('Consider a deterministic default of');
+    expect(markup).toContain('A gate above now fails this evidence');
+  });
+
+  it('still suggests a deterministic default for an OPEN row whose gates all pass', async () => {
+    // The paired negative: R1's guard must not blanket-suppress the sentence for every row,
+    // only for one whose own gates FAIL. Regression bound for `recommendations-page.spec.ts`'s
+    // pre-existing assertion above.
+    stubApi({ 'GET /v1/recommendations': listOf([RUN_TESTS]) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('Consider a deterministic default of');
+    expect(markup).not.toContain('A gate above now fails this evidence');
+  });
+
+  it('describes thresholds as evaluated against the evidence shown, not as "when this was produced"', async () => {
+    // Secondary half of R1: `ThresholdNote` prints `configSnapshot`, which ADR 0015's
+    // `resightedColumns` refreshes to the suppressing run's on a tombstone. "When this was
+    // produced" is false there — it was produced under the DISMISSED-over config, not the one
+    // shown. The reworded sentence is true of both a fresh row and a refreshed tombstone
+    // because `configSnapshot` and `evidence` are always written together.
+    stubApi({ 'GET /v1/recommendations': listOf([RUN_TESTS, DISMISSED_TOMBSTONE]) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).not.toContain('when this was produced');
+    expect(markup).toContain('Thresholds the evidence above was evaluated against');
   });
 
   it('renders every counterexample with its contextKey, selected option and attested outcome', async () => {
