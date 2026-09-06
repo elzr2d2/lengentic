@@ -4789,3 +4789,67 @@ already holds and it is folded into the 5b phase-gate repair attempt 3 rather th
   supervisor sets that env itself, and a missing envelope is classified `NO_ENVELOPE` (re-derive
   from disk) rather than `FAILED` (count a repair). Evidence:
   `.autopilot/sessions/phase-gate-gate-270f47d2/stderr.log`, checkpoint entry 2026-09-06.
+
+- **Analysis page states "A suppressed group is reported here and never stored" above stored
+  rows (Tester T2).** `AnalysisResultCard` renders that sentence unconditionally; on one live
+  page over real Postgres, two DISMISSED tombstones for suppressed groups (`adr_tomb`,
+  `edge_tomb`) sat below it. ADR 0015 deliberately keeps a DISMISSED row as a tombstone, so
+  the sentence describes the pre-ADR rule. Mutation MX4 replaced it with nonsense and the
+  dashboard suite stayed `117 passed (117)` — nothing binds it in either direction. Highest
+  priority out of this gate. **Do:** reword to state the ADR 0015 exception, and add a fixture
+  that asserts the wording. **Trigger:** the next `platform/dashboard/**` packet, before any
+  Phase 7 demo. Evidence: `.artifacts/evidence/5b/phase-gate/tester-0eb5d71.md` FINDING T2,
+  `tester-0eb5d71/out/T2-cooccurrence.txt`.
+
+- **A gate comparison string can read as satisfied beside the FAIL it justifies (Tester T1).**
+  `G3 dominance FAIL (90.0% >= 90.0%)` — the rendered comparison rounds while the verdict
+  arithmetic stays exact. One live page carried six identical `90.0% >= 90.0%` strings, three
+  PASS and three FAIL. Pre-existing 5a code (`analysis-engine/src/gates.ts:127`), reachable at
+  realistic sample sizes (188/209; 200 of the sample sizes at or below 1000 hit it).
+  `recommendation.ts:53-58` disclaims the formatting, which is why it does not block. **Do:**
+  widen the printed precision, or mark the comparison string as rounded where it renders.
+  **Trigger:** the next change to `gates.ts`'s `comparison` field or to `GateTable`.
+
+- **Three non-default claims on a withdrawn card are not fed by `withdrawn` (Tester T3).** The
+  §21 Note still advises reviewing counterexamples before removing the branch, `Category` still
+  reads `DETERMINISTIC_CANDIDATE`, and `Status` keeps its `status-ok` green class on the
+  reachable OPEN-plus-failing-gate cell. None names a deterministic default, which is the class
+  `02b886a` closed; `status-ok` is asserted by no test at all. **Do:** feed the three from the
+  card-root `withdrawn`, or state in the component doc why each is deliberately ungated.
+  **Trigger:** the next change to `recommendation-card.tsx`.
+
+- **PATCH `note` with a NUL byte is an unhandled 500 (Tester T4).** A NUL in the recommendation
+  status `note` surfaces a raw `PrismaClientKnownRequestError` P2039, where the same byte on the
+  telemetry path is a documented per-event REJECTED with a drop reason. Inconsistent handling of
+  one input class across two edges. **Do:** validate the note at the schema edge, or map P2039 to
+  a 4xx. **Trigger:** the next change to `recommendations.controller.ts`.
+
+- **A second PATCH with the same status and no note destroys the human note (Tester T5).**
+  Re-sending the current status with no `note` nulls `statusNote` and moves `statusChangedAt`,
+  so a no-op call silently discards a human annotation and rewrites its timestamp. **Do:** treat
+  an absent `note` as "leave unchanged", and leave `statusChangedAt` alone when the status did
+  not change. **Trigger:** the next change to the recommendation status endpoint.
+
+- **`withdrawn`'s FAIL-versus-not-PASS distinction is unbound (Tester T6, closing R7's other
+  half).** Mutation MX3 survives 117/117. Not a live defect: 242,224 brute-forced engine shapes
+  produced **0** CANDIDATE groups carrying a `NOT_APPLICABLE` gate, so the two readings cannot
+  differ on anything the engine emits today. Related to the §19 two-verdict-rules entry above.
+  **Do:** one fixture with a `NOT_APPLICABLE` gate on a card, if §19's ambiguity is ever settled
+  toward making that state producible. **Trigger:** the first engine change that lets a CANDIDATE
+  carry a `NOT_APPLICABLE` gate.
+
+- **§20.2's "no successful attempt between them" is unbound for a same-key success (Validator
+  F-1).** Mutation `RFA-TIMELINE` (`repeated-failed-action.ts:110`, the `else flush()` arm
+  removed, so a same-key SUCCESS no longer ends the streak it interrupts) survives `199 passed
+(199)` — re-confirmed at `0eb5d71`, previously observed at `fb05e59` and `350730a` and never
+  filed. `R5`'s interrupting success uses a _different_ streak key, so no `R` fixture exercises
+  the same-key case; under the mutation `F(A) F(A) S(A) F(A)` would emit a 3-attempt finding
+  §20.2 forbids. **Do:** add one `R` fixture with a same-key success between failures. It is a
+  fixture, not a code change. **Trigger:** the next change to `repeated-failed-action.ts`, or the
+  Phase 7 regression pass.
+
+- **Gaps the 5b gate agents named and did not close.** No browser was driven, so CSS class names
+  were observed but rendered colours were not. The PATCH-versus-withdrawal concurrency race is
+  still **UNKNOWN**, as it was at `350730a`. Only two-option groups were exercised live. The
+  `analyzerVersion` component of the fingerprint rule is not reachable through the product.
+  **Do:** fold into the Phase 7 regression frame. **Trigger:** the Phase 7 frame.
