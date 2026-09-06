@@ -4853,3 +4853,10 @@ already holds and it is folded into the 5b phase-gate repair attempt 3 rather th
   still **UNKNOWN**, as it was at `350730a`. Only two-option groups were exercised live. The
   `analyzerVersion` component of the fingerprint rule is not reachable through the product.
   **Do:** fold into the Phase 7 regression frame. **Trigger:** the Phase 7 frame.
+- **Supervisor: an infrastructure failure is counted as a repair attempt.** Five Phase 6 workers
+  died on HTTP 429 (`terminal_reason: api_error`, three with `num_turns: 1`) and each missing
+  envelope incremented `repairAttempts`, producing a false trigger 5 after zero real strategies.
+  A `terminal_reason` of `api_error` — and any envelope-less exit where the worker made no tool
+  call — must be retried or surfaced as an infrastructure stop, never counted against the repair
+  bound. Evidence: `.autopilot/sessions/repair-p6.scenario3-*/stdout.log`, checkpoint entry
+  2026-09-06.
