@@ -177,6 +177,61 @@ const DISMISSED_TOMBSTONE: Recommendation = {
 };
 
 /**
+ * The discriminator for the withdrawal guard: a DISMISSED tombstone whose gates ALL pass.
+ *
+ * Reviewer R7 called this cell unreachable and the fixture was deferred. It is reachable:
+ * `docs/decisions/0015` refreshes a tombstone's `evidence` on every re-sighting, and a group a
+ * human dismissed can be re-sighted as a CANDIDATE again — the ADR's own "healing" case. The
+ * row is then DISMISSED with five PASSing gates.
+ *
+ * Without it, a guard reading `status !== 'OPEN'` would be indistinguishable from one reading
+ * `gates.some(FAIL)`: every DISMISSED fixture in this suite also had a FAILing gate, so the
+ * wrong guard was green. This fixture is the only one that separates the two.
+ */
+const DISMISSED_HEALED: Recommendation = {
+  ...DISMISSED_TOMBSTONE,
+  id: 'rec-tombstone-healed',
+  groupKey: { ...DISMISSED_TOMBSTONE.groupKey, decisionType: 'promote_release_candidate_healed' },
+  evidence: {
+    ...DISMISSED_TOMBSTONE.evidence,
+    optionDistribution: [
+      { option: 'YES', count: 66, share: 0.943 },
+      { option: 'NO', count: 4, share: 0.057 },
+    ],
+    dominancePercentage: 0.943,
+    gates: gates([
+      ['PASS', '70 >= 30'],
+      ['PASS', '8 >= 5'],
+      ['PASS', '94.3% >= 90.0%'],
+      ['PASS', '94.7% >= 90.0%'],
+      ['PASS', '100.0% >= 80.0%'],
+    ]),
+  },
+};
+
+/**
+ * Tester T2: an OPEN row carrying a FAILing gate. The mirror image of `DISMISSED_HEALED`, and
+ * the second half of what makes the guard's source observable.
+ *
+ * Reachable through the product's own write path: `PATCH /v1/recommendations/:id { status:
+ * 'OPEN' }` on a tombstone whose evidence was refreshed by a suppressing run leaves exactly
+ * this row — `status` is the human's column, `gates` is the analyzer's, and the PATCH moves
+ * only the first. Tester drove it and read the page back
+ * (`.artifacts/evidence/5b/phase-gate/tester-350730a/out/page-matrix-b.html`).
+ *
+ * A guard reading `status !== 'OPEN'` renders the full claim here. A guard reading the gates
+ * withdraws it.
+ */
+const OPEN_WITH_FAILING_GATE: Recommendation = {
+  ...DISMISSED_TOMBSTONE,
+  id: 'rec-open-failing-gate',
+  groupKey: { ...DISMISSED_TOMBSTONE.groupKey, decisionType: 'reopened_after_suppression' },
+  status: 'OPEN',
+  statusNote: null,
+  statusChangedAt: null,
+};
+
+/**
  * The empty-counterexamples case — a CANDIDATE whose minority block is the ONLY minority
  * evidence on the page.
  *
@@ -492,6 +547,63 @@ describe('§25 beat 5 — the recommendation, counterexamples included', () => {
     const markup = await renderPage(open());
 
     expect(markup).toContain('Consider a deterministic default of');
+    expect(markup).not.toContain('A gate above now fails this evidence');
+  });
+
+  it('withdraws the candidate value itself, not only the suggested action, when a gate fails', async () => {
+    // Tester T1, 5b phase gate: `Deterministic default candidate: YES` rendered on the ADR 0015
+    // tombstone whose own gate table read `G3 dominance FAIL` and whose Suggested action
+    // already said no default is suggested. Two claims about one row, on one screen,
+    // contradicting each other — `CLAUDE.md` `## Product claims`.
+    //
+    // The absence is asserted against the ROW, not against the string `YES`: `YES` is also the
+    // Decision History table's distribution cell and this card's own Distribution row, both of
+    // which are evidence and must keep rendering. `Row` emits
+    // `<span class="row-label">LABEL</span>` immediately followed by its value, so the label
+    // followed by a `<code>` element is the candidate value and nothing else.
+    stubApi({ 'GET /v1/recommendations': listOf([DISMISSED_TOMBSTONE]) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('Deterministic default candidate');
+    expect(markup).toContain('withdrawn — a gate below fails this evidence');
+    expect(markup).not.toContain('Deterministic default candidate</span><code>');
+    // The evidence the withdrawal rests on is still on the page — withdrawing the claim is not
+    // hiding the row.
+    expect(markup).toContain('YES 38 (54.3%)');
+    expect(markup).toContain('54.3% &gt;= 90.0%');
+    expect(markup).toContain('DISMISSED');
+  });
+
+  it('withdraws the candidate on an OPEN row whose gates fail, so the guard is not the status column', async () => {
+    // Tester T2. `PATCH status OPEN` on a tombstone yields this row; Reviewer called the cell
+    // unreachable. A guard reading `recommendation.status` renders the full claim here.
+    stubApi({ 'GET /v1/recommendations': listOf([OPEN_WITH_FAILING_GATE]) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('reopened_after_suppression');
+    expect(markup).toContain('OPEN');
+    expect(markup).toContain('withdrawn — a gate below fails this evidence');
+    expect(markup).not.toContain('Deterministic default candidate</span><code>');
+    expect(markup).not.toContain('Consider a deterministic default of');
+    expect(markup).toContain('A gate above now fails this evidence');
+  });
+
+  it('keeps the candidate and the suggestion on a DISMISSED row whose gates all pass', async () => {
+    // Reviewer R7's discriminating fixture. Paired with the two above, this is what makes the
+    // guard's SOURCE observable: status and gates disagree in both directions across the three
+    // tests, so neither `status !== 'OPEN'` nor `gates.some(FAIL)` can pass all three unless it
+    // is the one the card actually reads.
+    stubApi({ 'GET /v1/recommendations': listOf([DISMISSED_HEALED]) });
+
+    const markup = await renderPage(open());
+
+    expect(markup).toContain('promote_release_candidate_healed');
+    expect(markup).toContain('DISMISSED');
+    expect(markup).toContain('Deterministic default candidate</span><code>YES</code>');
+    expect(markup).toContain('Consider a deterministic default of');
+    expect(markup).not.toContain('withdrawn — a gate below fails this evidence');
     expect(markup).not.toContain('A gate above now fails this evidence');
   });
 

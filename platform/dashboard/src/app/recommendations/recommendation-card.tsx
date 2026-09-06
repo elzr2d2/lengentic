@@ -24,6 +24,25 @@ import { percent, percentOrNotAttested, workflowLabel } from './format';
 export function RecommendationCard({ recommendation }: { recommendation: Recommendation }) {
   const { evidence, groupKey } = recommendation;
 
+  /*
+    One derivation, once, at the card root — the third instance of a single defect class was
+    what forced it (Tester T1, 5b phase gate). Three separate render sites each made a claim
+    that this same `gates` array withdraws, and each was guarded on its own after it was
+    caught: the page-level block first, then `SuggestedAction`, then this candidate row. A
+    per-site guard only ever fixes the site someone happened to look at.
+
+    Computed here and passed down, so a claim added to this card later cannot render without
+    passing through this value: there is no other source of truth for "does this card's own
+    evidence still support a recommendation" left in the file.
+
+    `evidence.gates`, not `recommendation.status` — the contradiction the defect produces is
+    inside one rendered card, so the guard has to be true of what the card is SHOWING.
+    `docs/decisions/0015` keeps a DISMISSED row as a tombstone whose evidence is refreshed to
+    a SUPPRESSED run's, so `dominantOption` can be non-null and `G3_dominance` FAIL on the
+    same row, while a DISMISSED row whose gates all pass is not withdrawn at all.
+  */
+  const withdrawn = evidence.gates.some((gate) => gate.status === 'FAIL');
+
   return (
     <section className="card">
       <h2 className="card-title">
@@ -31,16 +50,7 @@ export function RecommendationCard({ recommendation }: { recommendation: Recomme
       </h2>
 
       <Row label="Category" value={<span className="value">{recommendation.category}</span>} />
-      <Row
-        label="Deterministic default candidate"
-        value={
-          evidence.dominantOption === null ? (
-            <span className="note-absent">no dominant option</span>
-          ) : (
-            <code>{evidence.dominantOption}</code>
-          )
-        }
-      />
+      <CandidateRow dominantOption={evidence.dominantOption} withdrawn={withdrawn} />
       <Row label="Workflow" value={<span className="value">{workflowLabel(groupKey)}</span>} />
       <Row
         label="Status"
@@ -60,10 +70,7 @@ export function RecommendationCard({ recommendation }: { recommendation: Recomme
       <GateTable gates={evidence.gates} />
 
       <h3 className="section-title">Suggested action</h3>
-      <SuggestedAction
-        dominantOption={evidence.dominantOption}
-        hasFailingGate={evidence.gates.some((gate) => gate.status === 'FAIL')}
-      />
+      <SuggestedAction dominantOption={evidence.dominantOption} hasFailingGate={withdrawn} />
 
       <h3 className="section-title">
         Counterexamples ({String(recommendation.counterexamples.length)})
@@ -85,6 +92,61 @@ export function RecommendationCard({ recommendation }: { recommendation: Recomme
         minority option been selected. Review the counterexamples before removing the branch.
       </p>
     </section>
+  );
+}
+
+/**
+ * §21's `Deterministic default candidate` row — the one value on this card that names a
+ * default, and therefore the one the gate table can withdraw.
+ *
+ * ## Which value goes here
+ *
+ * `MVP_PLAN_V3.md:1157` prints the DECISION TYPE under this label, because its rendering is
+ * plain text with no separate title line: label plus decision type IS the card's heading
+ * there. This card already prints `groupKey.decisionType` as its `<h2>`, so repeating it here
+ * would carry no information and would leave the dominant option — the thing an engineer would
+ * actually default to — off the header entirely. The dominant option is printed instead, and
+ * the plan's pairing is preserved by the `<h2>` immediately above.
+ *
+ * ## Why `withdrawn` removes the value rather than annotating it
+ *
+ * `docs/decisions/0015`: a suppression WITHDRAWS the recommendation. A row that still prints
+ * `Deterministic default candidate: YES` beside a gate table reading `G3 dominance FAIL` is
+ * the assertion `CLAUDE.md` `## Product claims` forbids — "recommendations are hypotheses with
+ * counterevidence, never assertions" — and it is the assertion served beside the evidence that
+ * withdraws it. So no candidate value is rendered at all in that state.
+ *
+ * It is not rendered as nothing, though. An absent row is indistinguishable from a card that
+ * never had a candidate, which is a different claim from one whose candidate was withdrawn —
+ * the same reason `<Counterexamples>` says "none found" out loud instead of rendering nothing.
+ */
+function CandidateRow({
+  dominantOption,
+  withdrawn,
+}: {
+  dominantOption: string | null;
+  withdrawn: boolean;
+}) {
+  if (withdrawn) {
+    return (
+      <Row
+        label="Deterministic default candidate"
+        value={<span className="note-absent">withdrawn — a gate below fails this evidence</span>}
+      />
+    );
+  }
+
+  return (
+    <Row
+      label="Deterministic default candidate"
+      value={
+        dominantOption === null ? (
+          <span className="note-absent">no dominant option</span>
+        ) : (
+          <code>{dominantOption}</code>
+        )
+      }
+    />
   );
 }
 
