@@ -4779,3 +4779,13 @@ tester reached the OPEN-with-failing-gate cell by one `PATCH` (T2), so its trigg
 already holds and it is folded into the 5b phase-gate repair attempt 3 rather than deferred.
 
 **Trigger:** the Phase 7 frame, when owner tags are assigned.
+
+## Discovered at the Phase 5 (segment 5b) phase gate re-run (2026-09-06)
+
+- **Supervisor: a worker that ends its turn with background agents running is read as FAILED.**
+  Twice now a gate worker dispatched Tester/Reviewer in the background, ended its turn, and the
+  runtime killed them at 600s; the missing envelope became `definitionOfDone RED` and a false
+  trigger 5. Interim: launch with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`. Proper fix: the
+  supervisor sets that env itself, and a missing envelope is classified `NO_ENVELOPE` (re-derive
+  from disk) rather than `FAILED` (count a repair). Evidence:
+  `.autopilot/sessions/phase-gate-gate-270f47d2/stderr.log`, checkpoint entry 2026-09-06.
