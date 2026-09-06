@@ -469,3 +469,19 @@ on this packet, worked around both times with `git checkout --` before committin
 `git rm --cached platform/dashboard/tsconfig.tsbuildinfo` plus a `.gitignore` line for
 `*.tsbuildinfo` under `platform/dashboard/`. Outside every current Phase 2 lane's `allowed_paths`
 (root `.gitignore`), so no lane has fixed it inline.
+
+## Discovered while building `p5.recs-ui` (2026-09-04)
+
+### `spike/README.md` and `CLAUDE.md` both still say `spike/` gets deleted
+
+**Source:** 5b wave gate, Coordinator, while checking the Phase 5 DoD. `p5.spike-deleted` was cut
+on 2026-09-03 into §27 post-MVP (`MVP_PLAN_V3.md:1909`), so `spike/` surviving the MVP is
+correct. But `spike/README.md:3` still says "deleted at the end of Phase 5 (`MVP_PLAN.md` §75)"
+— citing v2, which is `[HISTORICAL]` — and `CLAUDE.md` `## Current state` still says 5b "owns
+deleting `spike/` (`MVP_PLAN_V3.md:2236`)", a line number that now points at package-2 fixture
+prose. Two documents telling a fresh session to delete evidence the plan decided to keep.
+
+**Do:** correct both citations. **Trigger:** the next edit to either file, or the first session
+that proposes deleting `spike/`.
+
+**Closed:** 2026-09-06 at the Phase 5 (5b) phase gate, Coordinator doc commit. `CLAUDE.md:205` and `:291`, `spike/README.md:3` and `MVP_PLAN_V3.md:222` now say `spike/` survives the MVP and cite `MVP_PLAN_V3.md:1459` / `:2746`. Trigger fired: "the next edit to either file" (Reviewer SC4 at `350730a`).

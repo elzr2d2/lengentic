@@ -219,7 +219,7 @@ removed. The Platform must run correctly if the entire Playground is removed.
 │   ├── agents/  providers/  tools/
 │   ├── workflows/  scenarios/  fixtures/
 │
-├── spike/                   ← Phase 0 only, deleted after Phase 5
+├── spike/                   ← Phase 0 thesis spike; kept for the MVP (see :1459, :2746)
 ├── docker/
 ├── docs/
 │

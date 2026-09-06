@@ -1,6 +1,7 @@
 # Phase 0 — Thesis Spike
 
-**Disposable.** This directory is deleted at the end of Phase 5 (`MVP_PLAN.md` §75).
+**Kept for the MVP.** `p5.spike-deleted` was cut on 2026-09-03 (`MVP_PLAN_V3.md:1459`, `:2746`);
+this directory is the on-disk record of where the spike disagrees with the corrected grid by design.
 The pure functions and the fixtures are not disposable — they graduate into
 `platform/analysis-engine` and its test suite (§13, §74).
 

@@ -4572,14 +4572,210 @@ the lane system instead.
 `scripts/oracle/graph.json`, or whether the lane checkers should recognise a coordinator scope.
 Second occurrence of the same shape (`ab453de` was the first). **Trigger:** the third one.
 
-### `spike/README.md` and `CLAUDE.md` both still say `spike/` gets deleted
+## Discovered at the Phase 5 (segment 5b) phase gate (2026-09-06)
 
-**Source:** 5b wave gate, Coordinator, while checking the Phase 5 DoD. `p5.spike-deleted` was cut
-on 2026-09-03 into §27 post-MVP (`MVP_PLAN_V3.md:1909`), so `spike/` surviving the MVP is
-correct. But `spike/README.md:3` still says "deleted at the end of Phase 5 (`MVP_PLAN.md` §75)"
-— citing v2, which is `[HISTORICAL]` — and `CLAUDE.md` `## Current state` still says 5b "owns
-deleting `spike/` (`MVP_PLAN_V3.md:2236`)", a line number that now points at package-2 fixture
-prose. Two documents telling a fresh session to delete evidence the plan decided to keep.
+Flushed from `.artifacts/backlog/pending.md` plus the Reviewer's non-blocking findings at `350730a`
+(`.artifacts/evidence/5b/phase-gate/reviewer-1414c34.md`). None blocks the gate; each carries its
+trigger. Reviewer tags in parentheses name the owning node, not `this-node`.
 
-**Do:** correct both citations. **Trigger:** the next edit to either file, or the first session
-that proposes deleting `spike/`.
+### `toRecommendation` copies three fields defensively and passes `evidence` by reference (S4)
+
+**Source:** 5b phase-gate review, Standards axis.
+`platform/api/src/recommendations/recommendations.service.ts:94-112` copies `groupKey`,
+`configSnapshot` and `counterexamples` into fresh objects, with a doc comment explaining that the
+record types them `readonly` and the wire's mutable shape would otherwise alias the record's own.
+`evidence` — the largest nested structure, and `readonly` on `RecommendationRecord` exactly like
+the others — is assigned straight across. Harmless today: the record is freshly built from a row
+on every call. It is an inconsistency a reader has to explain, and the stated rule does not match
+what the code does.
+
+**Do:** copy `evidence` too, or narrow the comment to say why the three copied are the ones that
+need it. **Trigger:** next change to `recommendations.service.ts`.
+
+### No index serves the recommendation list's `orderBy` (S5)
+
+**Source:** 5b phase-gate review, Standards axis. `platform/database/prisma/schema.prisma`
+declares `@@index([status, lastSeenAt])` and `@@index([workflowName, workflowVersion])`. The only
+ordered query, `recommendations.repository.ts:128` (`firstSeenAt desc, id desc`), is served by
+neither, and no query in the diff uses either. Deliberately not a defect: PERF-1 forbids
+speculative optimization and the MVP's row count makes it invisible. Recorded so the mismatch is a
+decision someone made.
+
+**Do:** when it matters, `@@index([firstSeenAt, id])` and drop whichever existing index still has
+no reader. **Trigger:** first slow recommendation list read, or the next `Recommendation`
+migration.
+
+### `listDecisionsForAnalysis` builds an unbounded `IN` list (S6)
+
+**Source:** 5b phase-gate review, Standards axis.
+`platform/api/src/analysis/analysis.repository.ts:150-161` collects every distinct `runId` from
+every `Decision` row and passes it as `where: { id: { in: runIds } }`. Postgres binds each element
+as a parameter; past roughly 65k distinct runs the statement fails outright rather than degrading.
+§22 mandates full recomputation with no incremental job, so reading everything is the design; the
+`IN` list is the part with a hard ceiling rather than a slope.
+
+**Do:** drop the `IN` and read the `Run` projection unfiltered, or chunk the id list.
+**Trigger:** before Phase 7 E2E runs analysis over a corpus larger than a demo dataset.
+
+### Two list-read envelopes live in two different subtrees of `platform/shared` (S7)
+
+**Source:** 5b phase-gate review, Standards axis. `RunListViewSchema` is in
+`platform/shared/read/run-view.ts` (the `./read` subpath); `RecommendationListViewSchema` is in
+`platform/shared/schema/recommendation.ts` (root entry). Same four-field envelope, same two
+pagination constants. 5b's placement matches `CLAUDE.md` `## Types` and the 5b DoD line naming
+`schema/recommendation.ts`; `read/` is the pre-existing deviation, out of this diff's blast radius
+(REFAC-3/REFAC-4).
+
+**Do:** decide whether `read/` folds into `schema/` or is a documented second home for read
+models; settle together with the open "`RunSummary` still lives in the API" item above.
+**Trigger:** the next read model added to `platform/shared`.
+
+### `pnpm gates` runs `test` before `build`, over a gitignored `dist` (E1-followup)
+
+**Source:** 5b phase-gate, Reviewer E1 root cause. `pnpm gates` is `lint && format:check &&
+typecheck && test && build && …`. `platform/dashboard` and `platform/api` resolve
+`@lengentic/shared` through `platform/shared/dist/`, gitignored build output, so the suites that
+validate the wire contract read whatever `dist` is on disk and the `build` that would refresh it
+runs afterwards. Pre-existing; 5b is the first phase whose dashboard suite asserts on schemas
+added in the same commit range, which made it visible — one `pnpm gates` run failed on a 5b DoD
+assertion and never reproduced in 12 further runs. Also why the three concurrent gate agents at
+`fb05e59` saw each other's mutants.
+
+**Do:** move `build` ahead of `test` in the `gates` script, or give the consuming packages a
+source-resolution alias in their vitest configs. **Trigger:** next time a gate result cannot be
+reproduced.
+
+### The only signal that a row was destroyed is discarded (R2, `p6.scenario1`)
+
+**Source:** Reviewer at `1414c34`. `WithdrawalResult`
+(`platform/api/src/recommendations/recommendation-record.ts:50-68`) justifies three values over a
+void with "a caller that could not tell them apart could not report either" — and no caller
+reports either: `analysis.service.ts:128-131` awaits `withdrawOnSuppression` and drops the value;
+nothing in `analysis/**` or `recommendations/**` touches a logger. An irreversible `deleteMany`
+of product data leaves no trace in the response, a log or a read return value. DESIGN-1 unpaid;
+the rationale describes a consumer that does not exist. No-logging matches the subtree's
+prevailing style (DESIGN-7), so not a defect.
+
+**Do:** either consume the result (a `structured-logging` record with the group key and
+`WithdrawalResult`) or collapse it to void. **Trigger:** the first node that reports or logs
+analysis-run outcomes, or the next change to `AnalysisService.run`.
+
+### `EvaluatedGroupSchema` states a biconditional in prose its own `superRefine` encodes for three neighbours (R3, `p5.analysis-endpoint`)
+
+**Source:** Reviewer at `1414c34`. `platform/shared/schema/recommendation.ts:389` documents "The
+null case implies G4 is NOT_APPLICABLE"; `gates.ts:57-64` makes it an iff. The `superRefine` at
+`:407-451` re-derives `failedGates`, the verdict and the CANDIDATE / `recommendationId`
+biconditional from `gates`, but leaves `dominantOptionAttestedSuccessRate` unconstrained against
+G4's status. Not a defect today — `toEvaluatedGroup` copies from the same aggregate G4 reads.
+
+**Do:** add the fourth `superRefine` clause. **Trigger:** the next producer of `EvaluatedGroup`,
+or the next change to `gates.ts` G4.
+
+### `withdrawOnSuppression`'s two statements are not one transaction, and the comment reads as if they were (R4, `p6.scenario1`)
+
+**Source:** Reviewer at `1414c34`. `recommendations.repository.ts:262-284`. The doc comment claims
+"the updateMany that follows can only reach a row the delete deliberately left behind" — true
+absent concurrency. A `PATCH /v1/recommendations/:id/status` landing between the two statements
+lets the `updateMany` refresh a row that is no longer DISMISSED, and the call returns
+KEPT_DISMISSED for a row that is now OPEN. Narrow window, strictly better than pre-repair, evidence
+still correct — not blocking. The overstated comment is the part worth fixing.
+
+**Do:** wrap in `$transaction` or narrow the comment. **Trigger:** next change to
+`withdrawOnSuppression`, or the first concurrent-analysis requirement.
+
+### ADR 0015's stated write cost is wrong by 2x on the common path (R5, `p6.scenario1`)
+
+**Source:** Reviewer at `1414c34`.
+`docs/decisions/0015-suppression-withdraws-the-row-dismissed-survives.md:108-111` says one
+`deleteMany` per suppressed group plus one `updateMany` only where a row survived; "on an empty
+table that is one no-op statement per group per run". The code returns early only when
+`deleted.count > 0`, so the `updateMany` also runs on every ABSENT case — the case the ADR itself
+calls ordinary. Two statements per suppressed group per run, not one.
+
+**Do:** correct the ADR's cost paragraph, or add the early return the ADR describes.
+**Trigger:** the first time analysis-run write volume is measured.
+
+### Gitignoring `platform/dashboard/CLAUDE.md` removes the audit trail, not the injection (R6, `p6.scenario1`)
+
+**Source:** Reviewer at `1414c34`; the tester's T6 at `fb05e59` is the observation it rests on
+(`next dev` writes `AGENTS.md` and `CLAUDE.md` into `platform/dashboard/`).
+`platform/dashboard/.gitignore:6-15` states the rationale correctly — a build tool writing one is
+injecting instructions nobody reviewed — but ignoring the file does not stop Claude Code from
+loading a directory-scoped `CLAUDE.md`; it only guarantees nobody sees it in a diff. Neither file
+is in the tree now.
+
+**Do:** a dev-script removal, or a `check:integrity`-style assertion that the file is absent.
+**Trigger:** the next Next.js major upgrade, or the first time `next dev` is part of a scripted
+workflow.
+
+### `SuggestedAction`'s gates-not-status guard is not bound by any test (R7, `p6.scenario1`)
+
+**Source:** Reviewer's certifying pass at `350730a` (`reviewer-1414c34.md:405-559`). The repair's
+commit message and `recommendation-card.tsx:181-184` make the choice of
+`evidence.gates.some(g => g.status === 'FAIL')` over `recommendation.status` the point of the fix.
+Nothing goes red if it is reversed: `hasFailingGate={recommendation.status !== 'OPEN'}` passes all
+three new tests and the rest of the suite, because the only DISMISSED fixture carries a FAIL and
+the only all-PASS fixture is OPEN. The shipped card is correct in every state reachable today
+(the reviewer's four-row table); this is a missing negative, not a defect. The discriminating
+fixture is a one-line spread — `DISMISSED_TOMBSTONE` with `evidence.gates` replaced by an all-PASS
+set — asserted to still contain "Consider a deterministic default of".
+
+**Do:** add that fixture and assertion. **Trigger:** the next change to `SuggestedAction`'s
+guard, or the first phase that persists a non-DISMISSED row carrying a failing gate.
+
+### §20.2's analyzer is reachable by nothing the Playground emits (SC2, `p6.scenario2`)
+
+**Source:** Reviewer Scope axis, both passes. `recommendation.ts:94-100` states the DESIGN-1
+reasoning in place: a second `RECOMMENDATION_CATEGORIES` member waits for the second real
+producer. Recorded here so the phase-6 scenario that exercises Repeated Failed Action knows the
+category, the card and the fixture all still need a live path. Pairs with validator F-1 (§20.2's
+same-key-success case survives mutation, one fixture short) — the 5b tester at `350730a` was asked
+whether that case is reachable live; read `.artifacts/evidence/5b/phase-gate/tester-350730a.md`
+before closing either.
+
+**Trigger:** `p6.scenario2`.
+
+### `pnpm flow record` stores the symbolic ref, not the commit
+
+**Source:** Coordinator, preparing `pnpm flow record phase --segment 5b` at the 5b phase gate.
+`scripts/flow.ts:555-561` reads `.git/HEAD` verbatim, so on a branch every gate record's `head`
+is `"ref: refs/heads/main"` (see any file in `.artifacts/gates/`). A gate record is "a pointer to
+proof" (`flow.ts:24-25`), and the one field that would pin the proof to a tree is unusable: the
+5b wave records cannot say which commit they gated. Detached HEAD is the only case that works.
+Not blocking — `flow next` never reads `head`.
+
+**Do:** resolve the ref (`git rev-parse HEAD`, or follow the `ref:` line into `.git/refs/…` /
+`packed-refs`) and store the sha; consider also recording it in the checkpoint entry.
+**Trigger:** the next change to `scripts/flow.ts`, or the first time a gate record has to be
+matched to a commit.
+
+### Decisions whose `run.started` never arrives vanish from analysis, counted in neither exclusion (T3)
+
+**Source:** 5b phase-gate tester at `350730a`, FINDING T3
+(`.artifacts/evidence/5b/phase-gate/tester-350730a.md`; probe output
+`tester-350730a/out/p06-grid.txt`). Not 5b's: pre-existing in `platform/api/src/telemetry`
+(`p4.entity-ingest`) and `platform/api/src/analysis` (`p5.analysis-endpoint`). 85
+`decision.recorded` events posted for a `runId` with no `run.started` are accepted (rejected 0),
+persist as `Decision` rows with no `Run` row, and the analysis run returns `evaluatedGroups: []`
+for those decision types. They are not STALE and their `contextKey` is non-null, so
+`evidence.excluded.staleRun` and `.missingContextKey` (MVP_PLAN_V3.md:940, section 18) both read 0
+while the decisions are silently absent. A late `run.started` makes them visible; the loss is
+permanent only when it never arrives.
+
+**Do:** either count the orphan case as a third exclusion on the wire, or reject orphan decisions
+at ingest with a drop reason. **Trigger:** the first analysis over Playground data where a run
+crashes before its `run.started` flushes, or the next change to `listDecisionsForAnalysis`.
+
+### Six 5b follow-ups are tagged to `p6.scenario1`, a node the plan retired (T4)
+
+**Source:** 5b phase-gate tester at `350730a`, FINDING T4. R2, R4, R5, R6, R7 and SC4 above
+carry `p6.scenario1` as owner; MVP_PLAN_V3.md:2350 retired it on 2026-09-03 and it is not one of
+`scripts/oracle/graph.json`'s 58 nodes. Their Trigger lines still fire, so nothing is lost, but
+no dispatch will ever pick them up by tag. Read `p6.scenario1` in this section as: the next
+packet whose `allowed_paths` cover the cited file — `platform/dashboard/**` follow-ups (R6, R7)
+fall to `p7.e2e` / `p7.docker-smoke`; `platform/api/src/recommendations/**` follow-ups (R2, R4)
+and the ADR text (R5) to whichever Phase 7 packet first touches them. R7 in particular: the
+tester reached the OPEN-with-failing-gate cell by one `PATCH` (T2), so its trigger condition
+already holds and it is folded into the 5b phase-gate repair attempt 3 rather than deferred.
+
+**Trigger:** the Phase 7 frame, when owner tags are assigned.

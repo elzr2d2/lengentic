@@ -202,7 +202,7 @@ pnpm gates              # lint, format, typecheck, test, build, boundaries
 pnpm gates:full         # gates + check:isolation (slow; phase gate and CI only)
 pnpm check:boundaries   # dependency-cruiser
 pnpm check:isolation    # builds the platform with playground/ deleted
-pnpm spike              # Phase 0 thesis spike (disposable, deleted end of Phase 5)
+pnpm spike              # Phase 0 thesis spike (kept for the MVP; `MVP_PLAN_V3.md:1459`)
 pnpm check:integrity    # QA-integrity scan: false green, focused tests, hidden skips
 pnpm --filter @lengentic/api test <substring>   # one test file, by path substring (vitest)
 pnpm oracle waves       # dependency fan-out; which packets can run in parallel now
@@ -288,7 +288,9 @@ narratives live in git history and `.artifacts/evidence/`, not here.
 **Execution order, amended at the Phase 1 gate: `0 → 1 → 5a → 2 → 3 → 4 → 5b → 6 → 7`.**
 Phase numbers are identity, not sequence — the amendment and the two rejected alternatives
 are in `MVP_PLAN_V3.md` Part III. `5a` is Phase 5 waves 1–3 (the pure analysis engine); `5b`
-is waves 4–6, stays after Phase 4, and owns deleting `spike/` (`MVP_PLAN_V3.md:2236`). The
+is waves 4–6 and stays after Phase 4. `spike/` is **not** deleted in the MVP — `p5.spike-deleted`
+was cut on 2026-09-03 (`MVP_PLAN_V3.md:1459`, `:2746`); it is the on-disk record of the seven
+`counterexamples` rows where the spike disagrees with the corrected grid by design. The
 graph stores plain phase numbers, so `lanes wave` takes `5`, not `5a`.
 
 Two standing lessons, kept because no tool re-derives them. Gates are one of GREEN's four
