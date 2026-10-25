@@ -4904,3 +4904,24 @@ already holds and it is folded into the 5b phase-gate repair attempt 3 rather th
   envelope elsewhere and hope it is found. **Source:** Phase 6 wave gate, 2026-09-06 —
   envelope content preserved at `.artifacts/evidence/6/wave-gate/worker-outcome.json`.
   **Trigger:** before the next unattended `pnpm autopilot` run.
+
+## Flushed at the Phase 6 wave gate, wave 2 (2026-10-25)
+
+### Make seed-range handling identical across playground scenario CLIs
+
+**Source:** Validator, Phase 6 wave gate for `p6.scenario2`/`p6.scenario3`, 2026-10-25 —
+`.artifacts/evidence/6/wave-gate/validator-wave2.md`, edge case 8.
+
+Both scenario entry points parse `--seed=` with the identical `SEED_PATTERN` regex and
+neither bounds the value to int32. Given `--seed=99999999999` they then disagree:
+`playground/scenarios/repeated-failure/main.ts` throws and exits 1 on the
+`createSeededComponents` range guard, while `playground/scenarios/deterministic-decision/main.ts`
+silently wraps through `seedFor`'s `| 0` and exits 0 — and its banner still prints the
+unwrapped seed, so the run is reproducible only by the wrapped value nobody saw. Deferred
+because no Phase 6 Definition of Done item constrains out-of-range seeds, and both scenarios
+are correct for every seed a caller is told to use. **Do:** pick one behaviour — reject at
+parse time in both, with the bound stated in the usage line — and have the banner print the
+seed actually used, never the one typed. Note for `p6.seed-repro`: the determinism claim it
+proves is about equal in-range seeds, so this divergence does not weaken it; do not widen that
+packet to cover this. **Trigger:** before Phase 7's `p7.docker-smoke`, which rehearses the §25
+demo from a clean clone and is where a wrapped seed would first mislead someone.
