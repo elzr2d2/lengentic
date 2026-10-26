@@ -26,14 +26,31 @@ import type { RecommendationCategory } from '@lengentic/shared';
  * category — `fingerprint.ts` says so, which is why `category` is not a fingerprint input.
  * Keeping the three together is what makes that statement checkable in one place.
  */
-export interface AnalyzerIdentity {
+export interface AnalyzerIdentity<C extends RecommendationCategory = RecommendationCategory> {
   readonly id: string;
   readonly version: string;
-  readonly category: RecommendationCategory;
+  readonly category: C;
 }
 
-export const DETERMINISTIC_CANDIDATE_ANALYZER: AnalyzerIdentity = Object.freeze({
-  id: 'deterministic-candidate',
-  version: '1.0.0',
-  category: 'DETERMINISTIC_CANDIDATE',
-});
+export const DETERMINISTIC_CANDIDATE_ANALYZER: AnalyzerIdentity<'DETERMINISTIC_CANDIDATE'> =
+  Object.freeze({
+    id: 'deterministic-candidate',
+    version: '1.0.0',
+    category: 'DETERMINISTIC_CANDIDATE',
+  });
+
+/**
+ * §20.2's identity, on the same footing and under the same recorded assumption as the one
+ * above: `MVP_PLAN_V3.md` names the analyzer ("§20.2 Repeated Failed Action") and never states
+ * a literal id or version, so `repeated-failed-action` is the kebab-case of §20.2's own name
+ * and `1.0.0` is the version of its BEHAVIOUR (the five conditions in
+ * `analysis-engine/src/repeated-failed-action.ts`), not of any package. Bump it exactly when a
+ * recomputation should produce a NEW recommendation rather than refresh the existing one.
+ * Reversible at no data cost, for the reason given above.
+ */
+export const REPEATED_FAILED_ACTION_ANALYZER: AnalyzerIdentity<'REPEATED_FAILED_ACTION'> =
+  Object.freeze({
+    id: 'repeated-failed-action',
+    version: '1.0.0',
+    category: 'REPEATED_FAILED_ACTION',
+  });

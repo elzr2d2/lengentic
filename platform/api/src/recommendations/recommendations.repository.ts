@@ -5,10 +5,17 @@ import {
   AnalyzerConfigSnapshotSchema,
   CounterexampleSchema,
   RecommendationEvidenceSchema,
+  RepeatedFailedActionConfigSnapshotSchema,
+  RepeatedFailedActionCounterexampleSchema,
+  RepeatedFailedActionEvidenceSchema,
   type AnalyzerConfigSnapshot,
   type Counterexample,
+  type RecommendationCategory,
   type RecommendationEvidence,
   type RecommendationStatus,
+  type RepeatedFailedActionConfigSnapshot,
+  type RepeatedFailedActionCounterexample,
+  type RepeatedFailedActionEvidence,
 } from '@lengentic/shared';
 import { z } from 'zod';
 import type { PrismaClient } from '@lengentic/database';
@@ -18,6 +25,8 @@ import { recommendationFingerprint } from './fingerprint';
 import type {
   RecommendationRecord,
   RecommendationSighting,
+  RepeatedFailedActionRecord,
+  RepeatedFailedActionSighting,
   WithdrawalResult,
 } from './recommendation-record';
 
@@ -57,18 +66,48 @@ function parseColumn<T>(schema: z.ZodType<T>, value: unknown, column: string, id
 }
 
 const CounterexampleListSchema = z.array(CounterexampleSchema);
+const RepeatedFailedActionCounterexampleListSchema = z.array(
+  RepeatedFailedActionCounterexampleSchema,
+);
+
+/**
+ * The identity columns a category must carry. The table holds both analyzers' rows
+ * (`schema.prisma`: the four group-key columns and the three action-key columns are each NULL
+ * for the other category), so a row whose columns do not match its category is corrupt, and
+ * this throws on it for the reason `parseColumn` does — a recommendation with the wrong
+ * identity is a claim about nothing.
+ */
+function requireIdentity(
+  values: readonly (string | null)[],
+  category: RecommendationCategory,
+  id: string,
+): void {
+  if (values.some((value) => value === null)) {
+    throw new Error(`Recommendation ${id} (${category}) is missing an identity column`);
+  }
+}
 
 export function toRecommendationRecord(row: RecommendationRow): RecommendationRecord {
+  if (row.category !== 'DETERMINISTIC_CANDIDATE') {
+    throw new Error(`Recommendation ${row.id} is ${row.category}, not DETERMINISTIC_CANDIDATE`);
+  }
+
+  requireIdentity(
+    [row.workflowName, row.workflowVersion, row.decisionType, row.contextKeyVersion],
+    row.category,
+    row.id,
+  );
+
   return {
     id: row.id,
     category: row.category,
     analyzerId: row.analyzerId,
     analyzerVersion: row.analyzerVersion,
     groupKey: {
-      workflowName: row.workflowName,
-      workflowVersion: row.workflowVersion,
-      decisionType: row.decisionType,
-      contextKeyVersion: row.contextKeyVersion,
+      workflowName: row.workflowName ?? '',
+      workflowVersion: row.workflowVersion ?? '',
+      decisionType: row.decisionType ?? '',
+      contextKeyVersion: row.contextKeyVersion ?? '',
     },
     configSnapshot: parseColumn(
       AnalyzerConfigSnapshotSchema,
@@ -93,6 +132,55 @@ export function toRecommendationRecord(row: RecommendationRow): RecommendationRe
   };
 }
 
+export function toRepeatedFailedActionRecord(row: RecommendationRow): RepeatedFailedActionRecord {
+  if (row.category !== 'REPEATED_FAILED_ACTION') {
+    throw new Error(`Recommendation ${row.id} is ${row.category}, not REPEATED_FAILED_ACTION`);
+  }
+
+  requireIdentity([row.runId, row.toolName, row.inputFingerprint], row.category, row.id);
+
+  return {
+    id: row.id,
+    category: row.category,
+    analyzerId: row.analyzerId,
+    analyzerVersion: row.analyzerVersion,
+    actionKey: {
+      runId: row.runId ?? '',
+      toolName: row.toolName ?? '',
+      inputFingerprint: row.inputFingerprint ?? '',
+    },
+    configSnapshot: parseColumn(
+      RepeatedFailedActionConfigSnapshotSchema,
+      row.configSnapshot,
+      'configSnapshot',
+      row.id,
+    ),
+    sourceWatermark: row.sourceWatermark,
+    fingerprint: row.fingerprint,
+    evidence: parseColumn(RepeatedFailedActionEvidenceSchema, row.evidence, 'evidence', row.id),
+    counterexamples: parseColumn(
+      RepeatedFailedActionCounterexampleListSchema,
+      row.counterexamples,
+      'counterexamples',
+      row.id,
+    ),
+    firstSeenAt: row.firstSeenAt,
+    lastSeenAt: row.lastSeenAt,
+    status: row.status,
+    statusNote: row.statusNote,
+    statusChangedAt: row.statusChangedAt,
+  };
+}
+
+/** Either category's record, chosen by the row's own `category`. */
+export function toAnyRecommendationRecord(
+  row: RecommendationRow,
+): RecommendationRecord | RepeatedFailedActionRecord {
+  return row.category === 'REPEATED_FAILED_ACTION'
+    ? toRepeatedFailedActionRecord(row)
+    : toRecommendationRecord(row);
+}
+
 /**
  * The three JSON columns, on their way in.
  *
@@ -110,7 +198,13 @@ export function toRecommendationRecord(row: RecommendationRow): RecommendationRe
  * failure is a type error here rather than a row that round-trips into an unreadable column.
  */
 function toJsonInput(
-  value: AnalyzerConfigSnapshot | RecommendationEvidence | readonly Counterexample[],
+  value:
+    | AnalyzerConfigSnapshot
+    | RecommendationEvidence
+    | readonly Counterexample[]
+    | RepeatedFailedActionConfigSnapshot
+    | RepeatedFailedActionEvidence
+    | readonly RepeatedFailedActionCounterexample[],
 ): RecommendationJsonInput {
   return value;
 }
@@ -125,7 +219,7 @@ function toJsonInput(
  * refreshes. A sixth column added to one and not the other would be a row whose evidence
  * agrees with its gates on one path and not the other.
  */
-function resightedColumns(sighting: RecommendationSighting) {
+function resightedColumns(sighting: RecommendationSighting | RepeatedFailedActionSighting) {
   return {
     configSnapshot: toJsonInput(sighting.configSnapshot),
     sourceWatermark: sighting.sourceWatermark,
@@ -171,12 +265,89 @@ export class RecommendationsRepository {
    */
   async listRecommendations(take: number, skip: number): Promise<RecommendationRecord[]> {
     const rows = await this.prisma.client.recommendation.findMany({
+      where: { category: 'DETERMINISTIC_CANDIDATE' },
       orderBy: [...RECOMMENDATION_LIST_ORDER],
       take,
       skip,
     });
 
     return rows.map(toRecommendationRecord);
+  }
+
+  /** `listRecommendations`, for §20.2 rows. Same order, same DISMISSED-included rule. */
+  async listRepeatedFailedActions(
+    take: number,
+    skip: number,
+  ): Promise<RepeatedFailedActionRecord[]> {
+    const rows = await this.prisma.client.recommendation.findMany({
+      where: { category: 'REPEATED_FAILED_ACTION' },
+      orderBy: [...RECOMMENDATION_LIST_ORDER],
+      take,
+      skip,
+    });
+
+    return rows.map(toRepeatedFailedActionRecord);
+  }
+
+  /**
+   * §21's re-analysis rule for §20.2: the same single `upsert` on the UNIQUE fingerprint, the
+   * same five re-stated columns (`resightedColumns`), and therefore the same lifecycle — a
+   * DISMISSED streak stays DISMISSED, `firstSeenAt` is written once. Only the identity columns
+   * differ: the three action-key columns on create, the four group-key columns left NULL.
+   */
+  async recordRepeatedFailedActionSighting(
+    sighting: RepeatedFailedActionSighting,
+  ): Promise<RepeatedFailedActionRecord> {
+    const fingerprint = recommendationFingerprint({
+      analyzerId: sighting.analyzerId,
+      analyzerVersion: sighting.analyzerVersion,
+      actionKey: sighting.actionKey,
+    });
+
+    const resighted = resightedColumns(sighting);
+
+    const row = await this.prisma.client.recommendation.upsert({
+      where: { fingerprint },
+      create: {
+        id: randomUUID(),
+        category: sighting.category,
+        analyzerId: sighting.analyzerId,
+        analyzerVersion: sighting.analyzerVersion,
+        runId: sighting.actionKey.runId,
+        toolName: sighting.actionKey.toolName,
+        inputFingerprint: sighting.actionKey.inputFingerprint,
+        fingerprint,
+        firstSeenAt: sighting.observedAt,
+        ...resighted,
+      },
+      update: resighted,
+    });
+
+    return toRepeatedFailedActionRecord(row);
+  }
+
+  /**
+   * §20.2's withdrawal: a persisted streak this run no longer emits is removed, with the same
+   * DISMISSED exception `withdrawOnSuppression` has (`docs/decisions/0015`) — a DISMISSED row
+   * asserts no recommendation and carries a human act, so it stays.
+   *
+   * One `deleteMany` naming the fingerprints the run DID emit, rather than one call per
+   * absent key: §20.2 has no per-key SUPPRESSED verdict to iterate (a key that does not
+   * qualify is simply not emitted), so "everything of this category not in the emitted set"
+   * is the only statement of the rule there is. A DISMISSED tombstone's evidence is not
+   * refreshed here, unlike `withdrawOnSuppression`: there is no suppressing evidence to
+   * refresh it with — the run saw no streak at all.
+   */
+  async withdrawRepeatedFailedActionsExcept(emitted: readonly string[]): Promise<number> {
+    const deleted = await this.prisma.client.recommendation.deleteMany({
+      where: {
+        category: 'REPEATED_FAILED_ACTION',
+        status: { not: 'DISMISSED' },
+        fingerprint: { notIn: [...emitted] },
+      },
+    });
+
+    return deleted.count;
   }
 
   /**
@@ -308,7 +479,7 @@ export class RecommendationsRepository {
     status: RecommendationStatus,
     note: string | null,
     changedAt: Date,
-  ): Promise<RecommendationRecord | undefined> {
+  ): Promise<RecommendationRecord | RepeatedFailedActionRecord | undefined> {
     const rows = await this.prisma.client.recommendation.updateManyAndReturn({
       where: { id },
       data: { status, statusNote: note, statusChangedAt: changedAt },
@@ -316,6 +487,6 @@ export class RecommendationsRepository {
 
     const row = rows[0];
 
-    return row === undefined ? undefined : toRecommendationRecord(row);
+    return row === undefined ? undefined : toAnyRecommendationRecord(row);
   }
 }

@@ -183,7 +183,7 @@ describe('RecommendationsService.list — §25 beats 4 and 5 only content path',
   it('reads one row past the page, so hasMore is a fact rather than a second COUNT(*)', async () => {
     const { service, listRecommendations } = pageOf([]);
 
-    await service.list({ limit: 50, offset: 20 });
+    await service.list({ limit: 50, offset: 20, category: 'DETERMINISTIC_CANDIDATE' });
 
     expect(listRecommendations).toHaveBeenCalledWith(51, 20);
   });
@@ -194,7 +194,7 @@ describe('RecommendationsService.list — §25 beats 4 and 5 only content path',
     // limit would promise one.
     const { service } = pageOf(rows(50));
 
-    const page = await service.list({ limit: 50, offset: 0 });
+    const page = await service.list({ limit: 50, offset: 0, category: 'DETERMINISTIC_CANDIDATE' });
 
     expect(page.recommendations).toHaveLength(50);
     expect(page.hasMore).toBe(false);
@@ -203,7 +203,7 @@ describe('RecommendationsService.list — §25 beats 4 and 5 only content path',
   it('reports hasMore true and drops the probe row it was never asked to show', async () => {
     const { service } = pageOf(rows(51));
 
-    const page = await service.list({ limit: 50, offset: 0 });
+    const page = await service.list({ limit: 50, offset: 0, category: 'DETERMINISTIC_CANDIDATE' });
 
     expect(page.recommendations).toHaveLength(50);
     expect(page.recommendations.at(-1)?.id).toBe('rec-49');
@@ -213,7 +213,7 @@ describe('RecommendationsService.list — §25 beats 4 and 5 only content path',
   it('echoes the window the caller asked for, so a page can say where it sits', async () => {
     const { service } = pageOf(rows(3));
 
-    const page = await service.list({ limit: 10, offset: 40 });
+    const page = await service.list({ limit: 10, offset: 40, category: 'DETERMINISTIC_CANDIDATE' });
 
     expect(page.limit).toBe(10);
     expect(page.offset).toBe(40);
@@ -223,7 +223,7 @@ describe('RecommendationsService.list — §25 beats 4 and 5 only content path',
   it('produces a page the frozen envelope accepts, counterexamples and all', async () => {
     const { service } = pageOf(rows(1));
 
-    const page = await service.list({ limit: 50, offset: 0 });
+    const page = await service.list({ limit: 50, offset: 0, category: 'DETERMINISTIC_CANDIDATE' });
 
     const parsed = RecommendationListViewSchema.safeParse(page);
 
@@ -236,7 +236,9 @@ describe('RecommendationsService.list — §25 beats 4 and 5 only content path',
   it('reports an empty page rather than an absence — nothing found is a claim the page makes', async () => {
     const { service } = pageOf([]);
 
-    await expect(service.list({ limit: 50, offset: 0 })).resolves.toStrictEqual({
+    await expect(
+      service.list({ limit: 50, offset: 0, category: 'DETERMINISTIC_CANDIDATE' }),
+    ).resolves.toStrictEqual({
       recommendations: [],
       limit: 50,
       offset: 0,

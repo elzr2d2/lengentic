@@ -4,6 +4,7 @@ import type { PrismaClient } from '@lengentic/database';
 
 import { PrismaService } from '../prisma/prisma.service';
 import type { AnalysisDecisionSource } from './analysis-source';
+import type { AnalysisToolCallSource } from './repeated-failed-source';
 
 // Row shapes recovered structurally from `PrismaClient` itself — the same technique
 // `runs.repository.ts`, `decisions.repository.ts` and `recommendations.repository.ts` use, and
@@ -163,5 +164,40 @@ export class AnalysisRepository {
     const runsById = new Map(runs.map((run) => [run.id, run]));
 
     return rows.map((row) => toAnalysisDecisionSource(row, runsById.get(row.runId)));
+  }
+
+  /**
+   * Every `ToolCall`, narrowed to the columns §20.2 reads. `input` and `output` are NOT
+   * selected: the analyzer never sees raw tool IO (`analysis-engine/src/tool-call.ts`), and the
+   * most direct way to guarantee that is to never load it.
+   *
+   * Oldest first by the client clock, tie-broken on `id` — the same reproducibility argument as
+   * `DECISION_ANALYSIS_ORDER`, and here the order is also semantically load-bearing: attempts
+   * are ordered by `occurredAt`, so two calls sharing a millisecond need a deterministic order
+   * or "consecutive" could differ between two reads of unchanged data.
+   */
+  async listToolCallsForAnalysis(): Promise<AnalysisToolCallSource[]> {
+    const rows = await this.prisma.client.toolCall.findMany({
+      select: {
+        id: true,
+        runId: true,
+        toolName: true,
+        inputFingerprint: true,
+        success: true,
+        error: true,
+        startedAt: true,
+      },
+      orderBy: [{ startedAt: 'asc' }, { id: 'asc' }],
+    });
+
+    return rows.map((row) => ({
+      toolCallId: row.id,
+      runId: row.runId,
+      toolName: row.toolName,
+      inputFingerprint: row.inputFingerprint,
+      success: row.success,
+      error: row.error,
+      startedAt: row.startedAt,
+    }));
   }
 }

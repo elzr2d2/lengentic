@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { DETERMINISTIC_CANDIDATE_ANALYZER } from './analyzer-identity';
+import {
+  DETERMINISTIC_CANDIDATE_ANALYZER,
+  REPEATED_FAILED_ACTION_ANALYZER,
+} from './analyzer-identity';
 import { recommendationFingerprint } from '../recommendations/fingerprint';
 
 /**
@@ -78,5 +81,19 @@ describe('§21 — a new analyzerVersion produces a NEW fingerprint', () => {
         groupKey: { ...GROUP_KEY },
       }),
     ).toBe(shipped);
+  });
+});
+
+describe('REPEATED_FAILED_ACTION_ANALYZER', () => {
+  it('is §20.2 analyzer, at its first behaviour version, in its own category', () => {
+    expect(REPEATED_FAILED_ACTION_ANALYZER).toStrictEqual({
+      id: 'repeated-failed-action',
+      version: '1.0.0',
+      category: 'REPEATED_FAILED_ACTION',
+    });
+  });
+
+  it('is a different analyzer id from §20.1, so the two fingerprint spaces cannot meet', () => {
+    expect(REPEATED_FAILED_ACTION_ANALYZER.id).not.toBe(DETERMINISTIC_CANDIDATE_ANALYZER.id);
   });
 });

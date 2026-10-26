@@ -1,12 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG, type AnalyzerConfig } from '@lengentic/analysis-engine';
-import type { EvaluatedGroup, Recommendation } from '@lengentic/shared';
+import type {
+  EvaluatedGroup,
+  Recommendation,
+  RepeatedFailedActionRecommendation,
+} from '@lengentic/shared';
 
 import { AnalysisService } from './analysis.service';
 import type { AnalysisRepository } from './analysis.repository';
 import type { AnalysisDecisionSource } from './analysis-source';
 import type { Clock } from '../common/clock';
-import type { RecommendationSighting } from '../recommendations/recommendation-record';
+import type {
+  RecommendationSighting,
+  RepeatedFailedActionSighting,
+} from '../recommendations/recommendation-record';
+import type { AnalysisToolCallSource } from './repeated-failed-source';
 import type { RecommendationsService } from '../recommendations/recommendations.service';
 
 /**
@@ -132,12 +140,15 @@ interface Harness {
   readonly service: AnalysisService;
   readonly recordSighting: ReturnType<typeof vi.fn>;
   readonly withdrawOnSuppression: ReturnType<typeof vi.fn>;
+  readonly recordRepeatedFailedAction: ReturnType<typeof vi.fn>;
+  readonly withdrawRepeatedExcept: ReturnType<typeof vi.fn>;
 }
 
 function serviceOver(
   sources: readonly AnalysisDecisionSource[],
   clock: Clock = { now: () => OBSERVED_AT },
   config: AnalyzerConfig = DEFAULT_CONFIG,
+  toolCalls: readonly AnalysisToolCallSource[] = [],
 ): Harness {
   let issued = 0;
   const recordSighting = vi.fn((sighting: RecommendationSighting) => {
@@ -150,20 +161,38 @@ function serviceOver(
 
   const withdrawOnSuppression = vi.fn(() => Promise.resolve('ABSENT' as const));
 
+  const recordRepeatedFailedAction = vi.fn((sighting: RepeatedFailedActionSighting) => {
+    issued += 1;
+    return Promise.resolve({
+      id: `rfa-${String(issued)}`,
+      fingerprint: `fp-${sighting.actionKey.runId}-${sighting.actionKey.toolName}`,
+      ...sighting,
+    } as unknown as RepeatedFailedActionRecommendation);
+  });
+  const withdrawRepeatedExcept = vi.fn((_emitted: readonly string[]) => Promise.resolve(0));
+
   const repository = {
     listDecisionsForAnalysis: () => Promise.resolve([...sources]),
+    listToolCallsForAnalysis: () => Promise.resolve([...toolCalls]),
   } as unknown as AnalysisRepository;
 
   return {
     service: new AnalysisService(
       repository,
-      { recordSighting, withdrawOnSuppression } as unknown as RecommendationsService,
+      {
+        recordSighting,
+        withdrawOnSuppression,
+        recordRepeatedFailedActionSighting: recordRepeatedFailedAction,
+        withdrawRepeatedFailedActionsExcept: withdrawRepeatedExcept,
+      } as unknown as RecommendationsService,
       clock,
       STALE_THRESHOLD_MS,
       config,
     ),
     recordSighting,
     withdrawOnSuppression,
+    recordRepeatedFailedAction,
+    withdrawRepeatedExcept,
   };
 }
 
@@ -218,7 +247,10 @@ describe('AnalysisService.run — a SUPPRESSED group persists no Recommendation 
   it('answers an empty database with an empty result rather than an empty claim', async () => {
     const { service, recordSighting } = serviceOver([]);
 
-    await expect(service.run()).resolves.toStrictEqual({ evaluatedGroups: [] });
+    await expect(service.run()).resolves.toStrictEqual({
+      evaluatedGroups: [],
+      repeatedFailedActions: [],
+    });
     expect(recordSighting.mock.calls).toStrictEqual([]);
   });
 
@@ -457,5 +489,211 @@ describe('AnalysisService.run — one clock reading for the whole run', () => {
       sightingOf(recordSighting, 1).observedAt,
     );
     expect(ticks).toBe(1);
+  });
+});
+
+function toolCall(overrides: Partial<AnalysisToolCallSource> = {}): AnalysisToolCallSource {
+  return {
+    toolCallId: 'tc-1',
+    runId: 'run-1',
+    toolName: 'run_tests',
+    inputFingerprint: 'fp-input-a',
+    success: false,
+    error: 'AssertionError',
+    startedAt: new Date('2026-09-03T10:00:00.000Z'),
+    ...overrides,
+  };
+}
+
+/** Attempt `n` (1-based) of the same call, one minute apart. */
+function attempt(n: number, overrides: Partial<AnalysisToolCallSource> = {}) {
+  return toolCall({
+    toolCallId: `tc-${String(n)}`,
+    startedAt: new Date(Date.UTC(2026, 8, 3, 10, n)),
+    ...overrides,
+  });
+}
+
+describe('AnalysisService.run — §20.2 repeated failed action (negatives first)', () => {
+  it('persists nothing for two failures', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, [
+      attempt(1),
+      attempt(2),
+    ]);
+
+    const response = await service.run();
+
+    expect(recordRepeatedFailedAction).not.toHaveBeenCalled();
+    expect(response.repeatedFailedActions).toStrictEqual([]);
+  });
+
+  it('persists nothing when a success sits between the failures', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, [
+      attempt(1),
+      attempt(2),
+      attempt(3, { success: true, error: null }),
+      attempt(4),
+      attempt(5),
+    ]);
+
+    await service.run();
+
+    expect(recordRepeatedFailedAction).not.toHaveBeenCalled();
+  });
+
+  it('persists nothing for three failures spread across three runs', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, [
+      attempt(1, { runId: 'run-1' }),
+      attempt(2, { runId: 'run-2' }),
+      attempt(3, { runId: 'run-3' }),
+    ]);
+
+    await service.run();
+
+    expect(recordRepeatedFailedAction).not.toHaveBeenCalled();
+  });
+
+  it('persists nothing for three failures of three DIFFERENT inputs', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, [
+      attempt(1, { inputFingerprint: 'a' }),
+      attempt(2, { inputFingerprint: 'b' }),
+      attempt(3, { inputFingerprint: 'c' }),
+    ]);
+
+    await service.run();
+
+    expect(recordRepeatedFailedAction).not.toHaveBeenCalled();
+  });
+
+  it('persists nothing for failures that carry no fingerprint — unknown input is not equal input', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, [
+      attempt(1, { inputFingerprint: null }),
+      attempt(2, { inputFingerprint: null }),
+      attempt(3, { inputFingerprint: null }),
+    ]);
+
+    await service.run();
+
+    expect(recordRepeatedFailedAction).not.toHaveBeenCalled();
+  });
+});
+
+describe('AnalysisService.run — §20.2 emission', () => {
+  const THREE = [attempt(1), attempt(2), attempt(3)];
+
+  it('persists exactly one recommendation for three consecutive failures, naming all three calls', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, THREE);
+
+    const response = await service.run();
+
+    expect(recordRepeatedFailedAction).toHaveBeenCalledTimes(1);
+    const sighting = recordRepeatedFailedAction.mock.calls[0]?.[0] as RepeatedFailedActionSighting;
+    expect(sighting.category).toBe('REPEATED_FAILED_ACTION');
+    expect(sighting.actionKey).toStrictEqual({
+      runId: 'run-1',
+      toolName: 'run_tests',
+      inputFingerprint: 'fp-input-a',
+    });
+    expect(sighting.evidence).toStrictEqual({
+      attemptCount: 3,
+      toolCallIds: ['tc-1', 'tc-2', 'tc-3'],
+    });
+    expect(response.repeatedFailedActions).toHaveLength(1);
+    expect(response.repeatedFailedActions?.[0]?.recommendationId).toBe('rfa-1');
+  });
+
+  it('records the analyzer identity and the threshold in force', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, THREE);
+
+    await service.run();
+
+    const sighting = recordRepeatedFailedAction.mock.calls[0]?.[0] as RepeatedFailedActionSighting;
+    expect(sighting.analyzerId).toBe('repeated-failed-action');
+    expect(sighting.analyzerVersion).toBe('1.0.0');
+    expect(sighting.configSnapshot).toStrictEqual({ minConsecutiveFailures: 3 });
+  });
+
+  it('records an EMPTY counterexample array when nothing succeeded — the key is never dropped', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, THREE);
+
+    await service.run();
+
+    const sighting = recordRepeatedFailedAction.mock.calls[0]?.[0] as RepeatedFailedActionSighting;
+    expect(sighting.counterexamples).toStrictEqual([]);
+  });
+
+  it('lists the success that ended the streak as a counterexample', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, [
+      ...THREE,
+      attempt(4, { success: true, error: null }),
+    ]);
+
+    await service.run();
+
+    const sighting = recordRepeatedFailedAction.mock.calls[0]?.[0] as RepeatedFailedActionSighting;
+    expect(sighting.counterexamples).toStrictEqual([
+      { toolCallId: 'tc-4', runId: 'run-1', outcome: 'SUCCESS' },
+    ]);
+  });
+
+  it('counts an errored call that reported success as failed — the §20.2 disjunction', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, [
+      attempt(1, { success: true, error: 'recorded an Error' }),
+      attempt(2),
+      attempt(3),
+    ]);
+
+    await service.run();
+
+    expect(recordRepeatedFailedAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('folds two streaks of one key into ONE row, keeping the longer — one fingerprint, one row', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, [
+      attempt(1),
+      attempt(2),
+      attempt(3),
+      attempt(4, { success: true, error: null }),
+      attempt(5),
+      attempt(6),
+      attempt(7),
+      attempt(8),
+    ]);
+
+    await service.run();
+
+    expect(recordRepeatedFailedAction).toHaveBeenCalledTimes(1);
+    const sighting = recordRepeatedFailedAction.mock.calls[0]?.[0] as RepeatedFailedActionSighting;
+    expect(sighting.evidence.toolCallIds).toStrictEqual(['tc-5', 'tc-6', 'tc-7', 'tc-8']);
+    expect(sighting.counterexamples).toStrictEqual([
+      { toolCallId: 'tc-4', runId: 'run-1', outcome: 'SUCCESS' },
+    ]);
+  });
+
+  it('withdraws every persisted row the run did not emit, keyed by the emitted fingerprints', async () => {
+    const { service, withdrawRepeatedExcept } = serviceOver([], undefined, undefined, THREE);
+
+    await service.run();
+
+    expect(withdrawRepeatedExcept).toHaveBeenCalledTimes(1);
+    expect(withdrawRepeatedExcept.mock.calls[0]?.[0]).toStrictEqual(['fp-run-1-run_tests']);
+  });
+
+  it('withdraws against an EMPTY emitted set when nothing qualifies — a vanished streak leaves no row', async () => {
+    const { service, withdrawRepeatedExcept } = serviceOver([], undefined, undefined, []);
+
+    await service.run();
+
+    expect(withdrawRepeatedExcept.mock.calls[0]?.[0]).toStrictEqual([]);
+  });
+
+  it('stamps the watermark with the newest tool call, not the clock', async () => {
+    const { service, recordRepeatedFailedAction } = serviceOver([], undefined, undefined, THREE);
+
+    await service.run();
+
+    const sighting = recordRepeatedFailedAction.mock.calls[0]?.[0] as RepeatedFailedActionSighting;
+    expect(sighting.sourceWatermark).toStrictEqual(new Date(Date.UTC(2026, 8, 3, 10, 3)));
+    expect(sighting.observedAt).toStrictEqual(OBSERVED_AT);
   });
 });

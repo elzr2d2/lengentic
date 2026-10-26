@@ -91,6 +91,7 @@ function service(): AnalysisService {
   const repository = {
     listDecisionsForAnalysis: () =>
       Promise.resolve([source('dec-a', 'ctx_a'), source('dec-b', 'ctx_b')]),
+    listToolCallsForAnalysis: () => Promise.resolve([]),
   } as unknown as AnalysisRepository;
 
   const recommendations = {
@@ -98,6 +99,7 @@ function service(): AnalysisService {
     // A SUPPRESSED group withdraws whatever row it left behind (§22, and `docs/decisions/0015`
     // for the DISMISSED tombstone). Every fixture here suppresses, so the run reaches this.
     withdrawOnSuppression: () => Promise.resolve('ABSENT' as const),
+    withdrawRepeatedFailedActionsExcept: () => Promise.resolve(0),
   } as unknown as RecommendationsService;
 
   const clock: Clock = { now: () => OBSERVED_AT };

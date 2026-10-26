@@ -30,6 +30,7 @@ function write(overrides: Partial<ToolCallWrite> = {}): ToolCallWrite {
     output: { rows: 3 },
     inputTruncated: false,
     outputTruncated: false,
+    inputFingerprint: null,
     inputBytes: 42,
     outputBytes: 100,
     startedAt: new Date('2026-09-02T10:00:00.000Z'),
@@ -92,5 +93,17 @@ describe('ToolCallRepository.record', () => {
     await repository.record(write());
 
     expect(toolCall.upsert).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists inputFingerprint on create AND update, and a null stays null', async () => {
+    const { prisma, toolCall } = fakePrismaService();
+
+    await new ToolCallRepository(prisma).record(write({ inputFingerprint: 'a1b2c3d4e5f60718' }));
+    await new ToolCallRepository(prisma).record(write({ inputFingerprint: null }));
+
+    const [withFp, withoutFp] = toolCall.upsert.mock.calls.map((call) => call[0]);
+    expect(withFp?.create).toMatchObject({ inputFingerprint: 'a1b2c3d4e5f60718' });
+    expect(withFp?.update).toMatchObject({ inputFingerprint: 'a1b2c3d4e5f60718' });
+    expect(withoutFp?.create).toMatchObject({ inputFingerprint: null });
   });
 });

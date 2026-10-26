@@ -128,6 +128,15 @@ export {
   EvaluatedGroupSchema,
   AnalysisRunResponseSchema,
   RecommendationStatusPatchSchema,
+  ToolInputFingerprintSchema,
+  RepeatedFailedActionKeySchema,
+  REPEATED_FAILED_ACTION_MIN_ATTEMPTS,
+  RepeatedFailedActionConfigSnapshotSchema,
+  RepeatedFailedActionEvidenceSchema,
+  RepeatedFailedActionCounterexampleSchema,
+  RepeatedFailedActionRecommendationSchema,
+  RepeatedFailedActionListViewSchema,
+  EmittedRepeatedFailedActionSchema,
 } from './schema/recommendation';
 export type {
   GateId,
@@ -152,4 +161,12 @@ export type {
   AnalysisRunRequest,
   AnalysisRunResponse,
   RecommendationStatusPatch,
+  ToolInputFingerprint,
+  RepeatedFailedActionKey,
+  RepeatedFailedActionConfigSnapshot,
+  RepeatedFailedActionEvidence,
+  RepeatedFailedActionCounterexample,
+  RepeatedFailedActionRecommendation,
+  RepeatedFailedActionListView,
+  EmittedRepeatedFailedAction,
 } from './schema/recommendation';

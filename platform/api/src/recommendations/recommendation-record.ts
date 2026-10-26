@@ -1,10 +1,13 @@
 import type {
   AnalyzerConfigSnapshot,
   Counterexample,
-  RecommendationCategory,
   RecommendationEvidence,
   RecommendationGroupKey,
   RecommendationStatus,
+  RepeatedFailedActionConfigSnapshot,
+  RepeatedFailedActionCounterexample,
+  RepeatedFailedActionEvidence,
+  RepeatedFailedActionKey,
 } from '@lengentic/shared';
 
 /**
@@ -18,7 +21,7 @@ import type {
  */
 export interface RecommendationRecord {
   readonly id: string;
-  readonly category: RecommendationCategory;
+  readonly category: 'DETERMINISTIC_CANDIDATE';
   readonly analyzerId: string;
   readonly analyzerVersion: string;
   readonly groupKey: RecommendationGroupKey;
@@ -66,7 +69,7 @@ export interface RecommendationRecord {
 export type WithdrawalResult = 'DELETED' | 'KEPT_DISMISSED' | 'ABSENT';
 
 export interface RecommendationSighting {
-  readonly category: RecommendationCategory;
+  readonly category: 'DETERMINISTIC_CANDIDATE';
   readonly analyzerId: string;
   readonly analyzerVersion: string;
   readonly groupKey: RecommendationGroupKey;
@@ -74,5 +77,46 @@ export interface RecommendationSighting {
   readonly sourceWatermark: Date;
   readonly evidence: RecommendationEvidence;
   readonly counterexamples: readonly Counterexample[];
+  readonly observedAt: Date;
+}
+
+/**
+ * §20.2's persisted recommendation, on the API's side of the persistence edge. Same lifecycle
+ * fields as `RecommendationRecord`; `actionKey` is its identity in place of `groupKey`, and it
+ * has no gate evidence.
+ */
+export interface RepeatedFailedActionRecord {
+  readonly id: string;
+  readonly category: 'REPEATED_FAILED_ACTION';
+  readonly analyzerId: string;
+  readonly analyzerVersion: string;
+  readonly actionKey: RepeatedFailedActionKey;
+  readonly configSnapshot: RepeatedFailedActionConfigSnapshot;
+  readonly sourceWatermark: Date;
+  readonly fingerprint: string;
+  readonly evidence: RepeatedFailedActionEvidence;
+  /** Always present; may be empty. Never omitted — `CLAUDE.md` ## Product claims. */
+  readonly counterexamples: readonly RepeatedFailedActionCounterexample[];
+  readonly firstSeenAt: Date;
+  readonly lastSeenAt: Date;
+  readonly status: RecommendationStatus;
+  readonly statusNote: string | null;
+  readonly statusChangedAt: Date | null;
+}
+
+/**
+ * What one analysis run asserts about one emitted §20.2 streak. Like
+ * `RecommendationSighting` it has no `status`, `firstSeenAt` or `id`: a re-analysis has no
+ * opinion about any of the three.
+ */
+export interface RepeatedFailedActionSighting {
+  readonly category: 'REPEATED_FAILED_ACTION';
+  readonly analyzerId: string;
+  readonly analyzerVersion: string;
+  readonly actionKey: RepeatedFailedActionKey;
+  readonly configSnapshot: RepeatedFailedActionConfigSnapshot;
+  readonly sourceWatermark: Date;
+  readonly evidence: RepeatedFailedActionEvidence;
+  readonly counterexamples: readonly RepeatedFailedActionCounterexample[];
   readonly observedAt: Date;
 }

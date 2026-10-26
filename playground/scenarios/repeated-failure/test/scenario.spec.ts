@@ -38,6 +38,7 @@ const REQUIRED_ATTEMPTS = 3;
 interface ToolCallRecordedPayload {
   readonly toolName: string;
   readonly input?: unknown;
+  readonly inputFingerprint?: string;
   readonly success: boolean;
   readonly error?: string | null;
 }
@@ -99,6 +100,18 @@ void describe('runRepeatedFailureScenario — what reaches the wire', () => {
       [...new Set(result.attempts.map((attempt) => attempt.inputFingerprint))],
       [expected],
     );
+  });
+
+  void it('carries the SDK-computed inputFingerprint on the wire, equal to the one the scenario reports', async () => {
+    const { transport, result } = await emit();
+    const onWire = toolCalls(transport).map((call) => call.inputFingerprint);
+
+    assert.equal(onWire.length, 3);
+    assert.deepEqual(
+      onWire,
+      result.attempts.map((attempt) => attempt.inputFingerprint),
+    );
+    assert.deepEqual([...new Set(onWire)], [fingerprintOf(TOOL_INPUT)]);
   });
 
   void it('fails every attempt with no success between them, and records an Error beside each', async () => {

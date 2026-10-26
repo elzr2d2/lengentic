@@ -4,12 +4,16 @@ import type {
   RecommendationListView,
   RecommendationStatusPatch,
   RecommendationsListQuery,
+  RepeatedFailedActionListView,
+  RepeatedFailedActionRecommendation,
 } from '@lengentic/shared';
 
 import { CLOCK, type Clock } from '../common/clock';
 import type {
   RecommendationRecord,
   RecommendationSighting,
+  RepeatedFailedActionRecord,
+  RepeatedFailedActionSighting,
   WithdrawalResult,
 } from './recommendation-record';
 import { RecommendationsRepository } from './recommendations.repository';
@@ -88,10 +92,44 @@ export class RecommendationsService {
     };
   }
 
+  /**
+   * `list` for §20.2 rows: the same page arithmetic over the second category.
+   */
+  async listRepeatedFailedActions(
+    query: RecommendationsListQuery,
+  ): Promise<RepeatedFailedActionListView> {
+    const records = await this.repository.listRepeatedFailedActions(query.limit + 1, query.offset);
+    const page = records.slice(0, query.limit);
+
+    return {
+      recommendations: page.map(toRepeatedFailedActionRecommendation),
+      limit: query.limit,
+      offset: query.offset,
+      hasMore: records.length > query.limit,
+    };
+  }
+
+  /** One emitted §20.2 streak from one analysis run — `recordSighting`'s counterpart. */
+  async recordRepeatedFailedActionSighting(
+    sighting: RepeatedFailedActionSighting,
+  ): Promise<RepeatedFailedActionRecommendation> {
+    return toRepeatedFailedActionRecommendation(
+      await this.repository.recordRepeatedFailedActionSighting(sighting),
+    );
+  }
+
+  /**
+   * Withdraws every persisted, non-DISMISSED §20.2 row whose fingerprint is not in `emitted`
+   * — `withdrawOnSuppression`'s counterpart. Returns how many rows were removed.
+   */
+  async withdrawRepeatedFailedActionsExcept(emitted: readonly string[]): Promise<number> {
+    return this.repository.withdrawRepeatedFailedActionsExcept(emitted);
+  }
+
   async setStatus(
     id: string,
     patch: RecommendationStatusPatch,
-  ): Promise<Recommendation | undefined> {
+  ): Promise<Recommendation | RepeatedFailedActionRecommendation | undefined> {
     const record = await this.repository.setStatus(
       id,
       patch.status,
@@ -99,7 +137,11 @@ export class RecommendationsService {
       this.clock.now(),
     );
 
-    return record === undefined ? undefined : toRecommendation(record);
+    if (record === undefined) return undefined;
+
+    return record.category === 'REPEATED_FAILED_ACTION'
+      ? toRepeatedFailedActionRecommendation(record)
+      : toRecommendation(record);
   }
 }
 
@@ -124,6 +166,29 @@ export function toRecommendation(record: RecommendationRecord): Recommendation {
     sourceWatermark: record.sourceWatermark.toISOString(),
     fingerprint: record.fingerprint,
     evidence: record.evidence,
+    counterexamples: [...record.counterexamples],
+    firstSeenAt: record.firstSeenAt.toISOString(),
+    lastSeenAt: record.lastSeenAt.toISOString(),
+    status: record.status,
+    statusNote: record.statusNote,
+    statusChangedAt: record.statusChangedAt === null ? null : record.statusChangedAt.toISOString(),
+  };
+}
+
+/** `toRecommendation` for §20.2: every field copied across explicitly, for the same reason. */
+export function toRepeatedFailedActionRecommendation(
+  record: RepeatedFailedActionRecord,
+): RepeatedFailedActionRecommendation {
+  return {
+    id: record.id,
+    category: record.category,
+    analyzerId: record.analyzerId,
+    analyzerVersion: record.analyzerVersion,
+    actionKey: { ...record.actionKey },
+    configSnapshot: { ...record.configSnapshot },
+    sourceWatermark: record.sourceWatermark.toISOString(),
+    fingerprint: record.fingerprint,
+    evidence: { ...record.evidence, toolCallIds: [...record.evidence.toolCallIds] },
     counterexamples: [...record.counterexamples],
     firstSeenAt: record.firstSeenAt.toISOString(),
     lastSeenAt: record.lastSeenAt.toISOString(),

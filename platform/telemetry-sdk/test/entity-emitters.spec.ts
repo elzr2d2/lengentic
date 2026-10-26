@@ -431,3 +431,81 @@ describe('DoD line 2 extended: a 1MB error message is truncated, not dropped', (
     expect(client.stats().droppedTooLarge).toBe(1);
   });
 });
+
+describe('§20.2: tool_call.recorded carries a sanitized inputFingerprint, never the raw input', () => {
+  const toolCall = (input: unknown, extra: Record<string, unknown> = {}) => ({
+    toolName: 'run_tests',
+    input,
+    output: { exitCode: 1 },
+    startedAt: occurredAt,
+    completedAt: occurredAt,
+    success: false,
+    error: 'boom',
+    ...extra,
+  });
+
+  it('omits the fingerprint when the call had no input — "no input" must not group as one input', async () => {
+    const { transport, client } = harness();
+    const step = stepOf(client);
+
+    step.recordToolCall(toolCall(undefined));
+    step.recordToolCall(toolCall(null));
+    await client.shutdown();
+
+    for (const event of eventsOf(transport, 'tool_call.recorded')) {
+      expect(wireContractViolations(event)).toStrictEqual([]);
+      expect(event.payload).not.toHaveProperty('inputFingerprint');
+    }
+  });
+
+  it('gives identical inputs one fingerprint and different inputs two, key order irrelevant', async () => {
+    const { transport, client } = harness();
+    const step = stepOf(client);
+
+    step.recordToolCall(toolCall({ command: 'pnpm test', target: 'a.spec.ts' }));
+    step.recordToolCall(toolCall({ target: 'a.spec.ts', command: 'pnpm test' }));
+    step.recordToolCall(toolCall({ command: 'pnpm test', target: 'b.spec.ts' }));
+    await client.shutdown();
+
+    const [a, b, c] = eventsOf(transport, 'tool_call.recorded').map(
+      (event) => (event.payload as { inputFingerprint?: string }).inputFingerprint,
+    );
+    expect(a).toBeDefined();
+    expect(a).toBe(b);
+    expect(c).toBeDefined();
+    expect(c).not.toBe(a);
+  });
+
+  it('fingerprints the REDACTED input: a secret never reaches the wire, and two secrets collide', async () => {
+    const { transport, client } = harness();
+    const step = stepOf(client);
+
+    step.recordToolCall(toolCall({ query: 'x', apiKey: 'sk-live-AAAA' }));
+    step.recordToolCall(toolCall({ query: 'x', apiKey: 'sk-live-BBBB' }));
+    await client.shutdown();
+
+    const events = eventsOf(transport, 'tool_call.recorded');
+    const [a, b] = events.map(
+      (event) => (event.payload as { inputFingerprint?: string }).inputFingerprint,
+    );
+    // Same sanitized input => same fingerprint; the raw secrets differ and do not matter.
+    expect(a).toBe(b);
+    expect(wireText(transport)).not.toContain('sk-live-AAAA');
+    expect(wireText(transport)).not.toContain('sk-live-BBBB');
+  });
+
+  it('still fingerprints under captureToolIO: false, while the payload stays off the wire', async () => {
+    const { transport, client } = harness({ captureToolIO: false });
+    const step = stepOf(client);
+
+    step.recordToolCall(toolCall({ command: 'pnpm test', secretish: 'do-not-ship-me' }));
+    await client.shutdown();
+
+    const [event] = eventsOf(transport, 'tool_call.recorded');
+    expect(wireContractViolations(event!)).toStrictEqual([]);
+    expect((event?.payload as { inputFingerprint?: string }).inputFingerprint).toMatch(
+      /^[0-9a-f]{16}$/,
+    );
+    expect(wireText(transport)).not.toContain('do-not-ship-me');
+  });
+});

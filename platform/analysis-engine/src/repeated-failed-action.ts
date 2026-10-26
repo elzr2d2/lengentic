@@ -30,7 +30,7 @@ import type { RepeatedFailedAction, ToolCallRecord } from './tool-call';
  */
 
 /** §20.2's floor. Below this many consecutive failed attempts, nothing is emitted. */
-const MIN_CONSECUTIVE_FAILURES = 3;
+export const MIN_CONSECUTIVE_FAILURES = 3;
 
 /**
  * §20.2's failure condition: `outcome === 'FAILED'` OR `errorType !== null`. Reading

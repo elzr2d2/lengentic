@@ -42,6 +42,7 @@ export class ToolCallRepository {
       output: toJsonInput(write.output),
       inputTruncated: write.inputTruncated,
       outputTruncated: write.outputTruncated,
+      inputFingerprint: write.inputFingerprint,
       inputBytes: write.inputBytes,
       outputBytes: write.outputBytes,
       startedAt: write.startedAt,

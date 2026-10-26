@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { RecommendationGroupKey } from '@lengentic/shared';
+import type { RecommendationGroupKey, RepeatedFailedActionKey } from '@lengentic/shared';
 
 /**
  * The recommendation fingerprint — §21's dedupe key.
@@ -60,7 +60,7 @@ import type { RecommendationGroupKey } from '@lengentic/shared';
  * separator inside a field can make two different input sets serialize identically — the
  * failure mode a `join('|')` has, and the one `fingerprint.spec.ts` pins.
  */
-export interface RecommendationFingerprintInput {
+export interface GroupFingerprintInput {
   /**
    * Which analyzer produced this. `category` is deliberately not a second input: §20 has two
    * analyzers and each has exactly one category, so `analyzerId` already separates them and a
@@ -71,15 +71,45 @@ export interface RecommendationFingerprintInput {
   readonly groupKey: RecommendationGroupKey;
 }
 
+/**
+ * §20.2's identity: the same two analyzer fields, and §20.2's own three-member streak key in
+ * place of §18's group key. Identity and not evidence, for the reason given above — a streak
+ * that grows from three failures to four is the SAME recommendation with refreshed evidence,
+ * so `attemptCount` and `toolCallIds` are deliberately not inputs.
+ *
+ * Two streaks of one key in one run (F F F S F F F) therefore share a fingerprint and one
+ * row: the analysis service keeps the longer (`analysis.service.ts`), and the row's
+ * `counterexamples` carry the success between them.
+ */
+export interface ActionFingerprintInput {
+  readonly analyzerId: string;
+  readonly analyzerVersion: string;
+  readonly actionKey: RepeatedFailedActionKey;
+}
+
+export type RecommendationFingerprintInput = GroupFingerprintInput | ActionFingerprintInput;
+
 export function recommendationFingerprint(input: RecommendationFingerprintInput): string {
-  const canonical = JSON.stringify([
-    input.analyzerId,
-    input.analyzerVersion,
-    input.groupKey.workflowName,
-    input.groupKey.workflowVersion,
-    input.groupKey.decisionType,
-    input.groupKey.contextKeyVersion,
-  ]);
+  // `analyzerId` leads both encodings and differs between the two analyzers, so the two input
+  // sets cannot collide even though both are JSON arrays of strings.
+  const canonical = JSON.stringify(
+    'actionKey' in input
+      ? [
+          input.analyzerId,
+          input.analyzerVersion,
+          input.actionKey.runId,
+          input.actionKey.toolName,
+          input.actionKey.inputFingerprint,
+        ]
+      : [
+          input.analyzerId,
+          input.analyzerVersion,
+          input.groupKey.workflowName,
+          input.groupKey.workflowVersion,
+          input.groupKey.decisionType,
+          input.groupKey.contextKeyVersion,
+        ],
+  );
 
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }

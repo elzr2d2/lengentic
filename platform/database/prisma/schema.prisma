@@ -379,6 +379,11 @@ model ToolCall {
   inputBytes      Int?
   outputBytes     Int?
 
+  /// §20.2's grouping key: the SDK's hash over the sanitized, canonicalized input. Never the
+  /// input itself. Nullable because the wire field is optional — a ToolCall from an SDK that
+  /// predates it has no fingerprint and cannot join a repeated-failed-action streak.
+  inputFingerprint String? @db.VarChar(128)
+
   /// Client clock (§13). Required: the SDK records a tool call after it finishes, in one
   /// event — there is no start/completion pair to arrive out of order.
   startedAt   DateTime @db.Timestamptz(3)
@@ -433,11 +438,12 @@ enum RecommendationStatus {
   DISMISSED
 }
 
-/// §20's two analyzers, of which §21's entity today persists one. A second member is a
-/// migration, deliberately: an enum value nothing can produce reads to a consumer as a
-/// capability the platform has.
+/// §20's two analyzers, one member each. A member is a migration, deliberately: an enum value
+/// nothing can produce reads to a consumer as a capability the platform has.
+/// REPEATED_FAILED_ACTION (§20.2) was added with its producer, `p6.s2-platform-path`.
 enum RecommendationCategory {
   DETERMINISTIC_CANDIDATE
+  REPEATED_FAILED_ACTION
 }
 
 model Recommendation {
@@ -458,10 +464,19 @@ model Recommendation {
   /// `distinctContextKeyCount` to 1 and make G2 unsatisfiable. NOT NULL: a group whose key
   /// is unknown is not a group, and §14 already excludes a keyless decision from aggregation
   /// before it can reach here.
-  workflowName      String @db.VarChar(200)
-  workflowVersion   String @db.VarChar(200)
-  decisionType      String @db.VarChar(200)
-  contextKeyVersion String @db.VarChar(200)
+  workflowName      String? @db.VarChar(200)
+  workflowVersion   String? @db.VarChar(200)
+  decisionType      String? @db.VarChar(200)
+  contextKeyVersion String? @db.VarChar(200)
+
+  /// §20.2's identity, in place of the §18 group key: a REPEATED_FAILED_ACTION row is about one
+  /// (run, tool, sanitized input) streak and has no workflow-level group. The four group-key
+  /// columns above are therefore NULL for it, and these three are NULL for a
+  /// DETERMINISTIC_CANDIDATE row. `RecommendationsRepository`'s record mapper enforces which
+  /// set a category must carry and throws on a row that carries the wrong one.
+  runId            String? @db.VarChar(128)
+  toolName         String? @db.VarChar(200)
+  inputFingerprint String? @db.VarChar(128)
 
   /// §21: "the thresholds in force when this was produced". A recommendation produced under
   /// a 30-sample threshold means something different from one produced under 50, and without

@@ -31,4 +31,4 @@ export {
   serializeGroupKey,
 } from './aggregate';
 export { evaluateGates } from './gates';
-export { detectRepeatedFailedActions } from './repeated-failed-action';
+export { detectRepeatedFailedActions, MIN_CONSECUTIVE_FAILURES } from './repeated-failed-action';

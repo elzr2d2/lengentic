@@ -131,11 +131,14 @@ describe('AnalysisModule', () => {
     const moduleRef = await analysisGraph({
       decision: { findMany },
       run: { findMany },
-      recommendation: {},
+      toolCall: { findMany },
+      // §20.2's withdrawal runs on every analysis, even over an empty database.
+      recommendation: { deleteMany: vi.fn(() => Promise.resolve({ count: 0 })) },
     });
 
     await expect(moduleRef.get(AnalysisService).run()).resolves.toStrictEqual({
       evaluatedGroups: [],
+      repeatedFailedActions: [],
     });
 
     await moduleRef.close();

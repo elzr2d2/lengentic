@@ -22,6 +22,8 @@ export interface ToolCallWrite {
 
   readonly inputTruncated: boolean;
   readonly outputTruncated: boolean;
+  /** §20.2's sanitized-input hash, or `null` when the SDK sent none (an older SDK). */
+  readonly inputFingerprint: string | null;
   /**
    * `null` (Reviewer S3, Phase 4 phase gate repair attempt 1) means `captureToolIO: false` —
    * nothing was measured, distinct from a real, reported `0`. `ToolCallRecordedPayloadSchema`
@@ -55,6 +57,7 @@ export function toToolCallWrite(event: TelemetryEventOf<'tool_call.recorded'>): 
     output: event.payload.output ?? null,
     inputTruncated: event.payload.inputTruncated,
     outputTruncated: event.payload.outputTruncated,
+    inputFingerprint: event.payload.inputFingerprint ?? null,
     inputBytes: event.payload.inputBytes ?? null,
     outputBytes: event.payload.outputBytes ?? null,
     startedAt: new Date(event.payload.startedAt),

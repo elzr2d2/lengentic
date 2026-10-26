@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   aggregateAll,
   evaluateGates,
+  MIN_CONSECUTIVE_FAILURES,
   type AnalyzerConfig,
   type DecisionAggregate,
   type GateEvaluation,
@@ -9,6 +10,7 @@ import {
 import {
   AnalysisRunResponseSchema,
   type AnalysisRunResponse,
+  type EmittedRepeatedFailedAction,
   type EvaluatedGroup,
 } from '@lengentic/shared';
 
@@ -16,7 +18,10 @@ import { CLOCK, type Clock } from '../common/clock';
 import { RecommendationsService } from '../recommendations/recommendations.service';
 import { STALE_THRESHOLD_MS } from '../runs/stale-threshold.provider';
 import { ANALYZER_CONFIG } from './analyzer-config.provider';
-import { DETERMINISTIC_CANDIDATE_ANALYZER } from './analyzer-identity';
+import {
+  DETERMINISTIC_CANDIDATE_ANALYZER,
+  REPEATED_FAILED_ACTION_ANALYZER,
+} from './analyzer-identity';
 import { sourceWatermarkOf, toEngineDecisionRecords } from './analysis-source';
 import { AnalysisRepository } from './analysis.repository';
 import {
@@ -26,6 +31,7 @@ import {
   toWireEvidence,
   toWireGroupKey,
 } from './evaluated-group';
+import { findRepeatedFailedActions, toEngineToolCallRecords } from './repeated-failed-source';
 
 /**
  * §22's analysis run: read every decision, aggregate (§18), gate (§19), persist the
@@ -91,7 +97,65 @@ export class AnalysisService {
     // A mapper that understated a failure would otherwise reach the Dashboard looking correct;
     // ERR-adjacent, but the reason is `CLAUDE.md` ## Product claims: a wrong claim on the wire
     // is worse than a 500.
-    return AnalysisRunResponseSchema.parse({ evaluatedGroups });
+    const repeatedFailedActions = await this.analyzeRepeatedFailedActions(observedAt);
+
+    return AnalysisRunResponseSchema.parse({ evaluatedGroups, repeatedFailedActions });
+  }
+
+  /**
+   * §20.2: read every persisted ToolCall, detect, persist what was emitted, withdraw what was
+   * not.
+   *
+   * Persisted through the same `recordSighting`-shaped seam as §20.1 — a single upsert on the
+   * UNIQUE fingerprint — so re-running over unchanged data refreshes `lastSeenAt` and adds no
+   * row, and a DISMISSED streak stays DISMISSED. A streak is never "SUPPRESSED" the way a
+   * §20.1 group is (§20.2 has no gates): a key that stops qualifying is simply absent from
+   * this run's emissions, and every persisted, non-DISMISSED row whose fingerprint is not among
+   * them is withdrawn, exactly the §22 rule that a claim the analyzer no longer makes must not
+   * stay in the table consumers read.
+   *
+   * Sequential for the reason the §20.1 loop is.
+   */
+  private async analyzeRepeatedFailedActions(
+    observedAt: Date,
+  ): Promise<EmittedRepeatedFailedAction[]> {
+    const toolCalls = await this.repository.listToolCallsForAnalysis();
+    const findings = findRepeatedFailedActions(toEngineToolCallRecords(toolCalls));
+
+    const newest = toolCalls.reduce<Date | undefined>(
+      (max, call) => (max === undefined || call.startedAt > max ? call.startedAt : max),
+      undefined,
+    );
+    const sourceWatermark = newest ?? observedAt;
+
+    const emitted: EmittedRepeatedFailedAction[] = [];
+    const emittedFingerprints: string[] = [];
+
+    for (const finding of findings) {
+      const recommendation = await this.recommendations.recordRepeatedFailedActionSighting({
+        category: REPEATED_FAILED_ACTION_ANALYZER.category,
+        analyzerId: REPEATED_FAILED_ACTION_ANALYZER.id,
+        analyzerVersion: REPEATED_FAILED_ACTION_ANALYZER.version,
+        actionKey: finding.actionKey,
+        configSnapshot: { minConsecutiveFailures: MIN_CONSECUTIVE_FAILURES },
+        sourceWatermark,
+        evidence: finding.evidence,
+        counterexamples: finding.counterexamples,
+        observedAt,
+      });
+
+      emittedFingerprints.push(recommendation.fingerprint);
+      emitted.push({
+        actionKey: finding.actionKey,
+        attemptCount: finding.evidence.attemptCount,
+        toolCallIds: [...finding.evidence.toolCallIds],
+        recommendationId: recommendation.id,
+      });
+    }
+
+    await this.recommendations.withdrawRepeatedFailedActionsExcept(emittedFingerprints);
+
+    return emitted;
   }
 
   /**

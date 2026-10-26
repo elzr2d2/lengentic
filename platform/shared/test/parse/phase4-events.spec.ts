@@ -238,6 +238,37 @@ describe('tool_call.recorded — §13/§15', () => {
     if (!result.ok) expect(result.code).toBe('INVALID_PAYLOAD');
   });
 
+  it('rejects an empty or over-long inputFingerprint — an opaque key must still be a bounded one', () => {
+    for (const inputFingerprint of ['', 'f'.repeat(129)]) {
+      const result = parseTelemetryEvent({
+        ...TOOL_CALL,
+        payload: { ...TOOL_CALL.payload, inputFingerprint },
+      });
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it('accepts a ToolCall with no inputFingerprint (additive: an older SDK) and carries one when present', () => {
+    const without = parseTelemetryEvent(TOOL_CALL);
+    expect(without.ok).toBe(true);
+    if (without.ok) {
+      expect(
+        (without.event.payload as { inputFingerprint?: string }).inputFingerprint,
+      ).toBeUndefined();
+    }
+
+    const withFingerprint = parseTelemetryEvent({
+      ...TOOL_CALL,
+      payload: { ...TOOL_CALL.payload, inputFingerprint: 'a1b2c3d4e5f60718' },
+    });
+    expect(withFingerprint.ok).toBe(true);
+    if (withFingerprint.ok) {
+      expect(
+        (withFingerprint.event.payload as { inputFingerprint?: string }).inputFingerprint,
+      ).toBe('a1b2c3d4e5f60718');
+    }
+  });
+
   it('accepts a missing byte count when the call was never truncated (S3, Phase 4 phase gate repair attempt 1) — "not captured", not "measured zero"', () => {
     // Reviewer S3: `captureToolIO: false` has nothing to measure at all, and a required
     // field forced the SDK to send a manufactured `0` — which the Dashboard then rendered as

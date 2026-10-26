@@ -131,6 +131,7 @@ describe('toToolCallRecord', () => {
       output: [1, 2, 3],
       inputTruncated: true,
       outputTruncated: false,
+      inputFingerprint: null,
       inputBytes: 1_048_576,
       outputBytes: 3,
       startedAt: new Date('2026-08-21T11:00:08.000Z'),

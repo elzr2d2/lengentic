@@ -32,6 +32,20 @@ const ToolCallRecordedPayloadObjectSchema = z.object({
   outputTruncated: z.boolean(),
 
   /**
+   * §20.2's grouping key: a stable hash over the SANITIZED, canonicalized input, computed by
+   * the SDK (`fingerprintOf`, `platform/telemetry-sdk/src/payload-safety.ts`) over the
+   * uncapped value. The raw input never leaves the SDK for this purpose — only this opaque
+   * string rides the wire, so a redacted secret cannot be recovered from it.
+   *
+   * Optional and additive: an SDK that predates this field still parses, and a ToolCall
+   * without one simply cannot join a repeated-failed-action streak (the analyzer reads
+   * "unknown input" as "not the same input", never as a match). Bounded rather than
+   * pattern-matched: the hash function belongs to the SDK, and pinning its width here would
+   * make a future SDK's wider hash a wire rejection.
+   */
+  inputFingerprint: z.string().min(1).max(128).optional(),
+
+  /**
    * `.nullish()` (Reviewer S3, Phase 4 phase gate repair attempt 1) — NOT required. With
    * `captureToolIO: false` (`payload-safety.ts`), nothing was serialized, so there is no
    * measurement to report; a required field forced the SDK to send `0`, which the Dashboard

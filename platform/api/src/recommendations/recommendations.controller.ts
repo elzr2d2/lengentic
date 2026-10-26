@@ -7,6 +7,8 @@ import {
   type RecommendationListView,
   type RecommendationStatusPatch,
   type RecommendationsListQuery,
+  type RepeatedFailedActionListView,
+  type RepeatedFailedActionRecommendation,
 } from '@lengentic/shared';
 
 import { ZodValidationPipe, zodBody } from '../common/zod-validation.pipe';
@@ -38,8 +40,12 @@ export class RecommendationsController {
   @Get()
   async list(
     @Query(new ZodValidationPipe(RecommendationsListQuerySchema)) query: RecommendationsListQuery,
-  ): Promise<RecommendationListView> {
-    return this.recommendations.list(query);
+  ): Promise<RecommendationListView | RepeatedFailedActionListView> {
+    // `category` defaults to DETERMINISTIC_CANDIDATE (`RecommendationsListQuerySchema`), so a
+    // caller that does not name one gets exactly the envelope it was written against.
+    return query.category === 'REPEATED_FAILED_ACTION'
+      ? this.recommendations.listRepeatedFailedActions(query)
+      : this.recommendations.list(query);
   }
 
   /**
@@ -52,7 +58,7 @@ export class RecommendationsController {
   async setStatus(
     @Param('id', new ZodValidationPipe(IdSchema)) id: string,
     @Body(zodBody(RecommendationStatusPatchSchema)) patch: RecommendationStatusPatch,
-  ): Promise<Recommendation> {
+  ): Promise<Recommendation | RepeatedFailedActionRecommendation> {
     const updated = await this.recommendations.setStatus(id, patch);
 
     // No id in the message. ERR-4: an API response body carries no internal identifier, and

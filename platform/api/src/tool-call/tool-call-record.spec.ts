@@ -92,4 +92,14 @@ describe('toToolCallWrite', () => {
     expect(write.outputBytes).toBe(0);
     expect(write.inputBytes).not.toBeNull();
   });
+
+  it('maps an absent inputFingerprint to null — an older SDK is "unknown input", not an empty string', () => {
+    expect(toToolCallWrite(toolCallEvent()).inputFingerprint).toBeNull();
+  });
+
+  it('carries a present inputFingerprint verbatim', () => {
+    const write = toToolCallWrite(toolCallEvent({ inputFingerprint: 'a1b2c3d4e5f60718' }));
+
+    expect(write.inputFingerprint).toBe('a1b2c3d4e5f60718');
+  });
 });

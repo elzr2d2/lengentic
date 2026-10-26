@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 
-import { recommendationFingerprint, type RecommendationFingerprintInput } from './fingerprint';
+import {
+  recommendationFingerprint,
+  type ActionFingerprintInput,
+  type GroupFingerprintInput,
+} from './fingerprint';
 
 /**
  * Seam: `recommendationFingerprint` as a pure function of its declared input set.
@@ -12,7 +16,7 @@ import { recommendationFingerprint, type RecommendationFingerprintInput } from '
  * Every other assertion is about a property §21 states, not about a hash value.
  */
 
-const BASE: RecommendationFingerprintInput = {
+const BASE: GroupFingerprintInput = {
   analyzerId: 'deterministic-candidate',
   analyzerVersion: '1.0.0',
   groupKey: {
@@ -24,8 +28,8 @@ const BASE: RecommendationFingerprintInput = {
 };
 
 function withGroupKey(
-  overrides: Partial<RecommendationFingerprintInput['groupKey']>,
-): RecommendationFingerprintInput {
+  overrides: Partial<GroupFingerprintInput['groupKey']>,
+): GroupFingerprintInput {
   return { ...BASE, groupKey: { ...BASE.groupKey, ...overrides } };
 }
 
@@ -114,5 +118,52 @@ describe('recommendationFingerprint', () => {
     ];
 
     expect(new Set(fingerprints).size).toBe(fingerprints.length);
+  });
+});
+
+describe('recommendationFingerprint — §20.2 action key', () => {
+  const ACTION: ActionFingerprintInput = {
+    analyzerId: 'repeated-failed-action',
+    analyzerVersion: '1.0.0',
+    actionKey: { runId: 'run-1', toolName: 'run_tests', inputFingerprint: 'a1b2c3d4e5f60718' },
+  };
+
+  it('is SHA-256 hex over the five inputs, written out longhand', () => {
+    const expected = createHash('sha256')
+      .update('["repeated-failed-action","1.0.0","run-1","run_tests","a1b2c3d4e5f60718"]', 'utf8')
+      .digest('hex');
+
+    expect(recommendationFingerprint(ACTION)).toBe(expected);
+  });
+
+  it.each([
+    ['runId', { runId: 'run-2' }],
+    ['toolName', { toolName: 'lint' }],
+    ['inputFingerprint', { inputFingerprint: 'ffffffffffffffff' }],
+  ])('changes when %s changes — each is part of the §20.2 identity', (_name, override) => {
+    expect(
+      recommendationFingerprint({ ...ACTION, actionKey: { ...ACTION.actionKey, ...override } }),
+    ).not.toBe(recommendationFingerprint(ACTION));
+  });
+
+  it('changes when analyzerVersion changes (§21)', () => {
+    expect(recommendationFingerprint({ ...ACTION, analyzerVersion: '2.0.0' })).not.toBe(
+      recommendationFingerprint(ACTION),
+    );
+  });
+
+  it('cannot collide with a §20.1 fingerprint over look-alike strings', () => {
+    expect(
+      recommendationFingerprint({
+        analyzerId: 'deterministic-candidate',
+        analyzerVersion: '1.0.0',
+        groupKey: {
+          workflowName: 'run-1',
+          workflowVersion: 'run_tests',
+          decisionType: 'a1b2c3d4e5f60718',
+          contextKeyVersion: 'v1',
+        },
+      }),
+    ).not.toBe(recommendationFingerprint(ACTION));
   });
 });

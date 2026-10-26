@@ -68,15 +68,48 @@ describe('RecommendationsController.list', () => {
   it('returns the page the service produced, unchanged', async () => {
     const controller = controllerOver({ list: () => Promise.resolve(PAGE) });
 
-    await expect(controller.list({ limit: 50, offset: 0 })).resolves.toStrictEqual(PAGE);
+    await expect(
+      controller.list({ limit: 50, offset: 0, category: 'DETERMINISTIC_CANDIDATE' }),
+    ).resolves.toStrictEqual(PAGE);
   });
 
   it('passes the parsed window through rather than substituting a default of its own', async () => {
     const list = vi.fn(() => Promise.resolve(PAGE));
     const controller = controllerOver({ list });
 
-    await controller.list({ limit: 10, offset: 40 });
+    await controller.list({ limit: 10, offset: 40, category: 'DETERMINISTIC_CANDIDATE' });
 
-    expect(list).toHaveBeenCalledWith({ limit: 10, offset: 40 });
+    expect(list).toHaveBeenCalledWith({
+      limit: 10,
+      offset: 40,
+      category: 'DETERMINISTIC_CANDIDATE',
+    });
+  });
+});
+
+describe('RecommendationsController.list — category routing', () => {
+  it('defaults to the §20.1 read, so a caller written before §20.2 keeps its envelope', async () => {
+    const list = vi.fn(() => Promise.resolve({} as RecommendationListView));
+    const listRepeatedFailedActions = vi.fn();
+    const controller = controllerOver({ list, listRepeatedFailedActions });
+
+    await controller.list({ limit: 50, offset: 0, category: 'DETERMINISTIC_CANDIDATE' });
+
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(listRepeatedFailedActions).not.toHaveBeenCalled();
+  });
+
+  it('routes REPEATED_FAILED_ACTION to the §20.2 read and never to the §20.1 one', async () => {
+    const list = vi.fn();
+    const listRepeatedFailedActions = vi.fn(() => Promise.resolve({}));
+    const controller = controllerOver({
+      list,
+      listRepeatedFailedActions: listRepeatedFailedActions as never,
+    });
+
+    await controller.list({ limit: 50, offset: 0, category: 'REPEATED_FAILED_ACTION' });
+
+    expect(listRepeatedFailedActions).toHaveBeenCalledTimes(1);
+    expect(list).not.toHaveBeenCalled();
   });
 });

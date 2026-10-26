@@ -92,13 +92,17 @@ export const GateResultsSchema = z
 // ---------------------------------------------------------------------------
 
 /**
- * §21's required output shape names exactly one category. The second analyzer (§20.2,
- * repeated failed action) has no persistence owner in 5b and no Definition-of-Done line
- * asking for one, so a second member here would be a wire value nothing can produce —
- * `docs/ENGINEERING_STANDARDS.md` DESIGN-1 wants a second REAL variation, not an imagined
- * one. Adding a member later is additive for producers.
+ * §20's two analyzers, one category each. `REPEATED_FAILED_ACTION` (§20.2) was added with its
+ * first producer (`p6.s2-platform-path`, Phase 6 phase-gate finding F1) — until then a member
+ * here would have been a wire value nothing could produce, which
+ * `docs/ENGINEERING_STANDARDS.md` DESIGN-1 rules out. Adding a member is additive for
+ * producers; it is NOT additive for a consumer that switches on `category`, which is why the
+ * list read defaults to `DETERMINISTIC_CANDIDATE` (`RecommendationsListQuerySchema`).
  */
-export const RECOMMENDATION_CATEGORIES = Object.freeze(['DETERMINISTIC_CANDIDATE'] as const);
+export const RECOMMENDATION_CATEGORIES = Object.freeze([
+  'DETERMINISTIC_CANDIDATE',
+  'REPEATED_FAILED_ACTION',
+] as const);
 
 export const RecommendationCategorySchema = z.enum(RECOMMENDATION_CATEGORIES);
 
@@ -257,7 +261,13 @@ export const MAX_STATUS_NOTE_LENGTH = 2000;
  */
 export const RecommendationSchema = z.object({
   id: IdSchema,
-  category: RecommendationCategorySchema,
+  /**
+   * Narrowed to the one category whose evidence is §18's aggregation. A
+   * `REPEATED_FAILED_ACTION` row has a different identity and different evidence and is
+   * `RepeatedFailedActionRecommendationSchema` — two shapes under one `category` enum would
+   * let a reader see `evidence.gates` on a row that has no gates.
+   */
+  category: z.literal('DETERMINISTIC_CANDIDATE'),
   analyzerId: NameSchema,
   analyzerVersion: NameSchema,
   groupKey: RecommendationGroupKeySchema,
@@ -306,6 +316,12 @@ export const RecommendationsListQuerySchema = z.object({
     .max(RECOMMENDATIONS_LIST_MAX_LIMIT)
     .default(RECOMMENDATIONS_LIST_DEFAULT_LIMIT),
   offset: z.coerce.number().int().min(0).default(0),
+  /**
+   * Which analyzer's rows to page. Defaults to `DETERMINISTIC_CANDIDATE` so that every caller
+   * written before `REPEATED_FAILED_ACTION` existed (the Recommendations page) keeps reading
+   * exactly the shape it was written against; the second category is opt-in.
+   */
+  category: RecommendationCategorySchema.default('DETERMINISTIC_CANDIDATE'),
 });
 
 /**
@@ -329,6 +345,117 @@ export const RecommendationListViewSchema = z.object({
   offset: z.number().int(),
   /** True when at least one more recommendation exists past this page. */
   hasMore: z.boolean(),
+});
+
+// ---------------------------------------------------------------------------
+// §20.2 — the repeated-failed-action recommendation
+// ---------------------------------------------------------------------------
+
+/**
+ * The SDK's hash over sanitized, canonicalized tool input — the same bound
+ * `ToolCallRecordedPayloadSchema.inputFingerprint` carries. Opaque: nothing reads structure
+ * out of it, and the raw input it was computed over never leaves the SDK.
+ */
+export const ToolInputFingerprintSchema = z.string().min(1).max(128);
+
+/**
+ * §20.2's identity: one streak is "same runId, same toolName, same sanitized input". The
+ * analogue of `RecommendationGroupKeySchema` and, like it, the fingerprint's own input set.
+ */
+export const RepeatedFailedActionKeySchema = z.object({
+  runId: IdSchema,
+  toolName: NameSchema,
+  inputFingerprint: ToolInputFingerprintSchema,
+});
+
+/** §20.2's floor: below this many consecutive failed attempts nothing is emitted. */
+export const REPEATED_FAILED_ACTION_MIN_ATTEMPTS = 3;
+
+/**
+ * §21's `configSnapshot` for this analyzer: the one threshold in force. Recorded for the same
+ * reason the §18 thresholds are — "three" means something different from "five".
+ */
+export const RepeatedFailedActionConfigSnapshotSchema = z.object({
+  minConsecutiveFailures: z.number().int().positive(),
+});
+
+/**
+ * The failing attempts in order — "the evidence, never summarized down to the first three"
+ * (`repeated-failed-action.ts`). `attemptCount` is the streak length, and its agreement with
+ * `toolCallIds` is encoded rather than described: a count that disagrees with the ids it
+ * claims to count is an understated or overstated claim on the wire.
+ */
+export const RepeatedFailedActionEvidenceSchema = z
+  .object({
+    attemptCount: z.number().int().min(REPEATED_FAILED_ACTION_MIN_ATTEMPTS),
+    toolCallIds: z.array(IdSchema).min(REPEATED_FAILED_ACTION_MIN_ATTEMPTS),
+  })
+  .superRefine((evidence, ctx) => {
+    if (evidence.toolCallIds.length !== evidence.attemptCount) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['attemptCount'],
+        message: '§20.2: `attemptCount` must equal the number of `toolCallIds` it counts',
+      });
+    }
+  });
+
+/**
+ * The evidence AGAINST the claim: an attested-SUCCESS attempt of the same tool on the same
+ * input in the same run. A success that ended or followed the streak is listed, never
+ * summarized away. Always present on the recommendation; may be empty.
+ */
+export const RepeatedFailedActionCounterexampleSchema = z.object({
+  toolCallId: IdSchema,
+  runId: IdSchema,
+  outcome: z.literal('SUCCESS'),
+});
+
+/**
+ * One persisted §20.2 recommendation. Shares its lifecycle fields with `RecommendationSchema`
+ * (§21: id, fingerprint, firstSeenAt/lastSeenAt, status), differs in identity (`actionKey`
+ * instead of `groupKey`) and in evidence, and has no gates — §19's gates are §20.1's.
+ *
+ * The statement it makes is about what was ATTESTED: the caller asserted each of these
+ * attempts failed. LenGentic sees the attested outcomes, never the counterfactual.
+ */
+export const RepeatedFailedActionRecommendationSchema = z.object({
+  id: IdSchema,
+  category: z.literal('REPEATED_FAILED_ACTION'),
+  analyzerId: NameSchema,
+  analyzerVersion: NameSchema,
+  actionKey: RepeatedFailedActionKeySchema,
+  configSnapshot: RepeatedFailedActionConfigSnapshotSchema,
+  sourceWatermark: SourceWatermarkSchema,
+  fingerprint: FingerprintSchema,
+  evidence: RepeatedFailedActionEvidenceSchema,
+  /** Always present; may be empty; never omitted (§20.1, `CLAUDE.md` ## Product claims). */
+  counterexamples: z.array(RepeatedFailedActionCounterexampleSchema),
+  firstSeenAt: TimestampSchema,
+  lastSeenAt: TimestampSchema,
+  status: RecommendationStatusSchema,
+  statusNote: z.string().max(MAX_STATUS_NOTE_LENGTH).nullable(),
+  statusChangedAt: TimestampSchema.nullable(),
+});
+
+/** The same envelope as `RecommendationListViewSchema`, for the second category. */
+export const RepeatedFailedActionListViewSchema = z.object({
+  recommendations: z.array(RepeatedFailedActionRecommendationSchema),
+  limit: z.number().int(),
+  offset: z.number().int(),
+  hasMore: z.boolean(),
+});
+
+/**
+ * One streak the analysis run emitted. Unlike `EvaluatedGroupSchema` there is no SUPPRESSED
+ * twin: §20.2 has no gates, and a key that does not meet the conditions is simply not
+ * emitted, so there is nothing to report about it. `recommendationId` is the persisted row.
+ */
+export const EmittedRepeatedFailedActionSchema = z.object({
+  actionKey: RepeatedFailedActionKeySchema,
+  attemptCount: z.number().int().min(REPEATED_FAILED_ACTION_MIN_ATTEMPTS),
+  toolCallIds: z.array(IdSchema),
+  recommendationId: IdSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -456,6 +583,13 @@ export const AnalysisRunResponseSchema = z.object({
    * order and is not part of this contract.
    */
   evaluatedGroups: z.array(EvaluatedGroupSchema),
+  /**
+   * Every §20.2 streak this run emitted. Additive and optional on the wire so a consumer
+   * written against the §22 shape still parses; the API always sends it, empty when nothing
+   * emitted. Persisted rows are read through `GET /v1/recommendations?category=
+   * REPEATED_FAILED_ACTION`.
+   */
+  repeatedFailedActions: z.array(EmittedRepeatedFailedActionSchema).optional(),
 });
 
 /**
@@ -494,3 +628,17 @@ export type EvaluatedGroup = z.infer<typeof EvaluatedGroupSchema>;
 export type AnalysisRunRequest = z.infer<typeof AnalysisRunRequestSchema>;
 export type AnalysisRunResponse = z.infer<typeof AnalysisRunResponseSchema>;
 export type RecommendationStatusPatch = z.infer<typeof RecommendationStatusPatchSchema>;
+export type ToolInputFingerprint = z.infer<typeof ToolInputFingerprintSchema>;
+export type RepeatedFailedActionKey = z.infer<typeof RepeatedFailedActionKeySchema>;
+export type RepeatedFailedActionConfigSnapshot = z.infer<
+  typeof RepeatedFailedActionConfigSnapshotSchema
+>;
+export type RepeatedFailedActionEvidence = z.infer<typeof RepeatedFailedActionEvidenceSchema>;
+export type RepeatedFailedActionCounterexample = z.infer<
+  typeof RepeatedFailedActionCounterexampleSchema
+>;
+export type RepeatedFailedActionRecommendation = z.infer<
+  typeof RepeatedFailedActionRecommendationSchema
+>;
+export type RepeatedFailedActionListView = z.infer<typeof RepeatedFailedActionListViewSchema>;
+export type EmittedRepeatedFailedAction = z.infer<typeof EmittedRepeatedFailedActionSchema>;

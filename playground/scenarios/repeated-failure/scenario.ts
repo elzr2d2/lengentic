@@ -25,10 +25,11 @@
  * `inputFingerprint`, three failed attempts — and the caller reads that emission, never a
  * verdict.
  *
- * `REPEATED_FAILED_ACTION` is not reachable through the API today: `p5.repeated-failed`
- * shipped the analyzer as a pure function and nothing in `platform/api/src/**` calls it yet
- * (`platform/api/src/runs/run-summary.ts:100` records the same absence for `RunSummary`).
- * Proving the analyzer fires on this run's data is `p7.e2e`'s assertion, not this command's.
+ * `REPEATED_FAILED_ACTION` IS reachable through the API since `p6.s2-platform-path`:
+ * `tool_call.recorded` carries the SDK's sanitized `inputFingerprint`, and `POST
+ * /v1/analysis/run` evaluates §20.2 over the persisted tool calls (live-endpoint coverage in
+ * `platform/api/test/repeated-failed-action.integration.spec.ts`). Proving the analyzer fires on
+ * this run's data THROUGH THE SDK is still `p7.e2e`'s assertion, not this command's.
  *
  * ## Same target, same command
  *
@@ -42,8 +43,10 @@
  *
  * ## `fingerprintOf` comes from the SDK, not from here
  *
- * §20.2's `inputFingerprint` is caller-owned and never rides the wire
- * (`platform/shared/schema/tool-call-events.ts` has no such field) — the caller computes it
+ * §20.2's `inputFingerprint` is computed by the SDK itself since `p6.s2-platform-path`
+ * and rides `tool_call.recorded` (`platform/shared/schema/tool-call-events.ts`). This scenario
+ * still computes it here, with the SDK's own `fingerprintOf`, to REPORT what it emitted — the
+ * two are the same function over the same sanitized input, and the spec pins that they agree — the caller computes it
  * over the *sanitized* input, which is why the SDK exports `fingerprintOf` "so a caller can
  * compute that hash with the same sanitizer the SDK uses" (`payload-safety.ts`). This is the
  * one import in `playground/**` that names `@lengentic/telemetry-sdk` outside `../../index`:

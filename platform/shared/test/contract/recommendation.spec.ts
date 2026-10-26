@@ -23,6 +23,10 @@ import {
   RecommendationSchema,
   RecommendationStatusPatchSchema,
   RecommendationsListQuerySchema,
+  RepeatedFailedActionCounterexampleSchema,
+  RepeatedFailedActionEvidenceSchema,
+  RepeatedFailedActionListViewSchema,
+  RepeatedFailedActionRecommendationSchema,
   VERDICTS,
 } from '../../index';
 import type { EvaluatedGroup, Recommendation } from '../../index';
@@ -160,8 +164,11 @@ describe('§21 recommendation entity', () => {
     );
   });
 
-  it('names exactly the one §21 category', () => {
-    expect(RECOMMENDATION_CATEGORIES).toEqual(['DETERMINISTIC_CANDIDATE']);
+  it('names exactly §20 two analyzers, one category each', () => {
+    expect(RECOMMENDATION_CATEGORIES).toEqual([
+      'DETERMINISTIC_CANDIDATE',
+      'REPEATED_FAILED_ACTION',
+    ]);
   });
 
   it('carries no `severity` — §21 removed it, and a schema that tolerated it would let one back in', () => {
@@ -403,7 +410,19 @@ describe('GET /v1/recommendations — the list envelope, frozen', () => {
   it('is paginated with the bounds GET /v1/runs already uses (API-4)', () => {
     expect(RECOMMENDATIONS_LIST_DEFAULT_LIMIT).toBe(50);
     expect(RECOMMENDATIONS_LIST_MAX_LIMIT).toBe(200);
-    expect(RecommendationsListQuerySchema.parse({})).toStrictEqual({ limit: 50, offset: 0 });
+    expect(RecommendationsListQuerySchema.parse({})).toStrictEqual({
+      limit: 50,
+      offset: 0,
+      category: 'DETERMINISTIC_CANDIDATE',
+    });
+  });
+
+  it('defaults to DETERMINISTIC_CANDIDATE so a caller written before the second category keeps its shape', () => {
+    expect(RecommendationsListQuerySchema.parse({}).category).toBe('DETERMINISTIC_CANDIDATE');
+    expect(
+      RecommendationsListQuerySchema.parse({ category: 'REPEATED_FAILED_ACTION' }).category,
+    ).toBe('REPEATED_FAILED_ACTION');
+    expect(RecommendationsListQuerySchema.safeParse({ category: 'NOPE' }).success).toBe(false);
   });
 
   it('REJECTS an oversized limit rather than clamping it — a short page nobody was told about', () => {
@@ -416,6 +435,7 @@ describe('GET /v1/recommendations — the list envelope, frozen', () => {
     expect(RecommendationsListQuerySchema.parse({ limit: '10', offset: '20' })).toStrictEqual({
       limit: 10,
       offset: 20,
+      category: 'DETERMINISTIC_CANDIDATE',
     });
   });
 });
@@ -709,5 +729,114 @@ describe('§20.1 — a counterexample is a FAILURE or a SUCCESS, never an UNKNOW
         outcome: 'UNKNOWN',
       }).success,
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §20.2 — REPEATED_FAILED_ACTION. Expected values transcribed from §20.2's conditions:
+// "at least three CONSECUTIVE attempts", same runId / toolName / sanitized inputFingerprint.
+// Negative cases first.
+// ---------------------------------------------------------------------------
+
+const ACTION_KEY = { runId: 'run-1', toolName: 'run_tests', inputFingerprint: 'a1b2c3d4e5f60718' };
+
+function repeatedFailedAction(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'rec-2',
+    category: 'REPEATED_FAILED_ACTION',
+    analyzerId: 'repeated-failed-action',
+    analyzerVersion: '1.0.0',
+    actionKey: ACTION_KEY,
+    configSnapshot: { minConsecutiveFailures: 3 },
+    sourceWatermark: '2026-10-26T10:00:00.000Z',
+    fingerprint: 'a'.repeat(64),
+    evidence: { attemptCount: 3, toolCallIds: ['tc-1', 'tc-2', 'tc-3'] },
+    counterexamples: [],
+    firstSeenAt: '2026-10-26T10:00:00.000Z',
+    lastSeenAt: '2026-10-26T10:00:00.000Z',
+    status: 'OPEN',
+    statusNote: null,
+    statusChangedAt: null,
+    ...overrides,
+  };
+}
+
+describe('§20.2 REPEATED_FAILED_ACTION recommendation', () => {
+  it('REJECTS an attemptCount below three — §20.2 emits nothing for two failures', () => {
+    const result = RepeatedFailedActionEvidenceSchema.safeParse({
+      attemptCount: 2,
+      toolCallIds: ['tc-1', 'tc-2'],
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('REJECTS an attemptCount that disagrees with the ids it counts', () => {
+    expect(
+      RepeatedFailedActionEvidenceSchema.safeParse({
+        attemptCount: 4,
+        toolCallIds: ['tc-1', 'tc-2', 'tc-3'],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('REJECTS a counterexample that is not an attested SUCCESS', () => {
+    expect(
+      RepeatedFailedActionCounterexampleSchema.safeParse({
+        toolCallId: 'tc-4',
+        runId: 'run-1',
+        outcome: 'FAILURE',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('never omits `counterexamples` — absent is not the same claim as empty', () => {
+    const { counterexamples: _omitted, ...without } = repeatedFailedAction();
+
+    expect(RepeatedFailedActionRecommendationSchema.safeParse(without).success).toBe(false);
+    expect(RepeatedFailedActionRecommendationSchema.safeParse(repeatedFailedAction()).success).toBe(
+      true,
+    );
+  });
+
+  it('is not parseable as a §20.1 recommendation — two shapes, not one with optional halves', () => {
+    expect(RecommendationSchema.safeParse(repeatedFailedAction()).success).toBe(false);
+  });
+
+  it('carries the action key and the three attempts in order', () => {
+    const parsed = RepeatedFailedActionRecommendationSchema.parse(repeatedFailedAction());
+
+    expect(parsed.actionKey).toStrictEqual(ACTION_KEY);
+    expect(parsed.evidence.toolCallIds).toStrictEqual(['tc-1', 'tc-2', 'tc-3']);
+  });
+
+  it('shares the list envelope shape', () => {
+    const parsed = RepeatedFailedActionListViewSchema.parse({
+      recommendations: [repeatedFailedAction()],
+      limit: 50,
+      offset: 0,
+      hasMore: false,
+    });
+
+    expect(parsed.recommendations).toHaveLength(1);
+  });
+
+  it('adds `repeatedFailedActions` to the analysis response as optional — the §22 shape still parses', () => {
+    expect(AnalysisRunResponseSchema.parse({ evaluatedGroups: [] })).toStrictEqual({
+      evaluatedGroups: [],
+    });
+    expect(
+      AnalysisRunResponseSchema.parse({
+        evaluatedGroups: [],
+        repeatedFailedActions: [
+          {
+            actionKey: ACTION_KEY,
+            attemptCount: 3,
+            toolCallIds: ['tc-1', 'tc-2', 'tc-3'],
+            recommendationId: 'rec-2',
+          },
+        ],
+      }).repeatedFailedActions,
+    ).toHaveLength(1);
   });
 });
