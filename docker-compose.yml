@@ -23,7 +23,24 @@ services:
       retries: 10
       start_period: 10s
 
+  # One-shot: applies committed migrations before the API starts. Without it a clean
+  # `docker compose up` yields an empty schema and every ingest request fails with 503
+  # ("table public.Run does not exist"). Reuses the api image, so there is one build.
+  migrate:
+    image: lengentic-api:local
+    command: ['pnpm', '--filter', '@lengentic/database', 'db:migrate:deploy']
+    working_dir: /app
+    restart: 'no'
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lengentic}:${POSTGRES_PASSWORD:-lengentic}@postgres:5432/${POSTGRES_DB:-lengentic}?schema=public
+    networks:
+      - lengentic
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
+    image: lengentic-api:local
     build:
       context: .
       dockerfile: docker/api.Dockerfile
@@ -44,6 +61,8 @@ services:
         # Not `service_started`. The API validates its environment and connects at boot, so
         # starting it against a Postgres that is merely running produces a restart loop.
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   dashboard:
     build:
