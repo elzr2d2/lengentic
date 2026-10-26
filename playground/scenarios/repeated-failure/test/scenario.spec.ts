@@ -28,7 +28,7 @@ import { RecordingTransport, type RecordedEnvelope } from './support/recording-t
 const SEED = 4_321;
 
 /**
- * �20.2's floor: three consecutive failed attempts. A literal on purpose, not the
+ * §20.2's floor: three consecutive failed attempts. A literal on purpose, not the
  * production `ATTEMPTS`: asserting `calls.length === ATTEMPTS` is a tautology that stays
  * green when `ATTEMPTS` is lowered to 2 (wave-gate F2, mutant M2a). The requirement is
  * pinned here, independent of the module under test.
@@ -66,7 +66,7 @@ function toolCalls(transport: RecordingTransport): ToolCallRecordedPayload[] {
 }
 
 void describe('runRepeatedFailureScenario — what reaches the wire', () => {
-  void it('emits exactly the �20.2 floor of 3 tool calls, all of them the same tool', async () => {
+  void it('emits exactly the §20.2 floor of 3 tool calls, all of them the same tool', async () => {
     const { transport, result } = await emit();
     const calls = toolCalls(transport);
 
@@ -134,7 +134,7 @@ void describe('runRepeatedFailureScenario — what reaches the wire', () => {
     assert.equal(second.result.runId, first.result.runId);
   });
 
-  void it('derives runId and eventIds from the seed � a different seed shares none of them', async () => {
+  void it('derives runId and eventIds from the seed — a different seed shares none of them', async () => {
     const first = await emit(SEED);
     const other = await emit(SEED + 1);
 
@@ -157,7 +157,7 @@ void describe('runRepeatedFailureScenario — what reaches the wire', () => {
     );
   });
 
-  void it('derives timestamps from the seed � a different seed starts at a different instant', async () => {
+  void it('derives timestamps from the seed — a different seed starts at a different instant', async () => {
     const first = await emit(SEED);
     const other = await emit(SEED + 1);
 

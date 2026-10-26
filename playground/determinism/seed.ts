@@ -88,7 +88,7 @@ export function createSeededComponents(
  * `seed ^ hash(namespace)` is injective in `seed` for a fixed namespace, so "different seed
  * -> different ids" survives, and `| 0` keeps the result inside the 32-bit signed range
  * `validateSeed` enforces. Pure: the same `(namespace, seed)` always yields the same value,
- * which is what keeps "same seed -> identical output" (�17).
+ * which is what keeps "same seed -> identical output" (§17).
  *
  * Validates `seed` first, so an out-of-range `--seed` fails with the same
  * `SeededComponentsConfigError` it always did instead of being silently wrapped by `^`.

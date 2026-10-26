@@ -164,7 +164,7 @@ export async function runRepeatedFailureScenario(
 ): Promise<RepeatedFailureScenarioResult> {
   // Ids and clock are namespaced by scenario: the same `--seed` must not mint the same
   // (runId, eventId) keys as another scenario's CLI (wave-gate F1). The provider keeps the
-  // raw seed � its output is not part of the ledger key.
+  // raw seed — its output is not part of the ledger key.
   const { clock, idGenerator } = createSeededComponents(
     namespacedSeed(SCENARIO_NAMESPACE, options.seed),
     options.clockOptions,
