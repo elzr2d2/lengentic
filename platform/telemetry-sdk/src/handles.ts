@@ -277,11 +277,12 @@ function recordToolCall(
     toolName: call.toolName,
     ...io,
     // §20.2's caller-owned grouping key, computed over the SANITIZED, uncapped input by the
-    // same pipeline as `toolIO` — never over raw input. Computed whatever `captureToolIO` is:
-    // that flag withholds the payload from the wire, and the fingerprint is not the payload.
-    // Omitted when the call carried no input at all, so "no input" never groups with "an
+    // same pipeline as `toolIO` — never over raw input. Omitted under `captureToolIO: false`
+    // (§15: the opt-out disables input capture entirely; an unkeyed hash of a low-entropy input
+    // is confirmable by enumeration), so an opted-out call cannot join a §20.2 streak. Also
+    // omitted when the call carried no input at all, so "no input" never groups with "an
     // input that hashes to the same string as null".
-    ...(call.input === undefined || call.input === null
+    ...(!recorder.safety.captureToolIO || call.input === undefined || call.input === null
       ? {}
       : { inputFingerprint: recorder.safety.fingerprint(call.input, 'input') }),
     startedAt: call.startedAt.toISOString(),

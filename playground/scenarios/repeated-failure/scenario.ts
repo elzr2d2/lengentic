@@ -46,9 +46,9 @@
  * §20.2's `inputFingerprint` is computed by the SDK itself since `p6.s2-platform-path`
  * and rides `tool_call.recorded` (`platform/shared/schema/tool-call-events.ts`). This scenario
  * still computes it here, with the SDK's own `fingerprintOf`, to REPORT what it emitted — the
- * two are the same function over the same sanitized input, and the spec pins that they agree — the caller computes it
- * over the *sanitized* input, which is why the SDK exports `fingerprintOf` "so a caller can
- * compute that hash with the same sanitizer the SDK uses" (`payload-safety.ts`). This is the
+ * two are the same function over the same sanitized input, and the spec pins that they agree.
+ * The hash is over the *sanitized* input, which is why the SDK exports `fingerprintOf` "so a
+ * caller can compute that hash with the same sanitizer the SDK uses" (`payload-safety.ts`). This is the
  * one import in `playground/**` that names `@lengentic/telemetry-sdk` outside `../../index`:
  * the composition root does not re-export `fingerprintOf`, and widening it is outside this
  * packet's `allowed_paths`, so the alternatives were a second FNV-1a implementation inside

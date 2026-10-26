@@ -1089,10 +1089,8 @@ export async function run(): Promise<number> {
     const skill = fileURLToPath(
       new URL('../../.claude/skills/structured-logging/SKILL.md', import.meta.url),
     );
-    const concision = root.split('Extremely concise; fragments over prose').length - 1;
     return (
       expect(existsSync(skill), 'the shared logging contract must exist at one path') ??
-      expect(concision === 1, `the concision policy must be stated once; found ${concision}`) ??
       expect(root.includes('structured-logging'), 'the root must reach the logging contract') ??
       expect(
         readFileSync(

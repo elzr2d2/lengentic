@@ -494,7 +494,7 @@ describe('§20.2: tool_call.recorded carries a sanitized inputFingerprint, never
     expect(wireText(transport)).not.toContain('sk-live-BBBB');
   });
 
-  it('still fingerprints under captureToolIO: false, while the payload stays off the wire', async () => {
+  it('omits the fingerprint under captureToolIO: false, and the payload stays off the wire', async () => {
     const { transport, client } = harness({ captureToolIO: false });
     const step = stepOf(client);
 
@@ -503,9 +503,7 @@ describe('§20.2: tool_call.recorded carries a sanitized inputFingerprint, never
 
     const [event] = eventsOf(transport, 'tool_call.recorded');
     expect(wireContractViolations(event!)).toStrictEqual([]);
-    expect((event?.payload as { inputFingerprint?: string }).inputFingerprint).toMatch(
-      /^[0-9a-f]{16}$/,
-    );
+    expect(event?.payload).not.toHaveProperty('inputFingerprint');
     expect(wireText(transport)).not.toContain('do-not-ship-me');
   });
 });
