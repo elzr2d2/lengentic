@@ -25,6 +25,9 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json ./
 COPY .husky ./.husky
 COPY platform/api/package.json ./platform/api/
 COPY platform/database/package.json ./platform/database/
+COPY platform/shared/package.json ./platform/shared/
+COPY platform/analysis-engine/package.json ./platform/analysis-engine/
+COPY platform/telemetry-sdk/package.json ./platform/telemetry-sdk/
 
 # `@lengentic/api...` resolves the package plus its workspace dependencies, so the
 # dashboard's Next and React never enter this image.
@@ -32,9 +35,14 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile --filter "@lengentic/api..."
 
 COPY platform/database ./platform/database
+COPY platform/shared ./platform/shared
+COPY platform/analysis-engine ./platform/analysis-engine
 COPY platform/api ./platform/api
 
 # The database package must build first — it generates the Prisma client the API imports.
+# `shared` and `analysis-engine` are workspace dependencies resolved through their built
+# `dist/`, so they build before the API too. `telemetry-sdk` is a devDependency used only by
+# tests: its manifest is copied so the frozen lockfile matches, but it is not built.
 #
 # `prisma.config.ts` resolves DATABASE_URL when the config loads, and `.dockerignore` keeps
 # .env out of the build context on purpose. `prisma generate` reads the schema and never
@@ -43,6 +51,8 @@ COPY platform/api ./platform/api
 # for a real target — compose supplies the real URL to the runtime stage.
 RUN DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder?schema=public" \
     pnpm --filter @lengentic/database build \
+ && pnpm --filter @lengentic/shared build \
+ && pnpm --filter @lengentic/analysis-engine build \
  && pnpm --filter @lengentic/api build
 
 
