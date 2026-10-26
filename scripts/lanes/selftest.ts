@@ -1089,7 +1089,7 @@ export async function run(): Promise<number> {
     const skill = fileURLToPath(
       new URL('../../.claude/skills/structured-logging/SKILL.md', import.meta.url),
     );
-    const concision = root.split('Be extremely concise').length - 1;
+    const concision = root.split('Extremely concise; fragments over prose').length - 1;
     return (
       expect(existsSync(skill), 'the shared logging contract must exist at one path') ??
       expect(concision === 1, `the concision policy must be stated once; found ${concision}`) ??

@@ -1601,6 +1601,57 @@
       "note": "EXPANDED 2026-09-03 from 'clean clone -> docker compose up -> a Run is visible' to the full section 25 rehearsal, because nothing else proved the demo runs on a machine that is not this one, and a separate demo-validation packet would only have duplicated this one's setup cost. Rehearse, in order, from a clean clone and a clean install: (1) docker compose up; (2) the scenario command; (3) the Runs list; (4) Run detail - Timeline, Steps, Decisions, Tool Calls, Model Calls; (5) the explicit analysis trigger; (6) Decision History; (7) the recommendation with its counterexamples; (8) the suppressed low-diversity batch-iteration group showing G2 among its failed gates. Record each beat with the output observed. Evidence under the existing conventions: the marker at .artifacts/oracle/docker-smoke-clean.ok and the report at .artifacts/evidence/7/demo-rehearsal.md. The needs edge on the retired p6.scenario1 was rewritten to the packets that actually supply the demo: p5.recs-ui for beats 3-8 and p6.scenario3 for the command and both cohorts. Validator packet - it runs documented commands and reports; it is not an authoring job."
     },
     {
+      "id": "p6.s2-platform-path",
+      "phase": 6,
+      "lane": "platform",
+      "title": "Scenario 2 platform path — inputFingerprint on the wire, REPEATED_FAILED_ACTION category, analysis/run wiring, live endpoint tests",
+      "owner": "builder",
+      "needs": [
+        "p6.scenario2",
+        "p5.analysis-endpoint",
+        "p5.repeated-failed",
+        "p5.rec-persistence",
+        "p4.sdk-decisions"
+      ],
+      "probes": [
+        {
+          "kind": "grep",
+          "dir": "platform/shared/schema",
+          "pattern": "REPEATED_FAILED_ACTION"
+        },
+        {
+          "kind": "grep",
+          "dir": "platform/api/test",
+          "pattern": "REPEATED_FAILED_ACTION"
+        }
+      ],
+      "own": {
+        "allowed": [
+          "platform/shared/schema/**",
+          "platform/shared/index.ts",
+          "platform/shared/test/**",
+          "platform/telemetry-sdk/**",
+          "platform/analysis-engine/**",
+          "platform/database/prisma/**",
+          "platform/database/src/**",
+          "platform/api/src/**",
+          "platform/api/test/**",
+          "playground/scenarios/repeated-failure/**",
+          "docs/decisions/**"
+        ]
+      },
+      "validate": [
+        "pnpm --filter @lengentic/shared test",
+        "pnpm --filter @lengentic/api test",
+        "pnpm test:integration",
+        "pnpm playground:repeated-failure",
+        "pnpm gates"
+      ],
+      "risk": "high",
+      "changeClass": "contract",
+      "note": "ADDED 2026-10-26 on the human decision B for Phase 6 phase-gate finding F1 (.autopilot/escalations/2026-10-26T17-33-30-526Z.md): live POST /v1/analysis/run for Scenario 2 returned no recommendation because RECOMMENDATION_CATEGORIES had only DETERMINISTIC_CANDIDATE and inputFingerprint never rode the wire. DoD checkbox 1 is PRESERVED as written (\"all three scenarios produce expected Platform behavior\"); it is not re-read. Scope: (1) inputFingerprint captured by the SDK, carried on tool_call.recorded (additive, optional on the wire), persisted on ToolCall (migration); (2) REPEATED_FAILED_ACTION added to RECOMMENDATION_CATEGORIES with its evidence shape and an analyzer identity (id/version -> fingerprint dedupe); (3) analysis/run evaluates detectRepeatedFailedActions over persisted tool calls and persists via recordSighting, withdrawing on suppression exactly as DETERMINISTIC_CANDIDATE does; every recommendation carries counterexamples (may be empty, never omitted); (4) live endpoint tests against a real API+DB: S2 data -> exactly one OPEN REPEATED_FAILED_ACTION with attemptCount 3 and the three toolCallIds; re-run dedupes; two failures, or a success between, or cross-run, emits nothing. Negative fixtures first. Wording: attested, never measured. Raw tool input never leaves the SDK; only the sanitized fingerprint. p7.e2e keeps the through-the-wire silence/dedup E2E; this node must not weaken it. Serialised: touches shared schema and prisma."
+    },
+    {
       "id": "p7.readme",
       "phase": 7,
       "lane": "doc",
