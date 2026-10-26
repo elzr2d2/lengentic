@@ -150,7 +150,13 @@ export async function runDeterministicDecisionScenario(
     const samples = expandCohort(spec);
     const decisions: EmittedDecision[] = [];
     for (const sample of samples) {
-      const emitted = await emitSample(spec, sample, seedFor(options.seed, globalIndex), options);
+      const emitted = await emitSample(
+        spec,
+        sample,
+        seedFor(options.seed, globalIndex),
+        namespacedSeed(`${SCENARIO_NAMESPACE}:${String(globalIndex)}`, options.seed),
+        options,
+      );
       globalIndex += 1;
       decisions.push(emitted.decision);
       stats.push(emitted.telemetryStats);
@@ -188,14 +194,13 @@ async function emitSample(
   spec: CohortSpec,
   sample: CohortSample,
   seed: number,
+  idSeed: number,
   options: DeterministicDecisionScenarioOptions,
 ): Promise<{ decision: EmittedDecision; telemetryStats: TelemetryStats }> {
-  // Ids and clock are namespaced by scenario (wave-gate F1); the provider keeps the raw
-  // per-run seed.
-  const { clock, idGenerator } = createSeededComponents(
-    namespacedSeed(SCENARIO_NAMESPACE, seed),
-    options.clockOptions,
-  );
+  // Ids and clock are namespaced by scenario and run index, never by `base + index`:
+  // adjacent `--seed`s would otherwise share (runId, eventId) keys. The provider keeps the
+  // additive per-run seed.
+  const { clock, idGenerator } = createSeededComponents(idSeed, options.clockOptions);
   const telemetry = createPlaygroundTelemetry({
     ...(options.telemetryConfig ?? {}),
     clock,

@@ -173,7 +173,7 @@ void describe('determinism (§17)', () => {
     const second = new RecordingTransport();
     await runDeterministicDecisionScenario({ seed: SEED, telemetryConfig: { transport: first } });
     await runDeterministicDecisionScenario({
-      seed: SEED + 1_000,
+      seed: SEED + 1,
       telemetryConfig: { transport: second },
     });
 
