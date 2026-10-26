@@ -11,6 +11,7 @@
  * `SeededClock`/`SeededIdGenerator`.
  */
 import { SeededClock, SeededIdGenerator, type Clock, type IdGenerator } from '../index';
+import { hashToSeed } from '../providers';
 
 export interface SeededComponents {
   readonly clock: Clock;
@@ -71,4 +72,28 @@ export function createSeededComponents(
     clock: new SeededClock(seed, options),
     idGenerator: new SeededIdGenerator(seed),
   };
+}
+
+/**
+ * Folds a scenario's name into the seed its telemetry ids and clock are built from, so two
+ * scenarios run with the same `--seed` never mint the same `(runId, eventId)` ledger key.
+ *
+ * The server dedups on that key. Before this existed, `repeated-failure` and
+ * `deterministic-decision` both fed the raw seed to `SeededIdGenerator`, so at the shared
+ * default seed 42 they emitted the same runId and five shared eventIds (Phase 6 wave-gate
+ * F1) and posting both to one API silently merged or dropped data. `MockAgent` already does
+ * this for its own scenario via `deriveScenarioSeed` (`agents/scenario-seed.ts`); this is the
+ * same idiom for scenarios that do not go through `MockAgent`.
+ *
+ * `seed ^ hash(namespace)` is injective in `seed` for a fixed namespace, so "different seed
+ * -> different ids" survives, and `| 0` keeps the result inside the 32-bit signed range
+ * `validateSeed` enforces. Pure: the same `(namespace, seed)` always yields the same value,
+ * which is what keeps "same seed -> identical output" (�17).
+ *
+ * Validates `seed` first, so an out-of-range `--seed` fails with the same
+ * `SeededComponentsConfigError` it always did instead of being silently wrapped by `^`.
+ */
+export function namespacedSeed(namespace: string, seed: number): number {
+  validateSeed(seed);
+  return (seed ^ hashToSeed(`scenario:${namespace}`)) | 0;
 }

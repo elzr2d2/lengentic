@@ -69,7 +69,7 @@
  */
 import { fingerprintOf } from '@lengentic/telemetry-sdk';
 
-import { createSeededComponents, type SeededClockOptions } from '../../determinism';
+import { createSeededComponents, namespacedSeed, type SeededClockOptions } from '../../determinism';
 import {
   createPlaygroundTelemetry,
   type Clock,
@@ -85,6 +85,9 @@ type TelemetryStats = ReturnType<TelemetryClient['stats']>;
 const WORKFLOW_NAME = 'repeated-failure-workflow';
 const WORKFLOW_VERSION = '1.0.0';
 const AGENT_NAME = 'repeated-failure-agent';
+
+/** Folded into the id/clock seed so this scenario's keys are disjoint from the others'. */
+const SCENARIO_NAMESPACE = 'repeated-failure';
 
 /** §20.2's floor is three consecutive failed attempts, and the scenario emits exactly that —
  *  a fourth attempt would prove nothing the third does not. */
@@ -159,7 +162,13 @@ export interface RepeatedFailureScenarioResult {
 export async function runRepeatedFailureScenario(
   options: RepeatedFailureScenarioOptions,
 ): Promise<RepeatedFailureScenarioResult> {
-  const { clock, idGenerator } = createSeededComponents(options.seed, options.clockOptions);
+  // Ids and clock are namespaced by scenario: the same `--seed` must not mint the same
+  // (runId, eventId) keys as another scenario's CLI (wave-gate F1). The provider keeps the
+  // raw seed � its output is not part of the ledger key.
+  const { clock, idGenerator } = createSeededComponents(
+    namespacedSeed(SCENARIO_NAMESPACE, options.seed),
+    options.clockOptions,
+  );
   const telemetry = createPlaygroundTelemetry({
     ...(options.telemetryConfig ?? {}),
     clock,

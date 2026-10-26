@@ -22,16 +22,18 @@ import { describe, it } from 'node:test';
 
 import { fingerprintOf } from '@lengentic/telemetry-sdk';
 
-import {
-  ATTEMPTS,
-  FAILURE_MESSAGE,
-  runRepeatedFailureScenario,
-  TOOL_INPUT,
-  TOOL_NAME,
-} from '../scenario';
+import { FAILURE_MESSAGE, runRepeatedFailureScenario, TOOL_INPUT, TOOL_NAME } from '../scenario';
 import { RecordingTransport, type RecordedEnvelope } from './support/recording-transport';
 
 const SEED = 4_321;
+
+/**
+ * �20.2's floor: three consecutive failed attempts. A literal on purpose, not the
+ * production `ATTEMPTS`: asserting `calls.length === ATTEMPTS` is a tautology that stays
+ * green when `ATTEMPTS` is lowered to 2 (wave-gate F2, mutant M2a). The requirement is
+ * pinned here, independent of the module under test.
+ */
+const REQUIRED_ATTEMPTS = 3;
 
 interface ToolCallRecordedPayload {
   readonly toolName: string;
@@ -64,11 +66,12 @@ function toolCalls(transport: RecordingTransport): ToolCallRecordedPayload[] {
 }
 
 void describe('runRepeatedFailureScenario — what reaches the wire', () => {
-  void it('emits exactly ATTEMPTS tool calls, all of them the same tool', async () => {
-    const { transport } = await emit();
+  void it('emits exactly the �20.2 floor of 3 tool calls, all of them the same tool', async () => {
+    const { transport, result } = await emit();
     const calls = toolCalls(transport);
 
-    assert.equal(calls.length, ATTEMPTS);
+    assert.equal(calls.length, REQUIRED_ATTEMPTS);
+    assert.equal(result.attempts.length, REQUIRED_ATTEMPTS);
     assert.deepEqual([...new Set(calls.map((call) => call.toolName))], [TOOL_NAME]);
   });
 
@@ -111,7 +114,7 @@ void describe('runRepeatedFailureScenario — what reaches the wire', () => {
       'a successful attempt between failures breaks §20.2’s streak',
     );
     assert.deepEqual([...new Set(calls.map((call) => call.error))], [FAILURE_MESSAGE]);
-    assert.equal(errors.length, ATTEMPTS);
+    assert.equal(errors.length, REQUIRED_ATTEMPTS);
     assert.deepEqual([...new Set(errors.map((error) => error.message))], [FAILURE_MESSAGE]);
   });
 
@@ -123,13 +126,47 @@ void describe('runRepeatedFailureScenario — what reaches the wire', () => {
     assert.equal((completed?.payload as { status: string } | undefined)?.status, 'FAILED');
   });
 
-  void it('is reproducible under a seed and distinguishable across seeds', async () => {
+  void it('is reproducible under a seed: same runId, same eventIds, same envelopes', async () => {
     const first = await emit(SEED);
     const second = await emit(SEED);
-    const other = await emit(SEED + 1);
 
     assert.deepEqual(second.transport.allEvents, first.transport.allEvents);
-    assert.notDeepEqual(other.transport.allEvents, first.transport.allEvents);
+    assert.equal(second.result.runId, first.result.runId);
+  });
+
+  void it('derives runId and eventIds from the seed � a different seed shares none of them', async () => {
+    const first = await emit(SEED);
+    const other = await emit(SEED + 1);
+
+    // Compared on ids specifically: whole-envelope inequality is also satisfied by
+    // `metadata.seed` alone, which proves nothing about id derivation (wave-gate F2, M2e).
+    assert.notEqual(other.result.runId, first.result.runId);
+    const firstEventIds = new Set(first.transport.allEvents.map((event) => event.eventId));
+    const otherEventIds = other.transport.allEvents.map((event) => event.eventId);
+    assert.ok(otherEventIds.length > 0);
+    assert.deepEqual(
+      otherEventIds.filter((eventId) => firstEventIds.has(eventId)),
+      [],
+    );
+    const firstRunIds = new Set(first.transport.allEvents.map((event) => event.runId));
+    assert.deepEqual(
+      [...new Set(other.transport.allEvents.map((event) => event.runId))].filter((id) =>
+        firstRunIds.has(id),
+      ),
+      [],
+    );
+  });
+
+  void it('derives timestamps from the seed � a different seed starts at a different instant', async () => {
+    const first = await emit(SEED);
+    const other = await emit(SEED + 1);
+
+    // `occurredAt` may be a Date: compare the instant, never object identity.
+    const instantOf = (events: readonly { readonly occurredAt: unknown }[]): number =>
+      new Date(events[0]?.occurredAt as string | number | Date).getTime();
+    const firstInstant = instantOf(first.transport.allEvents);
+    assert.ok(Number.isFinite(firstInstant));
+    assert.notEqual(instantOf(other.transport.allEvents), firstInstant);
   });
 
   void it('flushes and shuts down, so the reported stats cover the whole run', async () => {

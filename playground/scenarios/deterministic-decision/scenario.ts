@@ -60,7 +60,7 @@
  * 1..66 to a wrapping int32 stays injective), so no two runs collide on a runId and get
  * silently deduplicated by the server's `(runId, eventId)` ledger key.
  */
-import { createSeededComponents, type SeededClockOptions } from '../../determinism';
+import { createSeededComponents, namespacedSeed, type SeededClockOptions } from '../../determinism';
 import { createPlaygroundTelemetry, type TelemetryClient, type TelemetryConfig } from '../../index';
 import { MockProvider } from '../../providers';
 
@@ -77,6 +77,9 @@ type RunHandle = ReturnType<TelemetryClient['startRun']>;
 type TelemetryStats = ReturnType<TelemetryClient['stats']>;
 
 const AGENT_NAME = 'deterministic-decision-agent';
+
+/** Folded into the id/clock seed so this scenario's keys are disjoint from the others'. */
+const SCENARIO_NAMESPACE = 'deterministic-decision';
 
 /** The one step every run has: the decision point itself. */
 const DECISION_STEP = 'decide';
@@ -187,7 +190,12 @@ async function emitSample(
   seed: number,
   options: DeterministicDecisionScenarioOptions,
 ): Promise<{ decision: EmittedDecision; telemetryStats: TelemetryStats }> {
-  const { clock, idGenerator } = createSeededComponents(seed, options.clockOptions);
+  // Ids and clock are namespaced by scenario (wave-gate F1); the provider keeps the raw
+  // per-run seed.
+  const { clock, idGenerator } = createSeededComponents(
+    namespacedSeed(SCENARIO_NAMESPACE, seed),
+    options.clockOptions,
+  );
   const telemetry = createPlaygroundTelemetry({
     ...(options.telemetryConfig ?? {}),
     clock,
