@@ -51,6 +51,12 @@ jobs:
         if: '!cancelled()'
         run: pnpm check:boundaries
 
+      # QA-integrity scan: false green, focused tests, hidden skips. Part of `pnpm gates`
+      # locally, so CI runs it too rather than letting the two tiers drift apart.
+      - name: QA integrity
+        if: '!cancelled()'
+        run: pnpm check:integrity
+
       # The dispatch rules' own scenarios — eligibility gate, path ownership, handoff
       # validation, integration order, and the PreToolUse hook run as a real process.
       # Deliberately outside `pnpm gates`: it reads `.claude/`, and the product gate has to
@@ -120,11 +126,60 @@ jobs:
       # keeps passing locally off a `dist/` some earlier `pnpm build` left behind, and the
       # first anyone hears of the gap is a red CI run. That is exactly how the SDK import in
       # `test/stale-on-kill/fixtures/*.ts` — resolved by a spawned `node --import tsx` child,
-      # outside vitest, so no alias rescues it — reached `main` unbuilt by this job.
+      # outside vitest, so no alias rescues it — reached `main` unbuilt by this job. The same
+      # hook builds the SDK the E2E suite's spawned Playground CLIs import (and the E2E
+      # suite's own `beforeAll` rebuilds it, so a cold checkout cannot reach the CLIs unbuilt).
       #
       # Testcontainers starts its own PostgreSQL. GitHub runners ship a Docker daemon, so
       # this is the job that actually exercises the database path.
-      - run: pnpm test:integration
+      #
+      # Integration and E2E are separate steps so a red E2E is never hidden inside a red
+      # integration run (or the reverse). Both use the `verbose` reporter for the console
+      # and `junit` for the uploaded report, which names every test individually.
+      - name: Integration tests (all but E2E)
+        run: >-
+          pnpm --filter @lengentic/api test:integration
+          --exclude '**/e2e.integration.spec.ts'
+          --reporter=verbose --reporter=junit
+          --outputFile.junit=${{ github.workspace }}/test-reports/integration.junit.xml
+
+      # E2E 1-4: real Playground CLI -> SDK -> API -> PostgreSQL -> analysis. The spec spawns
+      # `pnpm exec tsx playground/...` as child processes, which import the SDK's built entry.
+      - name: E2E tests (E2E 1-4)
+        if: '!cancelled()'
+        run: >-
+          pnpm --filter @lengentic/api test:integration e2e.integration
+          --reporter=verbose --reporter=junit
+          --outputFile.junit=${{ github.workspace }}/test-reports/e2e.junit.xml
+
+      # A skipped or filtered-out flow reads as a green run, so assert all four are reported.
+      - name: Assert all four E2E flows were reported
+        if: '!cancelled()'
+        run: |
+          for n in 1 2 3 4; do
+            if ! grep -q "E2E $n:" test-reports/e2e.junit.xml; then
+              echo "::error::E2E $n missing from test-reports/e2e.junit.xml"
+              exit 1
+            fi
+          done
+          echo "E2E 1, E2E 2, E2E 3, E2E 4 present in report"
+
+      - name: Upload test reports
+        if: '!cancelled()'
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-e2e-reports
+          path: test-reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Testcontainers' reaper normally removes its containers; this covers a runner where
+      # the job was killed before the suite's `afterAll` or the reaper ran.
+      - name: Remove leftover Testcontainers
+        if: always()
+        run: |
+          ids="$(docker ps -aq --filter label=org.testcontainers=true)"
+          if [ -n "$ids" ]; then docker rm -fv $ids; fi
 
   docker:
     name: Docker images
@@ -164,10 +219,24 @@ jobs:
           curl -fsS http://localhost:3001/health
           curl -fsS -o /dev/null http://localhost:3000/
 
-      - name: Compose logs on failure
+      - name: Collect compose logs on failure
         if: failure()
-        run: docker compose logs --no-color --tail 200
+        run: |
+          mkdir -p docker-logs
+          docker compose ps -a > docker-logs/ps.txt || true
+          docker compose logs --no-color > docker-logs/compose.log || true
+          tail -n 200 docker-logs/compose.log
 
+      - name: Upload compose logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-compose-logs
+          path: docker-logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Removes the containers, network and volumes this job created.
       - name: Tear down
         if: always()
-        run: docker compose down -v
+        run: docker compose down -v --remove-orphans
