@@ -1593,7 +1593,12 @@
         }
       ],
       "own": {
-        "allowed": [".artifacts/**"]
+        "allowed": [
+          ".artifacts/**",
+          "docker/**",
+          "docker-compose.yml",
+          "platform/api/src/docker-config.spec.ts"
+        ]
       },
       "validate": ["pnpm gates:full"],
       "risk": "medium",
