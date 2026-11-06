@@ -558,10 +558,6 @@ async function runGate(ctx: Ctx, action: FlowAction, kind: 'wave' | 'phase'): Pr
     probe,
   );
 
-  // Packets this gate was asked about are DONE by the probe just read (exit 0). A stale worker
-  // REPAIR_REQUIRED on one of them is superseded by that fresh reading — see `failuresBlockingGate`.
-  const probedDone = probe.code === 0 ? (action.packets ?? []) : [];
-
   const sources: Sources = {
     nodes:
       probe.code === 0
@@ -581,11 +577,11 @@ async function runGate(ctx: Ctx, action: FlowAction, kind: 'wave' | 'phase'): Pr
     // GREEN they would otherwise block, so counting them made a once-held gate RED forever.
     // Rationale and the live proof: `failuresBlockingGate` in `state.ts`.
     failureEvidence:
-      failuresBlockingGate(ctx.state, segment, probedDone).length === 0
+      failuresBlockingGate(ctx.state, segment).length === 0
         ? green('no unresolved blocking failure bears on this gate', [gateLog])
         : red(
-            `${String(failuresBlockingGate(ctx.state, segment, probedDone).length)} unresolved blocking failure(s)`,
-            failuresBlockingGate(ctx.state, segment, probedDone).flatMap((f) => f.evidence),
+            `${String(failuresBlockingGate(ctx.state, segment).length)} unresolved blocking failure(s)`,
+            failuresBlockingGate(ctx.state, segment).flatMap((f) => f.evidence),
           ),
   };
 

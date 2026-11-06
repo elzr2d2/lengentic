@@ -300,13 +300,8 @@ export function unresolvedFailures(s: SupervisorState): BlockingFailure[] {
 export function failuresBlockingGate(
   s: SupervisorState,
   segment: string | null,
-  probedDoneNodes: readonly string[] = [],
 ): BlockingFailure[] {
-  return unresolvedFailures(s).filter(
-    (f) =>
-      !(f.kind === 'gate' && f.segment === segment) &&
-      !(f.kind === 'worker' && f.node !== null && probedDoneNodes.includes(f.node)),
-  );
+  return unresolvedFailures(s).filter((f) => !(f.kind === 'gate' && f.segment === segment));
 }
 
 /** A stop request survives a supervisor crash, so it is a file rather than a signal. */

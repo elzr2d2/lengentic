@@ -32,7 +32,7 @@ services:
     working_dir: /app
     restart: 'no'
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-lengentic}:${POSTGRES_PASSWORD:-lengentic}@postgres:5432/${POSTGRES_DB:-lengentic}?schema=public
+      DATABASE_URL: &database-url postgresql://${POSTGRES_USER:-lengentic}:${POSTGRES_PASSWORD:-lengentic}@postgres:5432/${POSTGRES_DB:-lengentic}?schema=public
     networks:
       - lengentic
     depends_on:
@@ -51,7 +51,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       STALE_RUN_THRESHOLD_MS: ${STALE_RUN_THRESHOLD_MS:-1800000}
       # Host is the service name inside the compose network, not localhost.
-      DATABASE_URL: postgresql://${POSTGRES_USER:-lengentic}:${POSTGRES_PASSWORD:-lengentic}@postgres:5432/${POSTGRES_DB:-lengentic}?schema=public
+      DATABASE_URL: *database-url
     ports:
       - '3001:3001'
     networks:

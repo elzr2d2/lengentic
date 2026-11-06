@@ -61,3 +61,18 @@ tool calls. Forcing it into the existing shape would mean filling `workflowName`
   platform half they run against.
 - Stale-run exclusion (§39) is not applied to tool calls: a failure streak is an attested fact
   about calls that happened, whatever state the run later reached.
+
+## Detection
+
+- **The two shapes collapsed into one.** `RepeatedFailedActionRecommendationSchema` and
+  `RecommendationSchema` are discriminated by `category`; the row mappers throw on a category
+  carrying the wrong column set, so a streak filled with fabricated gate values fails the
+  mapper specs rather than reaching the wire.
+- **The default read widened.** `GET /v1/recommendations` without `?category=` must return only
+  `DETERMINISTIC_CANDIDATE`; the E2E list parses (`e2e.integration.spec.ts`) fail if a
+  §20.2 row leaks into it.
+- **Counterexamples omitted.** `counterexamples` is required with no `.default` in the shared
+  schema, and E2E 3 asserts it is non-empty where a same-key success exists.
+- **A placeholder fingerprint.** A ToolCall without `inputFingerprint` must be dropped from
+  analysis; the analyzer's negative fixtures cover it, and E2E 4 reads the control cohort
+  silence end to end.

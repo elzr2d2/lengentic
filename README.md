@@ -187,7 +187,7 @@ pnpm playground:deterministic-decision
    | `candidate` | `demo-workflow`            | 36      | 9                 | `YES` 34, `NO` 2 |
    | `control`   | `batch-iteration-workflow` | 30      | 2                 | `YES` 29, `NO` 1 |
 
-   Re-running with the same seed records nothing new; the command says so.
+   Re-running with the same seed records nothing new; the command prints `note: no new data was recorded — this seed and scenario already exist in LenGentic`.
 
 3. **Runs list** — <http://localhost:3000/runs>. Many Runs, one per emitted sample.
 4. **Run detail** — open any Run. The page shows its execution timeline, Steps (as the tree
@@ -199,7 +199,8 @@ pnpm playground:deterministic-decision
    curl -fsS -X POST http://localhost:3001/v1/analysis/run     # the same call, without the UI
    ```
 
-6. **Decision History** — one row per decision group: samples, distinct contexts, the
+6. **Decision History** — one row per decision group that has a persisted recommendation (the
+   suppressed `control` group has none, so it does not appear here): samples, distinct contexts, the
    selected-option split, and the attested success rate. The `candidate` group is
    `demo-workflow`'s `YES`/`NO` decision.
 7. **The recommendation, counterexamples included** — the `candidate` group clears G1–G5 and
@@ -212,7 +213,7 @@ pnpm playground:deterministic-decision
 
    ```text
    Verdict: SUPPRESSED
-   Gates:   G2 context_diversity  (2 < 5)
+   Gates:   G2 context_diversity  FAIL  (2 >= 5)
    ```
 
    It has enough samples, a dominant option and a high attested success rate. It saw two

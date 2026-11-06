@@ -35,17 +35,21 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Workspace packages resolve each other through built `dist/`, which a clean checkout
+      # lacks: lint, typecheck and test all fail on it (TS2307 @lengentic/shared). Build first.
+      - name: Build workspace
+        run: pnpm build
+
       # Run every gate even when an earlier one fails. A run that stops at lint tells you
       # nothing about whether the tests pass, which turns one fix into two round trips.
-      - run: pnpm lint
+      - if: '!cancelled()'
+        run: pnpm lint
       - if: '!cancelled()'
         run: pnpm format:check
       - if: '!cancelled()'
         run: pnpm typecheck
       - if: '!cancelled()'
         run: pnpm test
-      - if: '!cancelled()'
-        run: pnpm build
 
       - name: Architectural boundaries
         if: '!cancelled()'
@@ -152,7 +156,8 @@ jobs:
           --reporter=verbose --reporter=junit
           --outputFile.junit=${{ github.workspace }}/test-reports/e2e.junit.xml
 
-      # A skipped or filtered-out flow reads as a green run, so assert all four are reported.
+      # A skipped or filtered-out flow reads as a green run, so assert all four are reported
+      # and that none of them is a skipped testcase.
       - name: Assert all four E2E flows were reported
         if: '!cancelled()'
         run: |
@@ -162,7 +167,11 @@ jobs:
               exit 1
             fi
           done
-          echo "E2E 1, E2E 2, E2E 3, E2E 4 present in report"
+          if grep -q "<skipped" test-reports/e2e.junit.xml; then
+            echo "::error::an E2E testcase was skipped in test-reports/e2e.junit.xml"
+            exit 1
+          fi
+          echo "E2E 1, E2E 2, E2E 3, E2E 4 present and none skipped"
 
       - name: Upload test reports
         if: '!cancelled()'
