@@ -1537,6 +1537,34 @@ ${verdictFile === null ? '' : readFileSync(verdictFile, 'utf8')}`,
   );
 
   await scenario(
+    52,
+    'a stale worker failure on a node the gate-time probe calls DONE does not block the gate',
+    () => {
+      const f = (id: string, node: string): BlockingFailure => ({
+        id,
+        kind: 'worker',
+        segment: '9',
+        node,
+        detail: 'REPAIR_REQUIRED',
+        evidence: [],
+        at: '2026-08-30T00:00:00Z',
+      });
+      const state = {
+        ...initialState(new Date('2026-08-30T00:00:00Z'), 'run-x'),
+        blockingFailures: [f('stale', 'p9.a'), f('other-node', 'p9.b')],
+      };
+      const blocking = failuresBlockingGate(state, '9', ['p9.a']).map((x) => x.id);
+      return (
+        expect(
+          !blocking.includes('stale'),
+          'a worker claim the fresh probe contradicts is stale',
+        ) ??
+        expect(blocking.includes('other-node'), 'a node the probe did not call DONE still blocks')
+      );
+    },
+  );
+
+  await scenario(
     39,
     'the one shelled command line quotes here, and refuses what quoting cannot contain',
     () => {
