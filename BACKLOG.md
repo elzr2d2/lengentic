@@ -4925,3 +4925,40 @@ seed actually used, never the one typed. Note for `p6.seed-repro`: the determini
 proves is about equal in-range seeds, so this divergence does not weaken it; do not widen that
 packet to cover this. **Trigger:** before Phase 7's `p7.docker-smoke`, which rehearses the §25
 demo from a clean clone and is where a wrapped seed would first mislead someone.
+
+### Adjacent playground seeds overlap almost entirely under server dedup
+
+**Source:** Validator, Phase 6 wave gate (segment 6), 2026-10-25 —
+`.artifacts/evidence/6/wave-gate/validator-final.md`, F3–F5.
+
+`deterministic-decision`'s `seedFor = (seed + index) | 0` makes seed 43 re-emit 65 of seed 42's 66
+per-run seeds, so two adjacent-seed runs posted to one API dedup on `(runId, eventId)` nearly to
+nothing (read from code, not run against a server). Related informational notes: the control
+cohort sits exactly at the G1 threshold (30 >= 30), so any threshold bump above 30 silently costs
+the "fails only G2" property; and commit 060f793 changes no tracked file (its evidence is
+gitignored), so "seed reproducibility verified" is checkable only from the validator re-run.
+**Do:** derive per-run seeds with a hash of `(seed, index)` rather than addition; keep the control's
+G1 margin above zero or assert it is deliberately zero. **Trigger:** before Phase 7's
+`p7.docker-smoke` posts more than one seed to the same API.
+
+## Discovered at the Phase 7 wave gate (segment 7, 2026-11-06)
+
+**Source:** Validator, `.artifacts/evidence/7/wave-gate/validator.md` (F1-F8) and the Phase 6 reviewer residuals carried in `.artifacts/backlog/pending.md`. None blocks the gate.
+
+### Phase 6 residuals (reviewer; open after f5730fc)
+
+- **ST-2 (MEDIUM):** migration drops NOT NULL on four group-key columns with no per-category CHECK; mapper guard half-checks. **Trigger:** next change to recommendations schema/migrations.
+- **ST-3 (LOW):** `MIN_CONSECUTIVE_FAILURES` (engine) and `REPEATED_FAILED_ACTION_MIN_ATTEMPTS` (shared) duplicate the §20.2 threshold; no equality test. **Trigger:** any change to the threshold.
+- **SC-2 (LOW):** vanished DISMISSED §20.2 row keeps frozen evidence; refresh tombstone or amend ADR 0016. **Trigger:** recommendation lifecycle work.
+- **SC-3 (LOW):** dashboard rendering of REPEATED_FAILED_ACTION recs; supersedes/closes the entries at "§20.2's analyzer is reachable by nothing the Playground emits" and the additive-seed half of "Adjacent playground seeds". **Trigger:** dashboard polish.
+
+### Phase 7 validator findings
+
+- **F1 (MEDIUM, plan):** no Phase 7 packet owns `docker/**` or `docker-compose.yml`; validation-found infra defects (e15ee41, 86bde9a) were fixed outside any `allowed_paths`. **Do:** give docker-smoke a repair path/allowed_paths for infra files. **Trigger:** next plan revision.
+- **F2 (MEDIUM, p7.ci-full):** CI never run on these commits (main 37 ahead of origin). **Do:** observe first real CI run; watch junit `--outputFile.junit` and `docker rm` on Linux. **Trigger:** first push.
+- **F3 (LOW, p7.e2e):** E2E 1 silence assertions can't flip (mutating `MIN_CONSECUTIVE_FAILURES` 3->1 leaves all green); E2E 4 doesn't assert `repeatedFailedActions` empty for batch-iteration cohort; `expect(counterexamples).toBeDefined()` is presence-only. **Trigger:** next E2E edit.
+- **F4 (LOW, p7.readme):** beat 8 shows `G2 context_diversity (2 < 5)`; UI renders `2 >= 5` FAIL. **Trigger:** next README edit.
+- **F5 (LOW, p7.readme):** beat 6 says Decision History is one row per decision group; it is one per persisted Recommendation, and the page is /recommendations. **Trigger:** next README edit.
+- **F6 (LOW, p7.docker-smoke):** rehearsal predates the README rewrite, was curl-level with `--build`; README commands and Analyze form not replayed in a browser. **Trigger:** before release/demo.
+- **F7 (INFO):** plan §25 illustrative numbers (48 samples, 95.7%) are stale vs the fixture (36 samples, 34/2, 93.8%); CI docker job only checks `/health`, so removing the `migrate` service would still pass. **Do:** add an ingest smoke to the docker CI job. **Trigger:** CI changes.
+- **F8 (INFO):** README L95 "never learns what would have happened" - reword to avoid "learns". **Trigger:** next README edit.
