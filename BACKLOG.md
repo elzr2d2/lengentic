@@ -4962,3 +4962,19 @@ G1 margin above zero or assert it is deliberately zero. **Trigger:** before Phas
 - **F6 (LOW, p7.docker-smoke):** rehearsal predates the README rewrite, was curl-level with `--build`; README commands and Analyze form not replayed in a browser. **Trigger:** before release/demo.
 - **F7 (INFO):** plan §25 illustrative numbers (48 samples, 95.7%) are stale vs the fixture (36 samples, 34/2, 93.8%); CI docker job only checks `/health`, so removing the `migrate` service would still pass. **Do:** add an ingest smoke to the docker CI job. **Trigger:** CI changes.
 - **F8 (INFO):** README L95 "never learns what would have happened" - reword to avoid "learns". **Trigger:** next README edit.
+
+## Phase 7 phase-gate findings (flushed)
+
+## E2E 1 silence is vacuous for analyzer reasons
+
+Phase 7 gate tester C2 (MEDIUM). `playground/cli/happy-path.ts` emits no Decision and no failed
+ToolCall, so E2E 1's silence assertion stays green under analyzer-threshold mutation. Fix: give the
+happy path a decision/successful tool call workload (outside `p7.e2e` allowed_paths), then assert
+`decision.count() > 0` before the silence check. Trigger: next Playground happy-path edit.
+
+## Record p7.docker-smoke ownership deviation
+
+Phase 7 reviewer SC4 (LOW). `p7.docker-smoke` is a Validator packet but edited `docker/**` and
+`docker-compose.yml` (e15ee41, 86bde9a); ownership was granted afterwards (71a65c7). The fixes
+repaired DONE `p1.docker-runtime` surface and were required by the rehearsal (TS2307 x51; 503
+"table public.Run does not exist"). Process record only.
