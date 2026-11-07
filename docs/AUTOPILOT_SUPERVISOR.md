@@ -35,14 +35,15 @@ pnpm check:autopilot                  # the supervisor's own scenarios (CI; not 
 
 Run bounds, all overridable per invocation:
 
-| Flag                   | Default | What it bounds                                            |
-| ---------------------- | ------- | --------------------------------------------------------- |
-| `--max-iterations <n>` | 200     | loop iterations before the supervisor returns             |
-| `--max-repairs <n>`    | 2       | repair attempts before trigger 5 fires — see below        |
-| `--charter <path>`     | none    | the decision record authorising a widened `--max-repairs` |
-| `--max-rotations <n>`  | 8       | rotations on one node before one repair attempt is spent  |
-| `--concurrency <n>`    | 3       | workers in flight when the lane decision says parallel    |
-| `--worker-timeout-min` | 90      | wall clock for one worker before it is killed             |
+| Flag                   | Default | What it bounds                                                          |
+| ---------------------- | ------- | ----------------------------------------------------------------------- |
+| `--max-iterations <n>` | 200     | loop iterations before the supervisor returns                           |
+| `--max-repairs <n>`    | 2       | repair attempts before trigger 5 fires — see below                      |
+| `--charter <path>`     | none    | the decision record authorising a widened `--max-repairs`               |
+| `--max-rotations <n>`  | 8       | rotations on one node before one repair attempt is spent                |
+| `--concurrency <n>`    | 3       | workers in flight when the lane decision says parallel                  |
+| `--worker-timeout-min` | 90      | wall clock for one worker before it is killed                           |
+| `--min-free-mb <n>`    | 2048    | free RAM before a launch; below it the run waits (doctor checks it too) |
 
 **An attempt and a strategy are the same unit.** `autopilot` §4: "an attempt is a materially
 different, evidence-driven strategy" — re-running a command is neither, and neither is the same
@@ -108,6 +109,14 @@ JSON file matching `.claude/rules/worker-outcome.schema.json`:
 | `ROTATE`          | out of context, or a clean boundary                          | launches a fresh worker on the same task                |
 | `BLOCKED`         | a `CLAUDE.md` trigger fired (`trigger` + `options` required) | stops and escalates                                     |
 | `FAILED`          | could not complete, could not classify                       | charges one repair attempt, relaunches                  |
+
+A `FAILED` worker that wrote **nothing** to stdout or stderr never started (Windows
+`0xC0000142` under memory pressure, or a spawn error). That is `WorkerResult.infra`: the
+supervisor journals `INFRA_RETRY`, waits (30s, 2m, 5m) and relaunches, charging **no** repair
+attempt. Past the waits it escalates with an `infra:` reason. Before every launch it also checks
+free RAM against `--min-free-mb`; below it, it journals `WAITING_RESOURCES` and waits (1, 2, 5,
+10 min) before escalating the same way. Live regression: run `39783b92` spent `env.docker`'s
+whole repair bound in 7 seconds on three spawn failures.
 
 The derivation is asymmetric on purpose:
 
@@ -216,16 +225,18 @@ This is not a scheduler. Same machine, same filesystem, cooperating processes.
 
 ## 7. Failure modes and what recovers them
 
-| Failure                        | Recovery                                                         |
-| ------------------------------ | ---------------------------------------------------------------- |
-| worker exits mid-node          | classified FAILED, relaunched; lease released in `finally`       |
-| worker hangs                   | killed at `--worker-timeout-min`, classified FAILED, relaunched  |
-| worker runs out of context     | writes ROTATE + a continuation brief; a fresh worker continues   |
-| worker dies holding a lease    | reaped on the next iteration once its pid is proven gone         |
-| supervisor exits               | `pnpm autopilot` again: same run id, same counters, from disk    |
-| supervisor is killed mid-write | writes are temp-file + rename; a partial file is never observed  |
-| two supervisors race a write   | the stale write is refused (`StaleStateError`), never clobbered  |
-| state.json is corrupt          | a hard error — silently restarting would reset the repair bounds |
+| Failure                         | Recovery                                                              |
+| ------------------------------- | --------------------------------------------------------------------- |
+| worker exits mid-node           | classified FAILED, relaunched; lease released in `finally`            |
+| worker never starts (no output) | classified infra, retried with backoff, no repair charged             |
+| machine low on memory           | `WAITING_RESOURCES` before launch; escalates as infra if it stays low |
+| worker hangs                    | killed at `--worker-timeout-min`, classified FAILED, relaunched       |
+| worker runs out of context      | writes ROTATE + a continuation brief; a fresh worker continues        |
+| worker dies holding a lease     | reaped on the next iteration once its pid is proven gone              |
+| supervisor exits                | `pnpm autopilot` again: same run id, same counters, from disk         |
+| supervisor is killed mid-write  | writes are temp-file + rename; a partial file is never observed       |
+| two supervisors race a write    | the stale write is refused (`StaleStateError`), never clobbered       |
+| state.json is corrupt           | a hard error — silently restarting would reset the repair bounds      |
 
 `pnpm autopilot doctor` checks the preconditions before a run: the CLI is present, the schema is
 wired, `flow` derives a non-ERROR action, state is readable, no lease is held by a dead pid.

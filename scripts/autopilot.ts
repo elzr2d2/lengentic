@@ -24,6 +24,7 @@
 
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { freemem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,6 +54,7 @@ import {
 import {
   DEFAULT_OPTIONS,
   defaultDeps,
+  memoryCheck,
   supervise,
   shellRunner,
   type SuperviseOptions,
@@ -119,6 +121,7 @@ function optionsFrom(argv: string[]): SuperviseOptions {
     concurrency: num(argv, 'concurrency', DEFAULT_OPTIONS.concurrency),
     workerTimeoutMs:
       num(argv, 'worker-timeout-min', DEFAULT_OPTIONS.workerTimeoutMs / 60_000) * 60_000,
+    minFreeMemoryMb: num(argv, 'min-free-mb', DEFAULT_OPTIONS.minFreeMemoryMb),
     dryRun: has(argv, 'dry-run'),
   };
 }
@@ -349,6 +352,18 @@ async function doctor(): Promise<number> {
         : `${String(dirty.length)} uncommitted change(s) — a worker will commit on top of them`,
   });
 
+  const mem = memoryCheck(
+    freemem(),
+    num(process.argv.slice(2), 'min-free-mb', DEFAULT_OPTIONS.minFreeMemoryMb),
+  );
+  checks.push({
+    name: 'free memory',
+    ok: mem.ok,
+    detail: mem.ok
+      ? mem.detail
+      : `${mem.detail} — a run will wait for room before each launch; close sessions or apps`,
+  });
+
   console.log('\nautopilot doctor\n');
   for (const c of checks) {
     console.log(`  ${c.ok ? 'OK  ' : 'FAIL'}  ${c.name.padEnd(24)} ${c.detail}`);
@@ -379,6 +394,8 @@ options for a run:
   --max-rotations <n>          rotations on one node before one repair is spent (default ${String(DEFAULT_OPTIONS.maxRotations)})
   --concurrency <n>            workers when the lane decision says parallel (default ${String(DEFAULT_OPTIONS.concurrency)})
   --worker-timeout-min <n>     hard kill for one worker (default ${String(DEFAULT_OPTIONS.workerTimeoutMs / 60_000)})
+  --min-free-mb <n>            free RAM needed before a worker launches; below it the run waits,
+                               then escalates as infra (default ${String(DEFAULT_OPTIONS.minFreeMemoryMb)}). Also read by doctor.
 `;
 
 async function main(): Promise<void> {

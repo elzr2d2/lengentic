@@ -24,6 +24,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { freemem } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import type { FlowAction } from '../flow.ts';
@@ -106,7 +107,20 @@ export interface SuperviseOptions {
    * Infra retries never spend a repair attempt.
    */
   infraBackoffMs: number[];
+  /** Free RAM a worker launch needs. Below it the supervisor waits instead of launching. */
+  minFreeMemoryMb: number;
+  /** Waits while memory is below the floor. Past them the run escalates as infra. */
+  resourceWaitMs: number[];
   dryRun: boolean;
+}
+
+/** One rule for the supervisor and `pnpm autopilot doctor`: is there room to start a worker? */
+export function memoryCheck(freeBytes: number, minFreeMb: number): { ok: boolean; detail: string } {
+  const freeMb = Math.floor(freeBytes / (1024 * 1024));
+  return {
+    ok: freeMb >= minFreeMb,
+    detail: `${String(freeMb)} MB free (floor ${String(minFreeMb)} MB)`,
+  };
 }
 
 export const DEFAULT_OPTIONS: Omit<SuperviseOptions, 'root' | 'stateDir'> = {
@@ -119,6 +133,8 @@ export const DEFAULT_OPTIONS: Omit<SuperviseOptions, 'root' | 'stateDir'> = {
   leaseTtlMs: DEFAULT_LEASE_TTL_MS,
   noProgressLimit: 6,
   infraBackoffMs: [30_000, 120_000, 300_000],
+  minFreeMemoryMb: 2048,
+  resourceWaitMs: [60_000, 120_000, 300_000, 600_000],
   dryRun: false,
 };
 
@@ -142,6 +158,8 @@ export interface SuperviseDeps {
   runCommand: (command: string, cwd: string) => CommandResult;
   /** Default: `runWorker`. Injected so process-boundary scenarios cost nothing. */
   launchWorker: (spec: WorkerSpec) => Promise<WorkerResult>;
+  /** Default: `os.freemem()`. Injected so the low-memory scenarios are deterministic. */
+  freeMemoryBytes?: () => number;
   log: (line: string) => void;
 }
 
@@ -484,6 +502,32 @@ async function dispatchWorker(
     evidence: [relativeToRoot(ctx.opts.root, join(sessionDir, 'brief.md'))],
   });
   ctx.deps.log(`  -> worker ${workerId} (${task}${node ? ` ${node}` : ''}) session ${sessionId}`);
+
+  // Launching into a machine with no room is how 0xC0000142 happens. Wait for room first.
+  const freeMemory = ctx.deps.freeMemoryBytes ?? freemem;
+  for (let wait = 0; ; wait += 1) {
+    const mem = memoryCheck(freeMemory(), ctx.opts.minFreeMemoryMb);
+    if (mem.ok) break;
+    const waitMs = ctx.opts.resourceWaitMs[wait];
+    if (waitMs === undefined) {
+      if (node !== null) setNode(ctx, node, { status: 'READY' });
+      throw new InfraUnavailable(
+        segment,
+        node,
+        [],
+        `infra: not enough free memory to start a worker after ${String(wait)} waits — ${mem.detail}`,
+      );
+    }
+    journal(ctx, 'READY -> WAITING_RESOURCES', {
+      action: action.action,
+      segment,
+      node,
+      detail: `${mem.detail}; wait ${String(wait + 1)} of ${String(ctx.opts.resourceWaitMs.length)} for ${String(waitMs)}ms`,
+      evidence: [],
+    });
+    ctx.deps.log(`  .. waiting for memory: ${mem.detail}`);
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
 
   let result = await ctx.deps.launchWorker(spec);
 

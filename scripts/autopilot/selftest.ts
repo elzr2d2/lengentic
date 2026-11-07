@@ -85,6 +85,7 @@ import {
   checkDodArtifact,
   checkEvidencePaths,
   DEFAULT_OPTIONS,
+  memoryCheck,
   renderEscalation,
   supervise,
   updateCheckpointSegment,
@@ -196,6 +197,8 @@ function world(plan: Plan, over: Partial<SuperviseOptions> = {}): World {
       repair: standingPolicy(),
       maxRotations: 3,
       workerTimeoutMs: 30_000,
+      // Scenarios must not depend on the host's RAM; 55 and 56 set the floor explicitly.
+      minFreeMemoryMb: 0,
       ...over,
     },
     deps: (actions, overDeps = {}) => {
@@ -1770,6 +1773,75 @@ ${verdictFile === null ? '' : readFileSync(verdictFile, 'utf8')}`,
         expect(
           (r.escalation?.reason ?? '').includes('infra'),
           `the escalation must name infra; got ${r.escalation?.reason ?? 'none'}`,
+        )
+      );
+    },
+  );
+
+  await scenario(54, 'the memory check passes only at or above the floor', () => {
+    const MB = 1024 * 1024;
+    const low = memoryCheck(1200 * MB, 2048);
+    const high = memoryCheck(4096 * MB, 2048);
+    return (
+      expect(!low.ok, 'below the floor must fail') ??
+      expect(low.detail.includes('1200'), `detail must name free MB; got ${low.detail}`) ??
+      expect(high.ok, 'above the floor must pass') ??
+      expect(memoryCheck(2048 * MB, 2048).ok, 'exactly the floor passes')
+    );
+  });
+
+  await scenario(
+    55,
+    'low memory before a launch is WAITING_RESOURCES, then the launch proceeds',
+    async () => {
+      const MB = 1024 * 1024;
+      const readings = [500 * MB, 500 * MB, 4096 * MB];
+      const w = world(
+        { steps: { 'dispatch:p9.a': ['DONE'] } },
+        { minFreeMemoryMb: 2048, resourceWaitMs: [0, 0, 0] },
+      );
+      const r = await supervise(
+        w.options,
+        w.deps((i) => (i < 1 ? dispatchAction('p9.a') : COMPLETE), {
+          freeMemoryBytes: () => readings.shift() ?? 4096 * MB,
+        }),
+        SCHEMA,
+      );
+      const journalText = readFileSync(join(w.stateDir, 'journal.jsonl'), 'utf8');
+      return (
+        expect(r.status === 'COMPLETE', `expected COMPLETE; got ${r.status}`) ??
+        expect(journalText.includes('WAITING_RESOURCES'), 'the wait must be journalled') ??
+        expect(w.launches().length === 1, `expected 1 launch; got ${String(w.launches().length)}`)
+      );
+    },
+  );
+
+  await scenario(
+    56,
+    'memory that never recovers escalates as infra without launching anything',
+    async () => {
+      const w = world(
+        { steps: { 'dispatch:p9.a': ['DONE'] } },
+        { minFreeMemoryMb: 2048, resourceWaitMs: [0, 0] },
+      );
+      const r = await supervise(
+        w.options,
+        w.deps((i) => (i < 1 ? dispatchAction('p9.a') : COMPLETE), {
+          freeMemoryBytes: () => 300 * 1024 * 1024,
+        }),
+        SCHEMA,
+      );
+      const spent = Object.values(r.state.repairAttempts).reduce((a, b) => a + b, 0);
+      return (
+        expect(r.status === 'ESCALATED', `expected ESCALATED; got ${r.status}`) ??
+        expect(
+          w.launches().length === 0,
+          `expected no launch; got ${String(w.launches().length)}`,
+        ) ??
+        expect(spent === 0, `low memory must not spend repairs; spent ${String(spent)}`) ??
+        expect(
+          (r.escalation?.reason ?? '').includes('memory'),
+          `the escalation must name memory; got ${r.escalation?.reason ?? 'none'}`,
         )
       );
     },
