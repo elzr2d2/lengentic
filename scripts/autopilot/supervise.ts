@@ -100,6 +100,12 @@ export interface SuperviseOptions {
   leaseTtlMs: number;
   /** Repeats of an identical derived action before the run is declared stuck. */
   noProgressLimit: number;
+  /**
+   * Waits before each relaunch of a worker that never started (`WorkerResult.infra`). Its
+   * length is the retry budget; past it the run escalates naming the machine, not the node.
+   * Infra retries never spend a repair attempt.
+   */
+  infraBackoffMs: number[];
   dryRun: boolean;
 }
 
@@ -112,8 +118,21 @@ export const DEFAULT_OPTIONS: Omit<SuperviseOptions, 'root' | 'stateDir'> = {
   workerTimeoutMs: 90 * 60_000,
   leaseTtlMs: DEFAULT_LEASE_TTL_MS,
   noProgressLimit: 6,
+  infraBackoffMs: [30_000, 120_000, 300_000],
   dryRun: false,
 };
+
+/** Thrown out of `dispatchWorker` when a worker still cannot start after every infra retry. */
+class InfraUnavailable extends Error {
+  constructor(
+    readonly segment: string | null,
+    readonly node: string | null,
+    readonly evidence: string[],
+    readonly why: string,
+  ) {
+    super(why);
+  }
+}
 
 export interface SuperviseDeps {
   now: () => Date;
@@ -466,7 +485,32 @@ async function dispatchWorker(
   });
   ctx.deps.log(`  -> worker ${workerId} (${task}${node ? ` ${node}` : ''}) session ${sessionId}`);
 
-  const result = await ctx.deps.launchWorker(spec);
+  let result = await ctx.deps.launchWorker(spec);
+
+  // A worker that never started is the machine's failure. Wait and relaunch the same spec;
+  // the node's repair budget and rotation count are untouched.
+  for (let retry = 0; result.infra; retry += 1) {
+    const waitMs = ctx.opts.infraBackoffMs[retry];
+    const evidence = [relativeToRoot(ctx.opts.root, result.stdoutPath)];
+    if (waitMs === undefined) {
+      throw new InfraUnavailable(
+        segment,
+        node,
+        evidence,
+        `infra: worker could not start after ${String(retry)} retries — ${result.derivedFrom}`,
+      );
+    }
+    journal(ctx, 'RUNNING -> INFRA_RETRY', {
+      action: action.action,
+      segment,
+      node,
+      detail: `${result.derivedFrom}; retry ${String(retry + 1)} of ${String(ctx.opts.infraBackoffMs.length)} in ${String(waitMs)}ms`,
+      evidence,
+    });
+    ctx.deps.log(`  !! infra: worker never started; retrying in ${String(waitMs)}ms`);
+    await new Promise((r) => setTimeout(r, waitMs));
+    result = await ctx.deps.launchWorker(spec);
+  }
 
   if (node !== null) {
     setNode(ctx, node, {
@@ -1231,7 +1275,27 @@ export async function supervise(
       };
     }
 
-    const outcome = await step(ctx, action);
+    let outcome: StepResult;
+    try {
+      outcome = await step(ctx, action);
+    } catch (e: unknown) {
+      if (!(e instanceof InfraUnavailable)) throw e;
+      if (e.node !== null) setNode(ctx, e.node, { status: 'READY' });
+      outcome = {
+        terminal: 'ESCALATED',
+        escalation: escalate(ctx, {
+          trigger: TRIGGER.noProgress,
+          segment: e.segment,
+          node: e.node,
+          reason: e.why,
+          options: [
+            'free memory / restore the machine (check free RAM, close sessions, Docker health), then `pnpm autopilot resume`',
+            'run `pnpm autopilot doctor` to confirm a worker can start at all',
+          ],
+          evidence: e.evidence,
+        }),
+      };
+    }
     if (outcome.terminal !== null) {
       return {
         status: outcome.terminal,

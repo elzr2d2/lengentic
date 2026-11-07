@@ -1718,6 +1718,63 @@ ${verdictFile === null ? '' : readFileSync(verdictFile, 'utf8')}`,
     },
   );
 
+  await scenario(
+    52,
+    'an infra failure is retried with backoff and never spends a repair attempt',
+    async () => {
+      const w = world(
+        { steps: { 'dispatch:p9.a': ['SPAWN_FAIL', 'SPAWN_FAIL', 'DONE'] } },
+        { infraBackoffMs: [0, 0, 0] },
+      );
+      const r = await supervise(
+        w.options,
+        w.deps((i) => (i < 1 ? dispatchAction('p9.a') : COMPLETE)),
+        SCHEMA,
+      );
+      const journalText = readFileSync(join(w.stateDir, 'journal.jsonl'), 'utf8');
+      const spent = Object.values(r.state.repairAttempts).reduce((a, b) => a + b, 0);
+      return (
+        expect(r.status === 'COMPLETE', `expected COMPLETE; got ${r.status}`) ??
+        expect(
+          w.launches().length === 3,
+          `expected 3 launches; got ${String(w.launches().length)}`,
+        ) ??
+        expect(spent === 0, `infra must not spend repairs; spent ${String(spent)}`) ??
+        expect(journalText.includes('INFRA_RETRY'), 'each infra retry must be journalled') ??
+        expect(r.escalation === null, 'a recovered infra failure must not reach a human')
+      );
+    },
+  );
+
+  await scenario(
+    53,
+    'infra failures past the retry budget escalate naming the machine, not the node',
+    async () => {
+      const w = world(
+        { steps: { 'dispatch:p9.a': ['SPAWN_FAIL'] } },
+        { infraBackoffMs: [0, 0, 0] },
+      );
+      const r = await supervise(
+        w.options,
+        w.deps((i) => (i < 4 ? dispatchAction('p9.a') : COMPLETE)),
+        SCHEMA,
+      );
+      const spent = Object.values(r.state.repairAttempts).reduce((a, b) => a + b, 0);
+      return (
+        expect(r.status === 'ESCALATED', `expected ESCALATED; got ${r.status}`) ??
+        expect(
+          w.launches().length === 4,
+          `1 launch + 3 retries; got ${String(w.launches().length)}`,
+        ) ??
+        expect(spent === 0, `infra must not spend repairs; spent ${String(spent)}`) ??
+        expect(
+          (r.escalation?.reason ?? '').includes('infra'),
+          `the escalation must name infra; got ${r.escalation?.reason ?? 'none'}`,
+        )
+      );
+    },
+  );
+
   return report();
 }
 
