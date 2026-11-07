@@ -5093,3 +5093,21 @@ husky secret probe matches a comment.
 §7/debt table say pre-commit runs `gates:full` (now a staged ladder; `gates:full` at phase gate + CI;
 see also the `gates:full` cost entry above). §10 handoff fields vs current `handoff.schema.json`
 (`additionalProperties:false`). CLAUDE.md agrees with code; plan needs a record correction.
+
+## Flushed at the segment 1 (Phase 1) wave gate, p1.docker-runtime (2026-11-07)
+
+Source: `.artifacts/evidence/1/wave-gate/validation-3.md` (validator, verdict GREEN).
+
+### T5 deep sweep cannot tell the depth guard from the per-event catch backstop [p2.ingest-endpoint]
+
+**Source:** validator V3-F1 (mutation: guard blinded at >=3500 survives). **Trigger:** next edit to
+`platform/api/test/telemetry.integration.spec.ts` T5 or the ingest depth guard. On Node 26, depths
+
+> =~3500 are REJECTED/INVALID_PAYLOAD by the try/catch backstop (`telemetry.service.ts` ~578, "event could
+> not be validated") whether or not the guard runs; only 1500–3000 discriminate. Assert `error.message`
+> contains `nests more than`.
+
+### Node 22 / 24 not exercised though engines allow `>=22.13` [plan]
+
+**Source:** validator V3-F3. **Trigger:** next CI matrix edit or Node-version-sensitive fix (cf. 13081c1).
+Only Node 26.13 ran locally; add a CI matrix leg for the engines floor.
