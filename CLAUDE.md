@@ -1,385 +1,71 @@
 # CLAUDE.md
 
-Project rules for LenGentic. These bind every agent and every session.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Language
-
-`CONTEXT.md` is the project's shared language — `attested`, `counterexample`, `contextKey`,
-group key, seam, work packet, wave, green that lies. A term used loosely here becomes a
-wrong column later.
-
-Read it when you will **name** something (code, test, finding, ticket) or **judge** whether
-something is correct. Skip it when you are only executing a command and reporting what
-came back; the vocabulary changes nothing there.
-
-Two neighbours, neither loaded by default. `docs/decisions/` holds a settled trade-off that
-blocks nothing — read one when a shape surprises you, write one only when all three
-exclusion tests in its README fail. `docs/research/` holds external facts that expire —
-check `review-by` before citing, and never cite a stale note as-is.
-
-## Retrieval
-
-`MVP_PLAN_V3.md` is ~24k tokens and `BACKLOG.md` another ~16k. Reading either one whole to
-answer one question spends most of a context window on text nobody asked for.
-
-`pnpm kb search <words>` ranks every section of every document and returns `file:line`
-citations. `pnpm kb show §19` prints that one section verbatim. `pnpm kb term contextKey`
-returns the `CONTEXT.md` definition plus every place the word is really used. `pnpm kb map`
-says what a full read would cost before you commit to one.
-
-Search before Read whenever the target is prose. Read the whole file when you will edit it.
-Code stays grep's job — the index is `.md` only.
-
-Retrieval confers no authority. `MVP_PLAN.md` (v2) and `docs/superpowers/specs/**` are tagged
-`[HISTORICAL]` and excluded unless `--all`; a note past its `review-by` is tagged `[STALE]`
-and demoted. A tagged hit is a pointer to what someone wrote once, never a citation.
-
-## Plan discipline
-
-Follow `MVP_PLAN_V3.md`. It is the single executable plan.
-
-`MVP_PLAN.md` (v2) and
-`docs/superpowers/specs/2026-08-14-lengentic-mvp-corrections-design.md` are **historical**.
-v3 absorbed the corrections document and retired it, so there is no longer a second document
-that wins on conflict. Section numbers differ between v2 and v3 — a comment citing a section
-may be citing v2.
-
-Work on one phase at a time.
-
-Once the human approves a session objective, the main session advances through already-approved
-phases on evidence. Routine steps — task execution, agent handoffs, implementation, tests,
-fixes, reviews, commits, and the transition into an already-approved phase — do not need
-permission. Decide from `CLAUDE.md`, `CONTEXT.md`, `MVP_PLAN_V3.md`, `docs/decisions/`, and
-prior evidence; document the assumption; continue. Prefer the reversible option under
-uncertainty.
-
-A phase boundary is a **validation gate, not an approval gate**. GREEN advances. RED enters
-bounded recovery. Only the six triggers below reach the human.
-
-**Escalation triggers — stop and ask, no exceptions:**
-
-1. The action is destructive or hard to reverse.
-2. It materially changes approved product scope or architecture.
-3. A high-impact decision where no preference can be safely inferred from project rules, ADRs,
-   prior decisions, or the approved plan.
-4. Credentials, external cost, production systems, security, privacy, or legal/compliance are
-   involved.
-5. A required gate fails and two materially different, evidence-driven recovery attempts have
-   both failed.
-6. Requirements genuinely conflict and choosing one would invalidate another.
-
-Triggers are checked **before** each dispatch and each phase advance, not only after a failure.
-"Shall I continue?" is not one of them. The `autopilot` skill is this rule made procedural.
-
-Do not redesign the approved MVP while implementing it.
-
-Anything valuable but unnecessary for the current phase goes into `BACKLOG.md`.
-
-Prefer the simplest solution satisfying the current Definition of Done.
-
-Every completed phase must leave the repository runnable.
-
-## Architecture
-
-Platform and Playground must remain independent.
-
-Platform must never import Playground code.
-
-`playground/**` may import `platform/telemetry-sdk` through its public entry only. Never
-`platform/api/**` or `platform/analysis-engine/**`.
-
-`platform/telemetry-sdk` may import `platform/shared` and nothing else from the platform.
-The SDK is the public artifact; a transitive Prisma dependency would make every consumer
-install a database client to emit telemetry.
-
-`.claude/` is engineering infrastructure only.
-
-Engineering Agents must never become runtime dependencies. LenGentic must run correctly if
-`.claude/` is deleted, and the Platform must run correctly if the entire Playground is
-deleted.
-
-## Types
-
-`platform/shared/schema/**` holds Zod schemas and is the **only** wire contract. The SDK
-and the API both import it; types are derived with `z.infer`.
-
-Prisma types are database-internal and never cross a module boundary. No Prisma model is
-ever returned from a controller. Map explicitly at the persistence edge.
-
-Both rules are now mechanical: `no-prisma-in-the-wire-contract` in dependency-cruiser, and
-a `no-restricted-imports` block for the generated client, which the cruiser cannot see.
-
-## Standards
-
-`docs/ENGINEERING_STANDARDS.md` is the standards SSOT — how code here is written, rule by
-rule, each one carrying the command that enforces it or the role that owns the judgement
-and why no command can. It is not loaded by default; read it when you are about to write
-code, or when you want to know whether a rule is mechanical before spending review on it.
-
-Nothing in it is restated here or in an agent prompt. If you find the same rule in two
-places, one of them is wrong and the other is `docs/ENGINEERING_STANDARDS.md`.
-
-## Verification
-
-Mechanical checks are tooling, not agents. Never ask an agent to verify something a script
-can verify.
-
-Forbidden imports and architectural boundaries are `pnpm check:boundaries`. Reviewer does
-not check them.
-
-Validation agents report evidence instead of silently repairing implementation.
-
-Validation agents return findings as JSON matching `.claude/rules/handoff.schema.json`.
-
-A development lane reports its own work with `.claude/rules/lane-handoff.schema.json`, which
-is a different contract: a finding is about someone else's work, a lane handoff is about the
-lane's own. `DONE` requires a commit, changed files inside the lane's declared paths, and no
-unverified acceptance criteria. Deferred, skipped and unknown are all unverified.
-`changed_files` may be omitted — the checker derives it from the commit; when present it is
-verified against the commit.
-
-`DONE` is a claim about evidence, not about a green exit code. Every acceptance criterion
-carries its own expected, actual and result, and a command that did not exercise a criterion
-is not evidence for it. The `report-handoff` skill is how a handoff is written; the checks
-`pnpm lanes handoff` enforces are listed there.
-
-Structured log records are a fourth evidence source alongside tests, commands and read-back,
-cited by `eventId`. A log never authorizes its own success. The `structured-logging` skill is
-the contract for emitting them and for citing them.
-
-## Dispatch
-
-Sequential execution is the default. Parallel is an exception a batch earns against the
-fifteen requirements in `pnpm lanes decide`, and unknown counts as false.
-
-Never dispatch by judgement. `pnpm flow next` is the entry point — it returns the one next
-action. When that action is DISPATCH, run `pnpm lanes wave <phase>` and follow the
-`execution_decision`. The `dispatch-lanes` skill is the procedure.
-
-A lane writes only inside its `allowed_paths`. Widening its own boundary is never the answer;
-`BLOCKED` naming the path is.
-
-Integration is sequential, in dependency order, whatever the dispatch mode was. Worktrees and
-branches are never deleted automatically.
-
-`pnpm autopilot` runs that whole loop unattended across sessions: it derives from `pnpm flow
-next`, launches one disposable Claude worker per action, and owns progression itself — a worker
-reports what it did, the supervisor re-asks the repository whether anything changed. Sessions
-become disposable; no `/clear`, no manual resume. Mechanism: `docs/AUTOPILOT_SUPERVISOR.md`.
-Why: `docs/decisions/0012-session-supervisor-owns-progression.md`. The manual procedure in the
-`autopilot` skill is unchanged and is the debugging path.
-
-It **fails closed** (`docs/decisions/0013`). Workers run under `--permission-mode auto` plus the
-deterministic deny floor in `.claude/autopilot-permissions.json`, which outranks both the allow
-list and the classifier, so triggers 1 and 4 stay enforceable instead of depending on a worker
-to self-report. `bypassPermissions` needs an exact environment opt-in and is recorded when used.
-A `--max-repairs` above the standing two must name the record authorising it — an attempt IS a
-strategy, so raising the count raises the escalation bar.
-
-Who runs, and when, is `.claude/rules/agent-activation.json`. Agents are conditional tools,
-not a mandatory pipeline. Do not run Architect, Validator and Reviewer after every minor edit.
-
-## Product claims
-
-Recommendations are hypotheses with counterevidence, never assertions.
-
-Say "attested success rate", never "measured success rate". The caller asserts the outcome;
-LenGentic has no independent way to verify it.
-
-LenGentic observes chosen options and attested outcomes. It does not observe
-counterfactuals. It may never claim a decision "does not require an LLM".
-
-Every deterministic recommendation carries a `counterexamples` field. The field may be
-empty; it is never omitted.
-
-When implementing analyzers, write the negative fixtures before the positive path. False
-positives are the failure mode that kills a recommendations product.
+LenGentic: agent observability and decision-intelligence platform (`Observe → Store → Analyze → Recommend`). pnpm monorepo, TypeScript, Node ≥22.13, pnpm ≥10, Postgres via Docker.
 
 ## Commands
 
 ```bash
-pnpm gates              # lint, format, typecheck, test, build, boundaries
-pnpm gates:full         # gates + check:isolation (slow; phase gate and CI only)
-pnpm check:boundaries   # dependency-cruiser
-pnpm check:isolation    # builds the platform with playground/ deleted
-pnpm spike              # Phase 0 thesis spike (kept for the MVP; `MVP_PLAN_V3.md:1459`)
+pnpm gates              # lint, format:check, typecheck, test, build, boundaries, integrity
+pnpm gates:full         # gates + check:isolation (slow; phase gate and CI)
+pnpm lint | format:check | typecheck | test | build
+pnpm check:boundaries   # dependency-cruiser (.dependency-cruiser.cjs)
+pnpm check:isolation    # builds platform with playground/ deleted
 pnpm check:integrity    # QA-integrity scan: false green, focused tests, hidden skips
-pnpm --filter @lengentic/api test <substring>   # one test file, by path substring (vitest)
-pnpm oracle waves       # dependency fan-out; which packets can run in parallel now
-pnpm oracle packet <id> # the sliced brief for one work packet
-pnpm flow next          # the one next action, as JSON: DISPATCH | WAVE_GATE | INTEGRATE |
-                        #   REPAIR | PHASE_GATE | ADVANCE_PHASE | BLOCKED | COMPLETE
-pnpm flow record <t>    # write the wave/phase gate record `flow next` reads (needs evidence)
-pnpm autopilot          # run that loop unattended across sessions; --dry-run plans only
-                        #   status | doctor | stop | resume --note "<decision>"
-pnpm lanes wave <n>     # sequential-vs-parallel decision for the next wave of a phase
-pnpm lanes check <id>   # pre-commit lane gate: did the lane stay inside its paths
-pnpm lanes handoff <f>  # is this handoff real: schema, commit, ownership, evidence
-pnpm lanes integrate    # pre-integration gate + ordered integration plan
-pnpm check:lanes        # the dispatch rules' own scenarios (CI; not in `pnpm gates`)
-pnpm check:flow         # the control plane's own scenarios (CI; not in `pnpm gates`)
-pnpm kb search <words>  # rank every document section; returns file:line citations
-pnpm kb show <target>   # one section verbatim — §19 | phase 5 | FILE.md#heading | heading
-pnpm kb term <name>     # CONTEXT.md definition + where the word is really used
-pnpm kb stale           # notes past review-by; generated files behind their source
-pnpm check:kb           # the retriever's own scenarios (CI; not in `pnpm gates`)
-pnpm check:autopilot    # the supervisor's own scenarios (CI; not in `pnpm gates`)
-pnpm check:probes       # probe hygiene: can a node report DONE on another node's work
-pnpm hash:5a <label>    # hash the 5a files an analyzer packet must not change
-                        #   …--compare <earlier-label> fails naming every drifted path
+pnpm --filter @lengentic/api test <substring>   # one vitest file, by path substring
+pnpm spike              # Phase 0 thesis spike; no Docker/DB/network
+pnpm playground:happy-path | playground:repeated-failure | playground:deterministic-decision
+docker compose up -d --wait   # dashboard :3000, api :3001/health, postgres :5432
+pnpm db:migrate | db:reset | db:seed
 ```
 
-`check:lanes`, `check:flow`, `check:kb`, `check:autopilot` and `check:probes` are out of `pnpm gates` on
-purpose: they read
-`.claude/`, the documents and `scripts/oracle/graph.json`, and `pnpm gates` must keep working
-with the engineering harness deleted.
+`typecheck` and `test` build `@lengentic/database` first (generated Prisma client).
 
-**The oracle must not lie.** A probe records what is on disk and the oracle turns that into
-`DONE`, so a probe another node's deliverable can satisfy is a packet that reports finished
-before it starts — and it reads exactly like work that is done. One rule, enforced by
-`pnpm check:probes`: a probe may only look inside the surface its own node owns. It is not
-theoretical; it had already eaten both wave-3 analyzer packets and would have eaten most of
-Phase 3. Proof: `.artifacts/evidence/5a/oracle-lint-proof.md`.
+Engineering-harness commands (read `.claude/`, plan docs, `scripts/oracle/graph.json`):
 
-## Agents
+```bash
+pnpm flow next          # the one next action as JSON: DISPATCH | WAVE_GATE | INTEGRATE | REPAIR | PHASE_GATE | ADVANCE_PHASE | BLOCKED | COMPLETE
+pnpm lanes wave <n>     # sequential-vs-parallel decision (plain phase number: `5`, not `5a`)
+pnpm lanes check <id> | handoff <f> | integrate
+pnpm oracle status | waves | packet <id>
+pnpm autopilot          # unattended supervisor loop (--dry-run, status, doctor, stop, resume)
+pnpm kb search <words> | show <§19|phase 5|FILE.md#heading> | term <name> | stale
+pnpm check:lanes | check:flow | check:kb | check:autopilot | check:probes   # harness selftests; deliberately outside `pnpm gates`
+```
 
-The main session is the **Coordinator**. There is no coordinator agent.
+## Architecture
 
-Roles live in `.claude/agents/`; each file states its own posture and boundary. The
-delivery loop and escalation triggers are `MVP_PLAN_V3.md` §9 and `docs/PARALLEL_EXECUTION.md`.
+- `platform/` — `shared` (Zod schemas = the only wire contract), `telemetry-sdk` (public artifact), `api`, `analysis-engine`, `database` (Prisma), `dashboard`.
+- `playground/` — simulated agents/scenarios that emit telemetry through the SDK; the platform must run with it deleted.
+- `spike/` — Phase 0 thesis spike, kept on purpose as the record of where it disagrees with the corrected grid.
+- `.claude/`, `scripts/` — engineering harness (agents, skills, rules, oracle/flow/lanes/autopilot). Never a runtime dependency; the product must run with `.claude/` deleted.
 
-No subagent is told "read the plan." It gets a work packet — `pnpm oracle packet <id>`.
+Boundary rules (enforced by `pnpm check:boundaries`):
 
-Run the deterministic gates before dispatching any validation agent. They cost nothing and
-catch a large share of what an agent would otherwise spend tokens discovering.
+- Platform never imports Playground. Playground imports `platform/telemetry-sdk` via its public entry only (never `api/**` or `analysis-engine/**`).
+- `telemetry-sdk` may import `platform/shared` only (no transitive Prisma).
+- Types derive from Zod via `z.infer`. Prisma types never cross a module boundary; map explicitly at the persistence edge, never return a Prisma model from a controller.
 
-No agent issues the final verdict on its own work. Builder reports what it built and what it
-ran; the main session accepts it, after whichever gates
-`.claude/rules/agent-activation.json` requires for that change class.
+## Product claims (binding)
+
+- Say "attested success rate", never "measured": the caller asserts the outcome.
+- LenGentic sees chosen options and attested outcomes, not counterfactuals; never claim a decision "does not require an LLM".
+- Every deterministic recommendation carries `counterexamples` (may be empty, never omitted). Write negative fixtures before the positive path in analyzers.
+
+## Plan and process
+
+- `MVP_PLAN_V3.md` is the single executable plan (~24k tokens); `MVP_PLAN.md` (v2) and `docs/superpowers/specs/**` are historical. `BACKLOG.md` is ~16k tokens. Don't read either whole — use `pnpm kb search` / `pnpm kb show`. Retrieval confers no authority; `[HISTORICAL]`/`[STALE]` hits are pointers only.
+- `CONTEXT.md` is the shared vocabulary (`attested`, `counterexample`, `contextKey`, seam, work packet, wave, "green that lies"). Read it when naming or judging correctness.
+- `docs/ENGINEERING_STANDARDS.md` is the coding-standards SSOT (each rule names its enforcing command or owning role). Read before writing code; don't restate its rules elsewhere. `docs/decisions/` = ADRs; `docs/research/` = expiring external facts (check `review-by`).
+- Execution order: `0 → 1 → 5a → 2 → 3 → 4 → 5b → 6 → 7`. One phase at a time; phase gates are validation gates, not approval gates. Valuable-but-out-of-scope ideas go to `BACKLOG.md`.
+- Escalate to the human only on: destructive/irreversible action; material scope or architecture change; high-impact decision with no inferable preference; credentials/cost/production/security/privacy/legal; a gate failing after two distinct recovery attempts; genuinely conflicting requirements. Otherwise decide from the rules, document the assumption, prefer the reversible option.
+- Dispatch is sequential by default; start from `pnpm flow next`. Subagents get a work packet (`pnpm oracle packet <id>`), not "read the plan". A lane writes only inside its `allowed_paths`. Worktrees/branches are never deleted automatically.
+- `DONE` is a claim about evidence: each acceptance criterion needs its own expected/actual/result (`.claude/rules/lane-handoff.schema.json`, `pnpm lanes handoff`); validation findings follow `.claude/rules/handoff.schema.json`. A green `pnpm gates` alone is not GREEN.
+- Mechanical checks are scripts, not agents; run the gates before dispatching a validation agent.
+- Oracle probes may only inspect the surface their own node owns (`pnpm check:probes`), else a packet reports DONE before it starts.
+- Runtime status never lives in this file: use `pnpm oracle status`.
 
 ## Communication
 
-Be extremely concise. Sacrifice grammar for concision. Bullets and fragments over prose, no
-restatement of the question.
-
-Never omit failures, uncertainty, blockers, or validation evidence.
-
-Store detail in artifacts under `.artifacts/`; return paths, not pasted content.
-
-Concision applies to what you add, never to what you observed. Captured output — commands,
-exit codes, stack traces, payloads, assertion diffs, failing test names — is quoted
-verbatim wherever it lands. Trim only for length, and say where you cut.
-
-## Plan Mode
-
-Make plans extremely concise. Sacrifice grammar for concision.
-
-End with unresolved questions, if any.
-
-Last section: numbered implementation steps.
-
-## Current state
-
-Runtime status never lives in this file. What is done: `pnpm oracle status`. What runs next:
-`pnpm lanes wave <phase>` — prints `PHASE_COMPLETE` and exits 0 when the phase is finished,
-exits non-zero only on a real error. Recovery history: `.claude/autopilot.local.md`. Phase
-narratives live in git history and `.artifacts/evidence/`, not here.
-
-**Execution order, amended at the Phase 1 gate: `0 → 1 → 5a → 2 → 3 → 4 → 5b → 6 → 7`.**
-Phase numbers are identity, not sequence — the amendment and the two rejected alternatives
-are in `MVP_PLAN_V3.md` Part III. `5a` is Phase 5 waves 1–3 (the pure analysis engine); `5b`
-is waves 4–6 and stays after Phase 4. `spike/` is **not** deleted in the MVP — `p5.spike-deleted`
-was cut on 2026-09-03 (`MVP_PLAN_V3.md:1459`, `:2746`); it is the on-disk record of the seven
-`counterexamples` rows where the spike disagrees with the corrected grid by design. The
-graph stores plain phase numbers, so `lanes wave` takes `5`, not `5a`.
-
-Two standing lessons, kept because no tool re-derives them. Gates are one of GREEN's four
-sources, never GREEN itself — a phase once sat at `pnpm gates:full` exit 0 with two unbound
-DoD checkboxes, and was RED. And cross-agent agreement is evidence of independence, never of
-correctness — two blind computations agreed, cell for cell, on a wrong column; only an
-adversarial pass with a different question caught it
-(`.artifacts/evidence/5a/fixture-semantics-review.md`).
-
-## Coding principles (Karpathy)
-
-Four behavioural guidelines, merged in from
-`forrestchang/andrej-karpathy-skills`. They bias toward caution over speed; for trivial tasks,
-use judgement.
-
-**They are subordinate to everything above.** Where one conflicts with a rule in this file,
-`docs/ENGINEERING_STANDARDS.md`, `CONTEXT.md` or `MVP_PLAN_V3.md`, the project rule wins and the
-principle is read as advice about _how_ to execute it. The known collision is stated under
-Think Before Coding.
-
-### 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-
-- State your assumptions explicitly.
-- If multiple interpretations exist, present them — don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, name what's confusing.
-
-The upstream text ends each of those with "ask the human". Here it does not. Plan discipline
-already decides who gets asked: the six escalation triggers, and nothing else. Unclear and
-below a trigger means **decide from the rules, document the assumption in the handoff, and
-continue** — prefer the reversible option. `frame-phase` is where open decisions get settled in
-bulk, before a packet is cut, which is cheaper than settling them mid-implementation.
-
-### 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-Already a standard, and stated better there: `DESIGN-1` (an abstraction needs a second real
-variation), `DESIGN-6` (the named smells), `PERF-1` (no speculative optimization), `REFAC-7`
-(no refactor for an imaginable abstraction), and the five-question anti-overengineering gate
-under `## DESIGN`. Owned by **Reviewer**, deliberately unmechanised.
-
-Upstream's "if you write 200 lines and it could be 50, rewrite it" is **not** adopted. The
-standards file rejects every line-count proxy for complexity by name, because each one
-punishes the cohesive code it was meant to protect. Use the five questions.
-
-Speculative value that is real goes to `BACKLOG.md`, never into the diff.
-
-### 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-Already a standard: `REFAC-3` (a change stays inside its blast radius — Watchdog scope pass
-plus `pnpm lanes check`), `REFAC-4` (debt discovered is recorded, not followed), `REFAC-6`
-(smallest diff that gets the same improvement), and the three lists under `## REFAC` — what a
-micro-refactor is, what is not one, and what Reviewer does _not_ flag. Orphan cleanup is the
-"delete dead code the change exposed" clause; pre-existing dead code is a `BACKLOG.md` entry.
-
-The one line upstream has that the standards did not is now `DESIGN-7`: match the prevailing
-style of the code you are editing, even where you would write it differently.
-
-The test: every changed line traces to the request. That is the same boundary a lane's
-`allowed_paths` draws, one level down — inside an allowed file, the packet is still the limit.
-
-### 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Turn tasks into verifiable goals:
-
-- "Add validation" → "write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "write a test that reproduces it, then make it pass"
-- "Refactor X" → "ensure tests pass before and after"
-
-For multi-step work, state the plan as steps with their checks:
-
-```
-1. [step] → verify: [check]
-2. [step] → verify: [check]
-```
-
-A criterion whose check is "the command exited 0" is a weak criterion — a command that did not
-exercise the criterion is not evidence for it. Each acceptance criterion carries its own
-expected, actual and result; that is what `pnpm lanes handoff` enforces and what makes `DONE` a
-claim about evidence rather than about an exit code.
-
-**These principles are working if:** fewer unnecessary changes in diffs, fewer rewrites due to
-overcomplication, and assumptions surfaced in the handoff rather than discovered in review.
+Extremely concise; fragments over prose. Never omit failures, uncertainty, blockers or validation evidence; quote captured output (commands, exit codes, stack traces) verbatim. Put detail in `.artifacts/` and return paths. Plans: concise, end with unresolved questions, last section = numbered steps. Progress and failure reporting: skill `structured-logging`.
