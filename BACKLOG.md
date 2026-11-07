@@ -1945,7 +1945,7 @@ isolation is removed.
 
 ## Discovered building the dashboard test harness (2026-08-21, Phase 2 wave 2)
 
-### The dashboard hand-declares `HealthReport`, a twin of the API's health contract
+### ~~The dashboard hand-declares `HealthReport`, a twin of the API's health contract~~ — resolved `1c99532` (segment 1 wave gate S-2)
 
 **Source:** Noticed while adding `@lengentic/shared` to `platform/dashboard` at `eb5587f`, the
 pre-dispatch plumbing for `p2.dashboard-runs`. **Trigger:** the next change to `/health`'s
@@ -2039,7 +2039,7 @@ fixture that fails when either half is removed.
 
 ## Discovered building the Playground scaffold (2026-08-21, Phase 3 wave 1)
 
-### Every cross-package workspace import is invisible to `pnpm check:boundaries`
+### ~~Every cross-package workspace import is invisible to `pnpm check:boundaries`~~ — resolved `1c99532` (segment 1 wave gate S-1)
 
 **Source:** `p3.scaffold`, proved in `.artifacts/evidence/3/scaffold-boundary-proof.md`.
 **Trigger:** before the Phase 3 gate, or the first time a boundary rule between two workspace
@@ -5007,3 +5007,89 @@ default, since session logs carry source code and secrets.
 
 **Trigger:** Phase 7 gate GREEN (`pnpm flow next` returns COMPLETE). Worth doing once there are
 at least 20 real sessions of logs to import (19 existed on 2026-11-07).
+
+## Flushed at the segment 1 (Phase 1) wave gate re-run (2026-11-07)
+
+Source evidence: `.artifacts/evidence/1/wave-gate/review.md`, `review-2.md`, `validation.md`,
+`validation-2.md`. All non-blocking; blocking S-1/S-2/S-3 fixed in `1c99532`.
+
+### check-secrets skips added lines beginning with `++` (and echoes matched secrets)
+
+**Source:** validator F1 / reviewer S-4; `.artifacts/evidence/1/wave-gate/secrets-edge.log` cases 4-5.
+**Trigger:** next edit to `scripts/check-secrets.ts`, or before Phase 7 re-gate — whichever first.
+`scanStagedDiff` (`scripts/check-secrets.ts:107-111`) treats `++<key>` as a `+++` header → exit 0.
+Track hunk state (headers only between `diff --git` and first `@@`). Also echoes the matched
+secret to stderr (:85-87, :152-153; OBS-2) — mask it.
+
+### check-isolation Arm 2 fails open when git fails
+
+**Source:** reviewer S-5, `scripts/check-isolation.ts:68-69,141-143`. **Trigger:** next edit to check-isolation.
+`git()` ignores exit status; 0 files scanned → PASS. Assert status 0 and non-zero file count.
+Minor: copy filter (:93) tests absolute-path segments, so a checkout under `build/`/`dist/` copies nothing.
+
+### migrate step depends on unpruned devDependency `prisma`
+
+**Source:** reviewer S-6; `docker-compose.yml:30-31`, `docker/api.Dockerfile`. **Trigger:** first image-pruning change.
+`.dependency-cruiser.cjs:166-168` claims the image is pruned; it is not. Give migrate its own stage.
+
+### CI docker job discards built images
+
+**Source:** reviewer S-7; `.github/workflows/ci.yml`. **Trigger:** next CI edit.
+build-push-action `push: false` without `load: true`; compose then rebuilds uncached.
+
+### Stale comments (Phase 1 surface)
+
+**Source:** reviewer S-8 / R2-5. **Trigger:** next touch of each file.
+`pnpm-workspace.yaml` and `.dependency-cruiser.cjs:150-152` (spike "deleted end of Phase 5"; CLAUDE.md
+says kept), `.husky/prepare.mjs:1` ("pre-commit runs gates:full"), `prisma.service.ts:6-12` (class doc
+now sits on `HEALTH_PROBE_TIMEOUT_MILLIS`), `prisma.service.spec.ts:8-22` ("and nothing else" — now
+also tests `isReachable`), rule comments citing historical `MVP_PLAN.md` §17.
+
+### No `dashboard-not-to-api` boundary rule, though three places claim one
+
+**Source:** reviewer R2-1. **Trigger:** next edit to `.dependency-cruiser.cjs` or the dashboard's API imports.
+`platform/shared/read/health.ts:8`, `run-view.ts:17`, `BACKLOG.md` (~3051) say `check:boundaries` forbids
+dashboard → `platform/api/src/**`; a probe import found 0 violations. Add rule + selftest probe, or fix the claims.
+
+### `tsconfig.depcruise.json` paths are a hand twin of the packages' `exports`
+
+**Source:** reviewer R2-2, validator F-1. **Trigger:** first new workspace package or subpath export.
+A package/subpath missing from `paths` silently drops out of the boundary check (S-1 again); the
+selftest only covers listed specifiers. `@lengentic/api` has no alias, so a bare import is unflagged
+(no live hole: api has no `exports` and no dependents). Generate paths from `exports`, or add a selftest
+that every workspace `exports` entry has an alias.
+
+### Boundaries selftest writes probe files into the live tree
+
+**Source:** reviewer R2-3, validator F-3; `scripts/check-boundaries-selftest.ts:73-80`. **Trigger:** first
+stray probe file seen, or next edit to the selftest. SIGKILL skips `finally`; the leftover in
+`telemetry-sdk/src` breaks build/typecheck (fails loud, not open). Write probes under a gitignored dir.
+
+### /health deadline does not cancel the query; paused DB exhausts the pool
+
+**Source:** reviewer R2-4 (static, not reproduced). **Trigger:** next edit to `platform/database/src/index.ts`
+or the health probe. `withDeadline` (`prisma.service.ts:16-26,76`) stops waiting at 3 s but each probe
+keeps holding 1 of 10 pool connections; at the 5 s healthcheck the pool fills in <1 min. Set
+`query_timeout`/`statement_timeout`.
+
+### Dashboard `invalid` health reason text misstates the cause
+
+**Source:** validator F-2. **Trigger:** next dashboard health UI edit. Empty/HTML body reads "expected object,
+received undefined"; Zod messages drop the field path (e.g. `checks.database`).
+
+### validate-handoff.mjs --file prints raw stack on bad input
+
+**Source:** validator O4. **Trigger:** next edit to `.claude/hooks/validate-handoff.mjs`. Fails closed (exit 1); cosmetic.
+
+### p1.debt.* oracle probes pass vacuously [plan]
+
+**Source:** validator O2 / reviewer. **Trigger:** next `graph.json` probe revision (human-owned path).
+`/"taskId"/` matches only log-event.schema.json; `/artifacts[/\]handoffs/` only session-handoff hooks;
+husky secret probe matches a comment.
+
+### Plan §7 / §10 vs CLAUDE.md drift [plan]
+
+**Source:** reviewer C-1, C-2; validator O3. **Trigger:** before Phase 1 is re-attested against §10.
+§7/debt table say pre-commit runs `gates:full` (now a staged ladder; `gates:full` at phase gate + CI;
+see also the `gates:full` cost entry above). §10 handoff fields vs current `handoff.schema.json`
+(`additionalProperties:false`). CLAUDE.md agrees with code; plan needs a record correction.
