@@ -22,7 +22,7 @@ import { ErrorRepository } from '../src/error/error.repository';
 import { ErrorService } from '../src/error/error.service';
 import { AllExceptionsFilter } from '../src/common/all-exceptions.filter';
 import type { Env } from '../src/config/env.schema';
-import type { IngestResponse } from '@lengentic/shared';
+import { INGEST_LIMITS, type IngestResponse } from '@lengentic/shared';
 
 /**
  * Real-Postgres regression coverage for `p2.ingest-endpoint`, carried across two repair
@@ -727,37 +727,73 @@ describe('POST /v1/telemetry/events — ADR 0010 at the real HTTP boundary', () 
     // text representation, so building it by string repetition sidesteps recursion entirely
     // on the client side; the server still receives, and must still `JSON.parse`, a
     // genuinely deep structure.
+    //
+    // Every poisoned event must also stay UNDER the 64 KB cap (ADR 0006), or the size check
+    // rejects it first as EVENT_TOO_LARGE and the depth path is never reached. The previous
+    // `{"child":` chain cost 10 bytes/level, so depth >= ~6500 only reached the depth path on
+    // a Node whose JSON.stringify overflowed inside the size check (Node 24); Node 26
+    // serializes it and rejects on size. Two shapes now, each guarded by a precondition:
+    // - `object`: a one-char-key `{"c":` chain, 6 bytes/level — the tester's object fixture,
+    //   fits up to ~10_800 levels, so it covers the whole 1500-9000 band and 10000;
+    // - `array`: `[` chains under one top-level key (metadata must be a record), 2 bytes/
+    //   level — fits every depth in the sweep, including 15000 and 25000.
+    // `exceedsMaxStructuralDepth` counts objects and arrays alike, and so do the recursive
+    // walks it guards (`containsUnsafeUnicode`, `structuredClone`, `JSON.stringify`).
     const depths = [200, 1000, 1500, 3000, 6000, 9000, 10000, 15000, 25000];
+    const shapes = {
+      object: (depth: number) => '{"c":'.repeat(depth) + '{"leaf":true}' + '}'.repeat(depth),
+      array: (depth: number) => '{"c":' + '['.repeat(depth) + 'true' + ']'.repeat(depth) + '}',
+    };
+    const exercised: string[] = [];
 
     for (const depth of depths) {
-      const deepMetadataJson = '{"child":'.repeat(depth) + '{"leaf":true}' + '}'.repeat(depth);
-      const goodEvent = {
-        eventId: `http-t5-good-${depth}-start`,
-        schemaVersion: '1',
-        type: 'run.started',
-        entityId: `http-t5-good-${depth}`,
-        runId: `http-t5-good-${depth}`,
-        occurredAt: '2026-08-19T10:00:00.000Z',
-        payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
-      };
-      const bodyJson =
-        `{"events":[${JSON.stringify(goodEvent)},` +
-        `{"eventId":"http-t5-bad-${depth}-start","schemaVersion":"1","type":"run.started",` +
-        `"entityId":"http-t5-bad-${depth}","runId":"http-t5-bad-${depth}","occurredAt":"2026-08-19T10:00:00.000Z",` +
-        `"payload":{"workflowName":"wf","workflowVersion":"1.0.0","metadata":${deepMetadataJson}}}]}`;
+      for (const [shape, build] of Object.entries(shapes)) {
+        const label = `${shape} depth ${depth}`;
+        const id = `${shape}-${depth}`;
+        const badEventJson =
+          `{"eventId":"http-t5-bad-${id}-start","schemaVersion":"1","type":"run.started",` +
+          `"entityId":"http-t5-bad-${id}","runId":"http-t5-bad-${id}","occurredAt":"2026-08-19T10:00:00.000Z",` +
+          `"payload":{"workflowName":"wf","workflowVersion":"1.0.0","metadata":${build(depth)}}}`;
+        // Precondition: an object shape that cannot fit under the cap at this depth is not
+        // sent; the coverage assertion after the loop pins which ones must have been sent.
+        if (Buffer.byteLength(badEventJson, 'utf8') >= INGEST_LIMITS.maxEventPayloadBytes) {
+          continue;
+        }
+        exercised.push(label);
 
-      const response = await request(httpServer(app))
-        .post('/v1/telemetry/events')
-        .set('Content-Type', 'application/json')
-        .send(bodyJson);
-      const body = response.body as IngestResponse;
+        const goodEvent = {
+          eventId: `http-t5-good-${id}-start`,
+          schemaVersion: '1',
+          type: 'run.started',
+          entityId: `http-t5-good-${id}`,
+          runId: `http-t5-good-${id}`,
+          occurredAt: '2026-08-19T10:00:00.000Z',
+          payload: { workflowName: 'wf', workflowVersion: '1.0.0' },
+        };
+        const bodyJson = `{"events":[${JSON.stringify(goodEvent)},${badEventJson}]}`;
 
-      expect(response.status, `depth ${depth}`).toBe(200);
-      expect(body.results, `depth ${depth}`).toHaveLength(2);
-      expect(body.results[0], `depth ${depth}`).toMatchObject({ status: 'ACCEPTED' });
-      expect(body.results[1], `depth ${depth}`).toMatchObject({ status: 'REJECTED' });
-      expect(body.results[1]?.error?.code, `depth ${depth}`).toBe('INVALID_PAYLOAD');
+        const response = await request(httpServer(app))
+          .post('/v1/telemetry/events')
+          .set('Content-Type', 'application/json')
+          .send(bodyJson);
+        const body = response.body as IngestResponse;
+
+        expect(response.status, label).toBe(200);
+        expect(body.results, label).toHaveLength(2);
+        expect(body.results[0], label).toMatchObject({ status: 'ACCEPTED' });
+        expect(body.results[1], label).toMatchObject({ status: 'REJECTED' });
+        expect(body.results[1]?.error?.code, label).toBe('INVALID_PAYLOAD');
+      }
     }
+
+    // Coverage: every depth in the sweep went through the depth path at least once (array),
+    // and the object shape covered the whole band that used to escape containment.
+    expect(exercised).toEqual(
+      expect.arrayContaining([
+        ...depths.map((depth) => `array depth ${depth}`),
+        ...[200, 1000, 1500, 3000, 6000, 9000, 10000].map((depth) => `object depth ${depth}`),
+      ]),
+    );
   }, 120_000);
 
   it('T1: an unexpected, unclassified persistence failure returns a sanitized 500 body — no file path, no stack frame, no SQL code, no compiled source', async () => {
