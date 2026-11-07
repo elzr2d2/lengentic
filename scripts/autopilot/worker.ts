@@ -86,6 +86,11 @@ export interface WorkerResult {
   reportPath: string;
   /** The `subtype` of the CLI's final `result` event, when one was emitted. */
   resultSubtype: string | null;
+  /**
+   * True when the worker never started — no envelope and nothing written to either stream.
+   * The machine failed, not the node; the supervisor retries without spending a repair.
+   */
+  infra: boolean;
 }
 
 export function newWorkerId(task: WorkerTask, node: string | null): string {
@@ -375,6 +380,8 @@ export async function runWorker(spec: WorkerSpec, opts: RunWorkerOptions): Promi
   const outStream = createWriteStream(stdoutPath, { flags: 'a' });
   const errStream = createWriteStream(stderrPath, { flags: 'a' });
   let stdout = '';
+  let stderrBytes = 0;
+  let spawnFailed = false;
   let timedOut = false;
 
   const { code, signal } = await new Promise<{ code: number | null; signal: string | null }>(
@@ -414,9 +421,13 @@ export async function runWorker(spec: WorkerSpec, opts: RunWorkerOptions): Promi
         outStream.write(text);
         opts.onStdout?.(text);
       });
-      child.stderr.on('data', (d: Buffer) => errStream.write(d.toString('utf8')));
+      child.stderr.on('data', (d: Buffer) => {
+        stderrBytes += d.length;
+        errStream.write(d.toString('utf8'));
+      });
 
       child.on('error', (e: Error) => {
+        spawnFailed = true;
         errStream.write(`\n[supervisor] spawn failed: ${e.message}\n`);
         clearTimeout(timer);
         resolvePromise({ code: null, signal: null });
@@ -452,16 +463,24 @@ export async function runWorker(spec: WorkerSpec, opts: RunWorkerOptions): Promi
       stderrPath,
       reportPath: spec.reportPath,
       resultSubtype,
+      infra: false,
     };
   }
+
+  // A worker that wrote nothing at all, to either stream, never started: the OS refused the
+  // process (Windows 0xC0000142 under memory pressure) or spawn itself failed. That is the
+  // machine's failure, not the node's, and the supervisor must not spend a repair on it.
+  const infra = !timedOut && (spawnFailed || (stdout.length === 0 && stderrBytes === 0));
 
   // No usable envelope. Say exactly why, and never upgrade the outcome above FAILED — the
   // supervisor decides whether that becomes another attempt.
   const why = timedOut
     ? `killed after ${String(spec.timeoutMs)}ms without writing an outcome envelope`
-    : code === 0
-      ? `exited 0 without a valid outcome envelope (${verdict.errors.join('; ')})`
-      : `exited ${String(code)}${signal ? ` on ${signal}` : ''} (${verdict.errors.join('; ')})`;
+    : infra
+      ? `never started: exited ${String(code)} with no output and no outcome envelope (infra)`
+      : code === 0
+        ? `exited 0 without a valid outcome envelope (${verdict.errors.join('; ')})`
+        : `exited ${String(code)}${signal ? ` on ${signal}` : ''} (${verdict.errors.join('; ')})`;
 
   return {
     workerId: spec.workerId,
@@ -479,5 +498,6 @@ export async function runWorker(spec: WorkerSpec, opts: RunWorkerOptions): Promi
     stderrPath,
     reportPath: spec.reportPath,
     resultSubtype,
+    infra,
   };
 }

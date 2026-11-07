@@ -1698,6 +1698,26 @@ ${verdictFile === null ? '' : readFileSync(verdictFile, 'utf8')}`,
     },
   );
 
+  await scenario(
+    51,
+    'a worker that never started (no envelope, no output at all) is FAILED and marked infra',
+    async () => {
+      const w = world({ steps: { default: ['SPAWN_FAIL'] } });
+      const r = await runWorker(spec_(w, 'p9.a'), { schemaPath: SCHEMA, env: fakeEnv(w) });
+      const cw = world({ steps: { default: ['CRASH'] } });
+      const crash = await runWorker(spec_(cw, 'p9.a'), { schemaPath: SCHEMA, env: fakeEnv(cw) });
+      return (
+        expect(r.outcome === 'FAILED', `expected FAILED; got ${r.outcome}`) ??
+        expect(r.infra === true, `a silent non-start must be infra; got ${String(r.infra)}`) ??
+        expect(
+          r.derivedFrom.includes('never started'),
+          `the reason must say the worker never started; got ${r.derivedFrom}`,
+        ) ??
+        expect(crash.infra === false, 'a crash that wrote output is a worker failure, not infra')
+      );
+    },
+  );
+
   return report();
 }
 

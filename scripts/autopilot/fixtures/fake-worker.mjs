@@ -59,6 +59,11 @@ appendFileSync(
   'utf8',
 );
 
+// The OS could not start the session at all (Windows 0xC0000142 under memory pressure): the
+// process exits non-zero having written nothing to stdout or stderr. It must exit before the
+// init event below, because a real CLI that got that far did start.
+if (behaviour === 'SPAWN_FAIL') process.exit(1);
+
 console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: sessionId }));
 
 function evidenceFile(name) {
