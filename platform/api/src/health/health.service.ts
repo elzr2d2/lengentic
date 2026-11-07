@@ -1,15 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import type { CheckStatus, HealthReport } from '@lengentic/shared/read';
 import { PrismaService } from '../prisma/prisma.service';
-
-export type CheckStatus = 'up' | 'down';
-
-export interface HealthReport {
-  readonly status: 'ok' | 'degraded';
-  readonly uptimeSeconds: number;
-  readonly checks: {
-    readonly database: CheckStatus;
-  };
-}
 
 @Injectable()
 export class HealthService {

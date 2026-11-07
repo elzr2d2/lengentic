@@ -183,7 +183,10 @@ module.exports = {
     doNotFollow: { path: 'node_modules' },
     exclude: { path: '(^|/)(node_modules|dist|build|\\.next|coverage|generated)(/|$)' },
     tsPreCompilationDeps: true,
-    tsConfig: { fileName: 'tsconfig.base.json' },
+    // Aliases @lengentic/* to source. Every package `exports` map points at dist/, which is
+    // excluded above, so without the alias a bare workspace import is dropped before any rule
+    // sees it. scripts/check-boundaries-selftest.ts pins this with bare-specifier probes.
+    tsConfig: { fileName: 'tsconfig.depcruise.json' },
     enhancedResolveOptions: {
       exportsFields: ['exports'],
       conditionNames: ['import', 'require', 'node', 'default', 'types'],

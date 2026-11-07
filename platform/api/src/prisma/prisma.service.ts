@@ -10,6 +10,21 @@ import type { Env } from '../config/env.schema';
  * forbids a Prisma type from crossing a module boundary — no Prisma model is ever returned
  * from a controller. Mapping happens at the persistence edge.
  */
+export const HEALTH_PROBE_TIMEOUT_MILLIS = 3_000;
+
+/** Rejects if `work` has not settled within `ms`. The timer never outlives the race. */
+async function withDeadline<T>(work: PromiseLike<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`database did not answer within ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([Promise.resolve(work), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 @Injectable()
 export class PrismaService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
@@ -29,7 +44,7 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
    * not reject for an unreachable host, a non-existent domain, a malformed URL or wrong
    * credentials. Only a round-trip query establishes reachability.
    *
-   * The failure is allowed to propagate. `docker-compose.yml:44-46` documents the API as
+   * The failure is allowed to propagate. `docker-compose.yml` documents the API as
    * validating its environment and connecting at boot, so that starting it against a
    * Postgres that is merely running produces a restart loop. That contract requires a loud
    * failure here. `isReachable()` below is the opposite case on purpose: steady-state health
@@ -54,7 +69,11 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
    */
   async isReachable(): Promise<boolean> {
     try {
-      await this.client.$queryRaw`SELECT 1`;
+      // ASYNC-4. The connect timeout in `createPrismaClient` bounds opening a connection, but
+      // not a query on a pooled connection whose server has since stopped answering (a
+      // paused container). Bounded below the Dashboard's 5 s fetch budget, so a hung
+      // database reads as "database down", not as "API unreachable".
+      await withDeadline(this.client.$queryRaw`SELECT 1`, HEALTH_PROBE_TIMEOUT_MILLIS);
       return true;
     } catch (error: unknown) {
       this.logger.warn({ err: error }, 'Database health check failed');

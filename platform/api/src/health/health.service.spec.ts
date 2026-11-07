@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { HealthReportSchema } from '@lengentic/shared/read';
 import { HealthService } from './health.service';
 import type { PrismaService } from '../prisma/prisma.service';
 
@@ -37,4 +38,15 @@ describe('HealthService', () => {
 
     expect(report.uptimeSeconds).toBeGreaterThanOrEqual(0);
   });
+
+  it.each([true, false])(
+    'produces a body the Dashboard can parse (database reachable: %s)',
+    async (reachable) => {
+      // Expected source: the wire contract in platform/shared/read/health.ts, which is what
+      // the Dashboard safeParses. A body it rejects renders as "unexpected /health body".
+      const report = await serviceWithDatabase(reachable).check();
+
+      expect(HealthReportSchema.safeParse(report).success).toBe(true);
+    },
+  );
 });

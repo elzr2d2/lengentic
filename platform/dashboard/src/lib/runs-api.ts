@@ -16,7 +16,7 @@ import { resolveApiBaseUrl } from './api';
  * module `platform/api/src/runs/runs.controller.ts` types its return against, so a change to
  * the response shape is a compile error on both sides at once. A hand-written twin here
  * would be a second contract that agrees with the first only until someone edits one of them
- * — `src/lib/api.ts`'s `HealthReport` is the instance of that already in the tree.
+ * — which is how `src/lib/api.ts`'s `HealthReport` used to be, before it moved here too.
  *
  * The schemas are used at runtime as well as for their types: the API is a separate process
  * and its body is `unknown` until something parses it. `safeParse` turns "the deployed API

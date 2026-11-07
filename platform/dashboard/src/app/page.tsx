@@ -51,6 +51,20 @@ function PlatformStatus({ health }: { health: HealthResult }) {
     );
   }
 
+  if (health.kind === 'invalid') {
+    return (
+      <>
+        <Row label="API" value={<Status state="warn">up · HTTP {health.httpStatus}</Status>} />
+        <Row label="Database" value={<Status state="down">unknown</Status>} />
+        <Row label="Endpoint" value={<code>{health.endpoint}/health</code>} />
+        <Row
+          label="Reason"
+          value={<span className="value">unexpected /health body: {health.reason}</span>}
+        />
+      </>
+    );
+  }
+
   const { report, httpStatus } = health;
   const databaseUp = report.checks.database === 'up';
 

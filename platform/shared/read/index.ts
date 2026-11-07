@@ -42,3 +42,5 @@ export type {
   RunsListQuery,
   RunSummaryDropCount,
 } from './run-view';
+export { CheckStatusSchema, HealthReportSchema } from './health';
+export type { CheckStatus, HealthReport } from './health';

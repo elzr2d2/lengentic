@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPrismaClient } from '@lengentic/database';
-import { PrismaService } from './prisma.service';
+import { HEALTH_PROBE_TIMEOUT_MILLIS, PrismaService } from './prisma.service';
 import type { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.schema';
 
@@ -119,5 +119,50 @@ describe('PrismaService.onModuleInit', () => {
     await service.onModuleInit();
 
     expect(queryRaw).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('PrismaService.isReachable', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('answers false, not never, when the database stops answering (ASYNC-4)', async () => {
+    // A paused Postgres: the query on a pooled connection neither resolves nor rejects.
+    // Without a deadline /health hangs until the caller gives up and the Dashboard reports
+    // "API unreachable" — the misdiagnosis the 503 contract exists to prevent.
+    vi.useFakeTimers();
+    const { service } = harness(() => new Promise<never>(() => undefined));
+
+    const probe = service.isReachable();
+    await vi.advanceTimersByTimeAsync(HEALTH_PROBE_TIMEOUT_MILLIS);
+
+    await expect(probe).resolves.toBe(false);
+  });
+
+  it('is still waiting just before the deadline', async () => {
+    // Paired with the case above: a probe that answered false immediately would pass it too.
+    vi.useFakeTimers();
+    const { service } = harness(() => new Promise<never>(() => undefined));
+    let settled = false;
+
+    void service.isReachable().then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(HEALTH_PROBE_TIMEOUT_MILLIS - 1);
+
+    expect(settled).toBe(false);
+  });
+
+  it('answers true when the round trip completes', async () => {
+    const { service } = harness(() => Promise.resolve([{ '?column?': 1 }]));
+
+    await expect(service.isReachable()).resolves.toBe(true);
   });
 });

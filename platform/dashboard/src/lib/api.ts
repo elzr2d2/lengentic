@@ -1,3 +1,5 @@
+import { HealthReportSchema, type HealthReport } from '@lengentic/shared/read';
+
 /**
  * API access for the Dashboard.
  *
@@ -27,23 +29,19 @@ export function resolveApiBaseUrl(): string {
   return process.env.API_BASE_URL_INTERNAL ?? API_BASE_URL;
 }
 
-export type CheckStatus = 'up' | 'down';
-
-export interface HealthReport {
-  status: 'ok' | 'degraded';
-  uptimeSeconds: number;
-  checks: { database: CheckStatus };
-}
-
 export type HealthResult =
   | { kind: 'reachable'; report: HealthReport; httpStatus: number }
+  // The API answered, but not with a `HealthReport`: an error-filter 500 body, a proxy page,
+  // an older or newer API. The API is up; what it said is unreadable. Not `unreachable`,
+  // which would send whoever is debugging to restart a process that is running.
+  | { kind: 'invalid'; reason: string; httpStatus: number; endpoint: string }
   // `endpoint` is the address actually attempted, not the one a reader might assume. When
   // the server and browser addresses differ, reporting the wrong one sends whoever is
   // debugging to a URL that was never called.
   | { kind: 'unreachable'; reason: string; endpoint: string };
 
 /**
- * Never throws.
+ * Never throws, and never trusts the body: it is parsed against `HealthReportSchema`.
  *
  * "The API is unreachable" is the single most useful thing a status page can tell you, and
  * an exception that renders a 500 tells you the dashboard is broken instead — which is the
@@ -59,11 +57,24 @@ export async function fetchHealth(): Promise<HealthResult> {
       signal: AbortSignal.timeout(5000),
     });
 
-    return {
-      kind: 'reachable',
-      report: (await response.json()) as HealthReport,
-      httpStatus: response.status,
-    };
+    // A non-JSON body (a proxy's HTML error page) is an answer too: it parses to `undefined`
+    // and lands in `invalid` below, not in `unreachable`.
+    const body: unknown = await response.json().catch(() => undefined);
+    const parsed = HealthReportSchema.safeParse(body);
+
+    if (!parsed.success) {
+      return {
+        kind: 'invalid',
+        reason: parsed.error.issues
+          .map((issue) => issue.message)
+          .slice(0, 5)
+          .join('; '),
+        httpStatus: response.status,
+        endpoint: baseUrl,
+      };
+    }
+
+    return { kind: 'reachable', report: parsed.data, httpStatus: response.status };
   } catch (error: unknown) {
     return {
       kind: 'unreachable',

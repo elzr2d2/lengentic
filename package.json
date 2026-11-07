@@ -19,7 +19,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "pnpm --filter @lengentic/database build && tsc --noEmit && pnpm -r typecheck",
-    "check:boundaries": "depcruise platform playground --config .dependency-cruiser.cjs",
+    "check:boundaries": "depcruise platform playground --config .dependency-cruiser.cjs && tsx scripts/check-boundaries-selftest.ts",
     "check:isolation": "tsx scripts/check-isolation.ts",
     "check:integrity": "tsx scripts/check-integrity.ts",
     "oracle": "tsx scripts/oracle.ts",

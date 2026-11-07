@@ -1,6 +1,7 @@
 import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
 import type { Response } from 'express';
-import { HealthService, type HealthReport } from './health.service';
+import type { HealthReport } from '@lengentic/shared/read';
+import { HealthService } from './health.service';
 
 @Controller('health')
 export class HealthController {

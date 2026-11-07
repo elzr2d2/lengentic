@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@lengentic/shared": ["platform/shared/index.ts"],
+      "@lengentic/shared/read": ["platform/shared/read/index.ts"],
+      "@lengentic/telemetry-sdk": ["platform/telemetry-sdk/src/index.ts"],
+      "@lengentic/database": ["platform/database/src/index.ts"],
+      "@lengentic/analysis-engine": ["platform/analysis-engine/src/index.ts"]
+    }
+  }
+}
