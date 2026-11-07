@@ -4978,3 +4978,32 @@ Phase 7 reviewer SC4 (LOW). `p7.docker-smoke` is a Validator packet but edited `
 `docker-compose.yml` (e15ee41, 86bde9a); ownership was granted afterwards (71a65c7). The fixes
 repaired DONE `p1.docker-runtime` surface and were required by the rehearsal (TS2307 x51; 503
 "table public.Run does not exist"). Process record only.
+
+## Discovered while scanning real Claude Code sessions (2026-11-07)
+
+### Import Claude Code session logs as telemetry — the first real data source
+
+**Source:** a stdlib Python scanner over `~/.claude/projects/*/*.jsonl`, built 2026-11-07 outside
+this repo (kept in El's personal vault as `tools/scanner/`); it ran on 19 real sessions across 5
+repos. Deferred by a decision council the same day: Phase 7 closes first.
+
+Every workload the platform has analyzed is simulated (README Limits: "The Playground is
+simulated"). Claude Code already writes a structured log of every model call (model, input,
+cache-read/cache-write, output and thinking tokens), every tool call with its input, and every
+tool result with `is_error`. An importer that maps one session to one Run, assistant messages to
+`model_call.recorded` and tool use/result pairs to `tool_call.recorded` gives the analyzers real
+traffic with **no new event types and no new recommendation types**: `REPEATED_FAILED_ACTION`
+already covers the scanner's loop check. It should enter through the public SDK or the ingest
+API, not write to the database, so the platform boundary holds.
+
+Ruled out: rewriting the Python scanner in TypeScript. The importer replaces it; the scanner's
+report on sanitized real logs becomes the importer's parity fixtures, then the scanner is
+deleted. Cost, cache and model-routing findings are not this item. They are §27's Cost
+Analysis, Model Comparison and Provider Routing Recommendations, and stay there.
+
+Before building: decide how `contextKey` is derived for imported decisions (ADR 0003 says the
+caller computes it, so the importer is the caller), and redact prompt text and tool inputs by
+default, since session logs carry source code and secrets.
+
+**Trigger:** Phase 7 gate GREEN (`pnpm flow next` returns COMPLETE). Worth doing once there are
+at least 20 real sessions of logs to import (19 existed on 2026-11-07).
