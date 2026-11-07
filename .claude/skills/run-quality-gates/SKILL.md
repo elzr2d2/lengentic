@@ -21,7 +21,8 @@ T2 runs itself at `git commit`; do not run gates:full by hand before a packet co
 was the old ladder, and it paid `check:isolation` per commit for a question with one answer
 per phase.
 
-`pnpm gates` runs lint, format:check, typecheck, test, build, check:boundaries, and
+`pnpm gates` runs build (workspace packages resolve each other through `dist/`), lint,
+format:check, typecheck, test, check:boundaries, and
 check:integrity.
 
 `pnpm check:integrity` is the QA-integrity scan — focused tests, hidden skips, arbitrary

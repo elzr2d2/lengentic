@@ -7,7 +7,7 @@ LenGentic: agent observability and decision-intelligence platform (`Observe → 
 ## Commands
 
 ```bash
-pnpm gates              # lint, format:check, typecheck, test, build, boundaries, integrity
+pnpm gates              # build, lint, format:check, typecheck, test, boundaries, integrity
 pnpm gates:full         # gates + check:isolation (slow; phase gate and CI)
 pnpm lint | format:check | typecheck | test | build
 pnpm check:boundaries   # dependency-cruiser (.dependency-cruiser.cjs)

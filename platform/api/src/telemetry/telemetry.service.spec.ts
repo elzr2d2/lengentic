@@ -3,6 +3,7 @@ import {
   ServiceUnavailableException,
   type HttpException,
 } from '@nestjs/common';
+import { INGEST_LIMITS } from '@lengentic/shared';
 import { describe, expect, it, vi } from 'vitest';
 import type { EntityMergeState } from './merge-rules';
 import { TelemetryService } from './telemetry.service';
@@ -1054,9 +1055,27 @@ describe('TelemetryService.ingest — deep-metadata recursion is contained per-e
     // real payload. Depth is deliberately large and unbounded-feeling on purpose — tester
     // finding T5: "depth is not a stable threshold", so this proves the BOUNDARY holds
     // rather than pinning to one number.
+    //
+    // It must also stay UNDER the 64 KB cap (ADR 0006), or the size check rejects it first as
+    // EVENT_TOO_LARGE and the depth path is never reached. A 200_000-deep fixture (~2 MB)
+    // only reached it on Node 24, where JSON.stringify overflowed and the size check fell
+    // through; Node 26's JSON.stringify serializes it, so it never got past the size check.
+    // 10_000 levels of a one-char key is ~60 KB, deep enough to reach
+    // containsUnsafeUnicode's observed overflow band (~9000-10000, wire-sanitize.ts).
     let deeplyNested: unknown = { leaf: true };
-    for (let i = 0; i < 200_000; i++) {
-      deeplyNested = { child: deeplyNested };
+    for (let i = 0; i < 10_000; i++) {
+      deeplyNested = { c: deeplyNested };
+    }
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(deeplyNested);
+    } catch {
+      serialized = undefined; // a runtime whose stringify overflows skips the size check anyway
+    }
+    if (serialized !== undefined) {
+      expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThan(
+        INGEST_LIMITS.maxEventPayloadBytes - 1024,
+      );
     }
 
     const response = await service.ingest([
