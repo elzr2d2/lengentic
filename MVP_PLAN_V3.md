@@ -308,7 +308,7 @@ adds minutes and no information.
 
 ```text
 pnpm gates       lint, format:check, typecheck, test, build, check:boundaries
-pnpm gates:full  gates + check:isolation          CI and pre-commit only
+pnpm gates:full  gates + check:isolation          phase gate and CI (pre-commit runs the staged ladder, scripts/precommit.ts)
 ```
 
 Mechanical checks are **tooling, not agents**. Never ask an agent to verify something a
@@ -390,6 +390,12 @@ if the entire Playground is deleted.
 ---
 
 # 10. Agent Handoff Contract
+
+> **Shipped state (amended at the Phase 1 gate; reversible, see OD-5).** Two contracts exist at HEAD.
+> Lane handoffs are files, validated by `pnpm lanes handoff` against `.claude/rules/lane-handoff.schema.json`.
+> Validation findings follow `.claude/rules/handoff.schema.json` and are checked at SubagentStop from the
+> subagent transcript (`.claude/hooks/validate-handoff.mjs`). The file-based finding contract below, with
+> `phase`/`taskId`/`role`/`summary`/`commandsRun`, is the target and lands per OD-5 (start of Phase 2).
 
 Handoffs are **files**, not parsed chat responses. Parsing a subagent's final message
 depends on the model's formatting and fails silently when it changes.
@@ -1571,11 +1577,11 @@ No secret detection exists, though it is required before commit-ready.
 **All three discharged 2026-08-18. The block above is the debt as it stood, kept for the
 record — it is no longer an outstanding claim.**
 
-| Debt                       | Landed           | Verified by                                                                                                                                                                                                                                                       |
-| -------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| File-based handoffs (OD-5) | already in place | `.artifacts/handoffs/*.json`, `pnpm lanes handoff`                                                                                                                                                                                                                |
-| Pre-commit hook (OD-6)     | `4876287`        | `core.hooksPath` → `.husky`, hook fires `gates:full`; a throwaway non-zero hook blocked a commit, proving git honours the path on this machine                                                                                                                    |
-| Secret detection (OD-6)    | `40f1643`        | `scripts/check-secrets.ts` run from `.husky/pre-commit` before `gates:full`. A planted AWS key + GitHub token were staged and `git commit` was **refused**, exit 1, nothing landed; all seven patterns fire; `--sweep` over every tracked file reports 0 findings |
+| Debt                       | Landed                       | Verified by                                                                                                                                                                                                                                                       |
+| -------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| File-based handoffs (OD-5) | partial (lane handoffs only) | `.artifacts/handoffs/*.json`, `pnpm lanes handoff`                                                                                                                                                                                                                |
+| Pre-commit hook (OD-6)     | `4876287`                    | `core.hooksPath` → `.husky`, hook runs the staged ladder (`scripts/precommit.ts`; `gates:full` is the phase gate and CI); a throwaway non-zero hook blocked a commit, proving git honours the path on this machine                                                |
+| Secret detection (OD-6)    | `40f1643`                    | `scripts/check-secrets.ts` run from `.husky/pre-commit` before `gates:full`. A planted AWS key + GitHub token were staged and `git commit` was **refused**, exit 1, nothing landed; all seven patterns fire; `--sweep` over every tracked file reports 0 findings |
 
 `12cc103` belongs to the same batch: `4876287` added a root `prepare` lifecycle script and both
 Dockerfiles installed before copying `.husky/`, so `docker compose up --build` died on

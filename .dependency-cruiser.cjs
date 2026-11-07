@@ -64,7 +64,25 @@ module.exports = {
         'Playground may use platform/telemetry-sdk, but only through its public entry. ' +
         'Deep imports into src/ make internals part of the contract by accident.',
       from: { path: '^playground/' },
-      to: { path: '^platform/telemetry-sdk/src/(?!index\\.ts$)' },
+      to: { path: '^platform/telemetry-sdk/(src|dist)/(?!index\\.(ts|js|d\\.ts)$)' },
+    },
+    {
+      name: 'no-cross-package-build-output',
+      severity: 'error',
+      comment:
+        "Importing another package's dist/ or build/ by path bypasses its public entry and the " +
+        'source-level rules, which match src/ paths. doNotFollow keeps the edge visible.',
+      from: { path: '^platform/([^/]+)/' },
+      to: { path: '^platform/(?!$1/)[^/]+/(dist|build)/' },
+    },
+    {
+      name: 'prisma-generated-stays-in-database',
+      severity: 'error',
+      comment:
+        'The generated Prisma client may be imported only inside platform/database; Prisma ' +
+        'types never cross a module boundary (CLAUDE.md).',
+      from: { path: '^(platform|playground)/', pathNot: '^platform/database/' },
+      to: { path: '(^|/)generated/prisma/' },
     },
     {
       name: 'playground-not-to-other-platform-packages',
@@ -174,14 +192,18 @@ module.exports = {
       comment:
         'Production code depending on a devDependency builds locally and fails in the ' +
         'Docker image, where devDependencies are pruned.',
-      from: { path: '^(platform|playground)/', pathNot: '\\.(test|spec)\\.ts$' },
+      from: {
+        path: '^(platform|playground)/',
+        pathNot: '\\.(test|spec)\\.ts$|/(vitest|prisma)[a-z.]*\\.config\\.m?ts$',
+      },
       to: { dependencyTypes: ['npm-dev'] },
     },
   ],
 
   options: {
-    doNotFollow: { path: 'node_modules' },
-    exclude: { path: '(^|/)(node_modules|dist|build|\\.next|coverage|generated)(/|$)' },
+    // doNotFollow, not exclude: exclude deletes the module and every edge INTO it, so an import
+    // of dist/ or generated/ was invisible to every rule. doNotFollow keeps the edge.
+    doNotFollow: { path: '(^|/)(node_modules|dist|build|\\.next|coverage|generated)(/|$)' },
     tsPreCompilationDeps: true,
     // Aliases @lengentic/* to source. Every package `exports` map points at dist/, which is
     // excluded above, so without the alias a bare workspace import is dropped before any rule

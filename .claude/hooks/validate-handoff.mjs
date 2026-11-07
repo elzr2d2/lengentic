@@ -36,6 +36,9 @@ const LANE_SCHEMA_PATH = fileURLToPath(
   new URL('../rules/lane-handoff.schema.json', import.meta.url),
 );
 
+/** Incidental JSON such as `{"status":"ok"}` in prose is not a handoff; these statuses are. */
+const HANDOFF_STATUSES = new Set(['PASSED', 'FAILED', 'BLOCKED', 'DONE']);
+
 function main() {
   const fileFlag = process.argv.indexOf('--file');
   if (fileFlag !== -1) {
@@ -49,7 +52,7 @@ function main() {
   const payload = readStdinJson();
   if (payload === null) process.exit(0); // Nothing to inspect; never block on our own bug.
 
-  const candidate = lastHandoffCandidate(payload.transcript_path);
+  const candidate = lastHandoffCandidate(payload.agent_transcript_path ?? payload.transcript_path);
   if (candidate === null) process.exit(0);
 
   report(validateCandidate(candidate), 'agent output', schemaPathFor(candidate));
@@ -119,6 +122,11 @@ function lastHandoffCandidate(transcriptPath) {
     return null;
   }
 
+  // Claude Code writes each content block of one message as its own `assistant` line, and a
+  // subagent hands back through the `SubagentHandback` tool_use. Walk back to the last
+  // assistant message and join every line sharing its id (or, lacking ids, the trailing run).
+  const texts = [];
+  let lastId;
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     let entry;
     try {
@@ -126,20 +134,31 @@ function lastHandoffCandidate(transcriptPath) {
     } catch {
       continue;
     }
-    if (entry?.type !== 'assistant') continue;
-
-    const text = textOf(entry.message?.content);
-    return text === '' ? null : extractHandoff(text);
+    if (entry?.type !== 'assistant') {
+      if (texts.length > 0) break;
+      continue;
+    }
+    const id = entry.message?.id;
+    if (texts.length > 0 && id !== lastId) break;
+    lastId = id;
+    texts.unshift(textOf(entry.message?.content));
   }
-  return null;
+  const text = texts.join('\n');
+  return text.trim() === '' ? null : extractHandoff(text);
 }
 
 function textOf(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   return content
-    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-    .map((block) => block.text)
+    .map((block) => {
+      if (block?.type === 'text' && typeof block.text === 'string') return block.text;
+      if (block?.type === 'tool_use' && block.name === 'SubagentHandback') {
+        const m = block.input?.message;
+        return typeof m === 'string' ? m : '';
+      }
+      return '';
+    })
     .join('\n');
 }
 
@@ -154,18 +173,40 @@ function extractHandoff(text) {
   const fenced = text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g);
   for (const match of fenced) candidates.push(match[1]);
 
-  const braced = text.matchAll(/\{[\s\S]*?\n\}/g);
-  for (const match of braced) candidates.push(match[0]);
+  for (const obj of balancedObjects(text)) candidates.push(obj);
 
   for (let i = candidates.length - 1; i >= 0; i -= 1) {
     try {
       const parsed = JSON.parse(candidates[i]);
-      if (parsed && typeof parsed === 'object' && 'status' in parsed) return parsed;
+      if (parsed && typeof parsed === 'object' && HANDOFF_STATUSES.has(parsed.status))
+        return parsed;
     } catch {
       /* not JSON, keep looking */
     }
   }
   return null;
+}
+
+/** Top-level balanced `{...}` spans, string-aware, so compact one-line JSON is found too. */
+function balancedObjects(text) {
+  const out = [];
+  for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inStr = false;
+    for (let i = start; i < text.length; i += 1) {
+      const c = text[i];
+      if (inStr) {
+        if (c === '\\') i += 1;
+        else if (c === '"') inStr = false;
+      } else if (c === '"') inStr = true;
+      else if (c === '{') depth += 1;
+      else if (c === '}' && --depth === 0) {
+        out.push(text.slice(start, i + 1));
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 function fail(message) {

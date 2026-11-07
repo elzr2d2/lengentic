@@ -5111,3 +5111,22 @@ Source: `.artifacts/evidence/1/wave-gate/validation-3.md` (validator, verdict GR
 
 **Source:** validator V3-F3. **Trigger:** next CI matrix edit or Node-version-sensitive fix (cf. 13081c1).
 Only Node 26.13 ran locally; add a CI matrix leg for the engines floor.
+
+## Flushed at the segment 1 (Phase 1) phase gate (2026-11-07)
+
+Source: `.artifacts/evidence/1/phase-gate/{tester,reviewer}.md`. Blocking items (hook bypass, depcruise
+exclude, precommit playground, plan §10 record) were repaired in the gate-repair commit.
+
+### Non-blocking Phase 1 gate findings [p1.debt]
+
+**Trigger:** next edit to the named file, or Phase 2 start for the first.
+
+- `check:isolation` Arm 2 evadable via a segment-joined `.claude` path (LOW).
+- `DATABASE_URL` malformed gives an ~11s DB error instead of env validation (LOW).
+- SD-2: stale `dist` in a warm tree can mask a build failure.
+- SD-3: raw NUL in `platform/api/test/telemetry.integration.spec.ts:283` makes the secrets sweep skip the file.
+- SD-5: the Prisma boundary rule covered only `@prisma/client`; `generated/prisma` path now covered too, `@prisma/*` subpackages not.
+- SD-6: mangled backlog entry near BACKLOG.md:5084 (oracle probe matches unrelated files).
+- V3-F3: mis-tagged; `.nvmrc` = 24, not 26.
+- SC-3: failure-routing evidence is Aug-2026 against the pre-nine-agent harness; re-run a seeded-defect routing test.
+- Dashboard render at HEAD and Node 24 run of T5 were not re-observed.

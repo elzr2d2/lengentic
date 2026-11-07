@@ -47,6 +47,17 @@ const PROBES: Probe[] = [
     specifier: '@lengentic/database',
     expectRules: ['analysis-engine-is-pure'],
   },
+  // Edges INTO build output must be visible (doNotFollow, not exclude).
+  {
+    file: `platform/api/src/${PROBE}`,
+    specifier: '../../telemetry-sdk/dist/index.js',
+    expectRules: ['no-cross-package-build-output'],
+  },
+  {
+    file: `platform/api/src/__boundary_probe_generated__.ts`,
+    specifier: '../../database/generated/prisma/client.js',
+    expectRules: ['prisma-generated-stays-in-database'],
+  },
 ];
 
 interface Violation {

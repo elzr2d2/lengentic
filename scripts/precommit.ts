@@ -166,11 +166,14 @@ function main(): void {
 function affectedPackages(staged: readonly string[]): string[] {
   const dirs = new Set<string>();
   for (const file of staged) {
-    const match = /^(platform|playground)\/([^/]+)\//.exec(file);
-    if (match) {
-      const dir = `${match[1]}/${match[2]}`;
-      if (existsSync(join(REPO, dir, 'package.json'))) dirs.add(dir);
-    }
+    // `playground` is ONE workspace package (pnpm-workspace.yaml); `platform/*` are many.
+    const match = /^platform\/([^/]+)\//.exec(file);
+    const dir = match
+      ? `platform/${match[1]}`
+      : file.startsWith('playground/')
+        ? 'playground'
+        : null;
+    if (dir !== null && existsSync(join(REPO, dir, 'package.json'))) dirs.add(dir);
   }
   return [...dirs].sort();
 }
